@@ -1,0 +1,229 @@
+{
+  "metadata": {
+    "synthetic": true,
+    "fixture_version": "1.0",
+    "created_on": "2026-10-28",
+    "warning": "Fictional academic demonstration only. Not tax advice, an Intuit catalog, an actual QuickBooks schema, or a production accuracy benchmark.",
+    "purpose": "Expected development outcomes; never pass this file to the model or application matching inputs."
+  },
+  "cases": [
+    {
+      "record_id": "R001",
+      "scenario": "Exact fictional Alpha match",
+      "expected_status": "ready_for_demo_mapping",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001"
+      ],
+      "expected_target_id": "DEMO-TAX-001",
+      "justification": "Recognized source code and all demo context fields match Alpha.",
+      "resolution": null
+    },
+    {
+      "record_id": "R002",
+      "scenario": "Same label and rate, different district",
+      "expected_status": "ready_for_demo_mapping",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-002"
+      ],
+      "expected_target_id": "DEMO-TAX-002",
+      "justification": "The source code and jurisdiction identify Beta even though the name and rate match R001.",
+      "resolution": null
+    },
+    {
+      "record_id": "R003",
+      "scenario": "Exact municipal employee match",
+      "expected_status": "ready_for_demo_mapping",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-003"
+      ],
+      "expected_target_id": "DEMO-TAX-003",
+      "justification": "All demo evidence agrees with the employee municipal entry.",
+      "resolution": null
+    },
+    {
+      "record_id": "R004",
+      "scenario": "Custom abbreviation without identifier",
+      "expected_status": "suggestion_only",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001"
+      ],
+      "expected_target_id": null,
+      "justification": "Alpha has both school and municipal candidates at the same rate. The label can help AI propose the school category, but that inference is not verified identity. No automatic final mapping is allowed.",
+      "resolution": "Compare Alpha school and municipal candidates, inspect the inferred category, and record a justified review decision; preserve the absent source code."
+    },
+    {
+      "record_id": "R005",
+      "scenario": "Municipal naming variation",
+      "expected_status": "suggestion_only",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-003"
+      ],
+      "expected_target_id": null,
+      "justification": "The custom wording can be interpreted by AI while context narrows candidates to Gamma employee tax. Compare with rules-only matching; this case may not need AI.",
+      "resolution": "Review the candidate against the supplied fictional context before accepting a proposal."
+    },
+    {
+      "record_id": "R006",
+      "scenario": "Ambiguous school tax",
+      "expected_status": "needs_information",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001",
+        "DEMO-TAX-002"
+      ],
+      "expected_target_id": null,
+      "justification": "Alpha and Beta share the observed category, payer, and rate. Name similarity cannot identify the missing district.",
+      "resolution": "Supply jurisdiction_reference=DEMO-ALPHA with stated fictional evidence, then revalidate. Expected next status: suggestion_only with candidate DEMO-TAX-001; do not invent a source code."
+    },
+    {
+      "record_id": "R007",
+      "scenario": "Known code but missing context",
+      "expected_status": "needs_information",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001"
+      ],
+      "expected_target_id": null,
+      "justification": "The code identifies Alpha but the required jurisdiction evidence is absent.",
+      "resolution": "Supply and record jurisdiction evidence. DEMO-ALPHA permits ready_for_demo_mapping; DEMO-BETA creates a conflict."
+    },
+    {
+      "record_id": "R008",
+      "scenario": "Code and jurisdiction disagree",
+      "expected_status": "conflict",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001",
+        "DEMO-TAX-002"
+      ],
+      "expected_target_id": null,
+      "justification": "The Alpha source code conflicts with Beta jurisdiction evidence. Neither field may be silently overwritten.",
+      "resolution": "Verify which input is wrong, record the correction and its evidence, and revalidate."
+    },
+    {
+      "record_id": "R009",
+      "scenario": "Unknown source code",
+      "expected_status": "needs_information",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001"
+      ],
+      "expected_target_id": null,
+      "justification": "The source code is absent from the demo crosswalk. A plausible name does not justify replacing it.",
+      "resolution": "Obtain an authorized crosswalk or resolve the unknown code through evidence-backed review."
+    },
+    {
+      "record_id": "R010",
+      "scenario": "Identifiable but unsupported",
+      "expected_status": "unsupported",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-005"
+      ],
+      "expected_target_id": null,
+      "justification": "The item matches Delta, but this fictional destination explicitly does not support it.",
+      "resolution": "Keep the item unresolved in the report and identify a supported migration route. A confirmation click cannot enable support."
+    },
+    {
+      "record_id": "R011",
+      "scenario": "Non-tax deduction",
+      "expected_status": "excluded_non_tax",
+      "acceptable_candidate_ids": [],
+      "expected_target_id": null,
+      "justification": "The declared item is a benefit deduction and must remain visible without a tax mapping.",
+      "resolution": "Retain in the export as a non-tax item; any benefit migration belongs to a separate workflow."
+    },
+    {
+      "record_id": "R012",
+      "scenario": "Employee versus employer conflict",
+      "expected_status": "conflict",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001"
+      ],
+      "expected_target_id": null,
+      "justification": "The Alpha entry is employee-paid but the source says employer-paid.",
+      "resolution": "Verify payer evidence and correct the source or identify a different supported target."
+    },
+    {
+      "record_id": "R013",
+      "scenario": "Rate mismatch",
+      "expected_status": "conflict",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001"
+      ],
+      "expected_target_id": null,
+      "justification": "The source rate differs from the fictional catalog rate. Do not silently change a rate to make a match.",
+      "resolution": "Verify period and rate evidence and correct the responsible input."
+    },
+    {
+      "record_id": "R014",
+      "scenario": "Duplicate source identity, first occurrence",
+      "expected_status": "duplicate_review",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-003"
+      ],
+      "expected_target_id": null,
+      "justification": "R014 and R015 identify the same company, item, and effective date. Both rows require review.",
+      "resolution": "Compare the two source occurrences, record whether they are duplicate exports, and preserve an audit record of any exclusion."
+    },
+    {
+      "record_id": "R015",
+      "scenario": "Duplicate source identity, second occurrence",
+      "expected_status": "duplicate_review",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-003"
+      ],
+      "expected_target_id": null,
+      "justification": "This is the second occurrence of the source identity in R014; do not count or delete it silently.",
+      "resolution": "Resolve together with R014 and preserve the decision in the report."
+    },
+    {
+      "record_id": "R016",
+      "scenario": "Expired reference period",
+      "expected_status": "conflict",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-006"
+      ],
+      "expected_target_id": null,
+      "justification": "The recognized fictional catalog entry ended in 2025, but the source requests a 2026 mapping.",
+      "resolution": "Obtain a supported reference for the requested effective period; do not reuse the expired rate."
+    },
+    {
+      "record_id": "R017",
+      "scenario": "Missing rate evidence",
+      "expected_status": "needs_information",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-001"
+      ],
+      "expected_target_id": null,
+      "justification": "The current fixture requires a rate check and the source value is missing. Missing is not zero.",
+      "resolution": "Supply a justified rate value and rerun the checks."
+    },
+    {
+      "record_id": "R018",
+      "scenario": "Insufficient description and context",
+      "expected_status": "needs_information",
+      "acceptable_candidate_ids": [],
+      "expected_target_id": null,
+      "justification": "There is not enough evidence to establish a tax category, payer, or jurisdiction. The model must be able to abstain.",
+      "resolution": "Request the item type and supporting jurisdiction/payer information before proposing a tax target."
+    },
+    {
+      "record_id": "R019",
+      "scenario": "Exact employer-paid municipal match",
+      "expected_status": "ready_for_demo_mapping",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-004"
+      ],
+      "expected_target_id": "DEMO-TAX-004",
+      "justification": "The employer-paid target is distinct from the employee-paid municipal entry.",
+      "resolution": null
+    },
+    {
+      "record_id": "R020",
+      "scenario": "Zero is a valid supplied rate",
+      "expected_status": "ready_for_demo_mapping",
+      "acceptable_candidate_ids": [
+        "DEMO-TAX-007"
+      ],
+      "expected_target_id": "DEMO-TAX-007",
+      "justification": "The fictional Zeta entry and source both explicitly specify zero. Do not treat zero as missing or drop the record.",
+      "resolution": null
+    }
+  ]
+}
