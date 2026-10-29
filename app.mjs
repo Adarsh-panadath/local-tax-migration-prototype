@@ -50,7 +50,9 @@ function analysisFor(id = state.companyId) {
   if (!cache.has(key)) cache.set(key, analyseCompany(companyById(id), data, state.settings));
   return cache.get(key);
 }
-const addressById = (id) => data.geocoder.addresses.find((a) => a.address_id === id);
+// The analysis index also holds placeholders for addresses the lookup does not know.
+const addressById = (id) => analysisFor().idx.addresses.get(id) ?? data.geocoder.addresses.find((a) => a.address_id === id);
+const stateName = (st) => data.catalog.states[st]?.name ?? st ?? 'Unknown state';
 
 function log(actor, action, target, detail = '') {
   state.audit.unshift({ at: new Date().toISOString(), company_id: state.companyId, actor, action, target, detail, model_version: MODEL_VERSION });
@@ -66,6 +68,7 @@ const pct = (x, digits = 1) => `${(x * 100).toFixed(digits)}%`;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const MARK = { pass: '✓', fail: '×', warn: '!', info: 'i' };
 const mark = (tone) => `<span class="mark ${tone}" aria-hidden="true">${MARK[tone]}</span>`;
+const labelOf = (l) => (String(l ?? '').trim() ? l : '(blank label)');
 const domId = (s) => String(s).replace(/[^A-Za-z0-9]/g, '-');
 const ROUTE = {
   local_tax: { label: 'Local tax', tone: 'accent' },
@@ -116,7 +119,19 @@ function statesInUse(a) {
 function render() {
   if (!data) return;
   const view = currentView();
-  const s = summary();
+  let s;
+  try {
+    s = summary();
+  } catch (err) {
+    if (err.name !== 'DataError') throw err;
+    // A Desktop file that cannot be analysed: say what is wrong instead of showing a broken page.
+    const other = data.companies.find((c) => c.company_id !== state.companyId);
+    app.innerHTML = `<main class="main" id="main" tabindex="-1"><div class="page"><div class="page-head"><h1>${esc(companyById().name)}: the Desktop file cannot be analysed</h1>
+      <p class="lede">Fix these problems in the file first. Nothing has been mapped.</p></div>
+      <ul class="marks">${err.issues.map((i) => `<li>${mark('fail')}<span>${esc(i.text)}</span></li>`).join('')}</ul>
+      ${other ? `<p><button class="btn" type="button" data-action="company-switch" data-id="${esc(other.company_id)}">Open ${esc(other.name)}</button></p>` : ''}${footnote()}</div></main>`;
+    return;
+  }
   const body = { clients: viewClients, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, reconcile: viewReconcile, scenarios: viewScenarios, model: viewModel, audit: viewAudit }[view](s);
   app.innerHTML = `${topbar(s)}${rail(view, s)}<main class="main" id="main" tabindex="-1"><div class="page">${body}${footnote()}</div></main>`;
   if (pendingFocus) {
@@ -174,7 +189,7 @@ function viewClients() {
     const s = summary(c.company_id);
     const tone = { 'Not started': '', 'In review': 'accent', Live: 'good', Reconciled: 'good' }[s.status];
     return `<tr>
-      <td><strong>${esc(c.name)}</strong><div class="small muted">${[...statesInUse(s.a)].map((x) => esc(data.catalog.states[x].name)).join(', ')}. Moves in ${monthSpan([c.migration_month])}.</div>${c.description ? `<div class="small">${esc(c.description)}</div>` : ''}</td>
+      <td><strong>${esc(c.name)}</strong><div class="small muted">${[...statesInUse(s.a)].map((x) => esc(stateName(x))).join(', ')}. Moves in ${monthSpan([c.migration_month])}.</div>${c.description ? `<div class="small">${esc(c.description)}</div>` : ''}</td>
       <td>${esc(c.plan)}</td>
       <td class="num">${c.employees.length}</td>
       <td class="num">${s.a.cases.length}</td>
@@ -197,7 +212,7 @@ function viewClients() {
 function viewAnalysis(s) {
   const a = s.a;
   const used = [...statesInUse(a)];
-  const byState = used.map((st) => `${data.catalog.states[st].name} ${a.cases.filter((c) => c.state === st).length}`).join(', ');
+  const byState = used.map((st) => `${stateName(st)} ${a.cases.filter((c) => c.state === st).length}`).join(', ');
   const expectedCount = a.employees.reduce((n, e) => n + e.expected.list.length, 0);
   const missingAddr = a.employees.filter((e) => !e.expected.periods.length).length;
   const custom = a.cases.filter((c) => c.item.origin === 'custom').length;
@@ -205,12 +220,12 @@ function viewAnalysis(s) {
   const confirmed = s.cases.filter((c) => !['awaiting_employer', 'with_expert'].includes(c.stage)).length;
   const items = a.company.items.map((i) => {
     const users = a.company.employees.filter((e) => e.items.includes(i.item_id)).length;
-    return `<tr><td><strong>${esc(i.label)}</strong></td><td>${i.law_id}</td><td>${i.origin === 'custom' ? 'Custom' : 'System-defined'}</td><td>${esc(i.item_type)}, ${esc(i.tracking_type)}</td><td>${esc(rateText(i))}</td><td>${esc(i.agency)}</td><td class="num">${users}</td></tr>`;
+    return `<tr><td><strong>${esc(labelOf(i.label))}</strong></td><td>${i.law_id}</td><td>${i.origin === 'custom' ? 'Custom' : 'System-defined'}</td><td>${esc(i.item_type)}, ${esc(i.tracking_type)}</td><td>${esc(rateText(i))}</td><td>${esc(i.agency)}</td><td class="num">${users}</td></tr>`;
   }).join('');
   const people = a.employees.map((e) => {
     const site = a.company.worksites.find((w) => w.site_id === e.site_id);
     const homes = e.expected.periods.length
-      ? e.expected.periods.map((p) => { const ad = addressById(p.address_id); return `${esc(ad.line1)}, ${esc(ad.city)}, ${esc(ad.state)} <span class="muted">(${monthSpan(p.months)})</span>`; }).join('<br>')
+      ? e.expected.periods.map((p) => { const ad = addressById(p.address_id); return `${esc([ad.line1, ad.city, ad.state].filter(Boolean).join(', '))} <span class="muted">(${monthSpan(p.months)})</span>`; }).join('<br>')
       : '<span class="bad-text">Missing in Desktop</span>';
     const expected = e.expected.list.length ? e.expected.list.map((x) => esc(taxShort(x.tax)) + (x.required ? '' : ' (optional)')).join('<br>') : '<span class="muted">None listed</span>';
     return `<tr data-employee="${esc(e.employee_id)}"><td><strong>${esc(e.name)}</strong>${employmentText(e) ? `<div class="small muted">${esc(employmentText(e))}</div>` : ''}</td><td>${homes}</td><td>${esc(site.name)}${e.remote ? '<div class="small muted">Works from home</div>' : ''}</td><td>${expected}</td></tr>`;
@@ -235,6 +250,10 @@ function viewAnalysis(s) {
       <div class="route-tile gap"><span class="n">${a.gaps.length}</span><span class="t">Expected, not withheld</span><p>On the expected list, but no Desktop item covers it.</p></div>
     </section>
     ${a.company.company_id === 'C-FHS' ? demoGuide() : companyNote(a.company)}
+    ${a.dataIssues.length ? `<section class="section" aria-labelledby="dq-h">
+      <div class="section-head"><h2 id="dq-h">Problems found in the Desktop file</h2><p>Checked before anything else. These were cleaned up so the analysis could run; fix them in the file before the move.</p></div>
+      <ul class="marks">${a.dataIssues.map((i) => `<li>${mark('warn')}<span>${esc(i.text)}</span></li>`).join('')}</ul>
+    </section>` : ''}
     <section class="section" aria-labelledby="items-h">
       <div class="section-head"><h2 id="items-h">What came across from Desktop</h2><p>Law ID 177 or 0 marks an employer-created custom item. Its name is free text.</p></div>
       <div class="table-wrap"><table><thead><tr><th>Item label</th><th>Law ID</th><th>Kind</th><th>Desktop setting</th><th>Rate</th><th>Agency on file</th><th class="num">Employees</th></tr></thead><tbody>${items}</tbody></table></div>
@@ -304,7 +323,7 @@ function employeeCard(e, cases, s, live) {
   const site = s.a.company.worksites.find((w) => w.site_id === e.site_id);
   const work = addressById(site.address_id);
   const homes = e.expected.periods.length
-    ? e.expected.periods.map((p) => { const ad = addressById(p.address_id); return `<span>Home: ${esc(ad.line1)}, ${esc(ad.city)}, ${esc(ad.state)} ${esc(ad.zip)}${e.expected.periods.length > 1 ? ` (${monthSpan(p.months)})` : ''}</span>`; }).join('')
+    ? e.expected.periods.map((p) => { const ad = addressById(p.address_id); return `<span>Home: ${esc([ad.line1, ad.city, [ad.state, ad.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '))}${e.expected.periods.length > 1 ? ` (${monthSpan(p.months)})` : ''}</span>`; }).join('')
     : '<span class="bad-text">Home: missing in Desktop</span>';
   const chips = e.expected.list.map((x) => {
     const partYear = x.months.length < 12 ? `, ${monthSpan(x.months)}` : '';
@@ -381,7 +400,7 @@ function caseRow(c, live) {
     } else actions = `<button class="btn quiet" type="button" data-action="undo-decide" data-id="${esc(c.case_id)}">Undo</button>`;
   }
   return `<div class="case${decided ? ' decided' : ''}">
-    <div class="case-item"><strong>${esc(c.item.label)}</strong>
+    <div class="case-item"><strong>${esc(labelOf(c.item.label))}</strong>
       <div class="meta">Law ID ${c.item.law_id} (${c.item.origin === 'custom' ? 'custom' : 'system-defined'}), ${esc(rateText(c.item))}, ${withheldText(c)}</div></div>
     <div class="case-body">
       <div class="row">${pill(route.label, route.tone)}${pill(STAGE_LABEL[c.stage], STAGE_TONE[c.stage])}${c.verified && c.stage === 'awaiting_employer' ? pill('Verified', 'good') : ''}</div>
@@ -437,7 +456,7 @@ function viewExpert(s) {
     ${open.length ? open.map((c) => expertCard(c, s, live)).join('') : '<div class="empty"><strong>The queue is empty.</strong><span>Every line the system could not settle has an expert decision.</span></div>'}
     ${resolved.length ? `<section class="section" aria-labelledby="resolved-h"><div class="section-head"><h2 id="resolved-h">Decided by an expert</h2><p>Each now waits for, or already has, the employer's confirmation.</p></div>
       <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Desktop item</th><th>Expert decision</th><th>Employer</th><th></th></tr></thead><tbody>
-      ${resolved.map((c) => `<tr><td>${esc(c.employee_name)}</td><td>${esc(c.item.label)}</td><td>${esc(expertText(c))}</td><td>${pill(STAGE_LABEL[c.stage], STAGE_TONE[c.stage])}</td><td>${live ? '' : `<button class="btn quiet" type="button" data-action="expert-undo" data-id="${esc(c.case_id)}">Reopen</button>`}</td></tr>`).join('')}
+      ${resolved.map((c) => `<tr><td>${esc(c.employee_name)}</td><td>${esc(labelOf(c.item.label))}</td><td>${esc(expertText(c))}</td><td>${pill(STAGE_LABEL[c.stage], STAGE_TONE[c.stage])}</td><td>${live ? '' : `<button class="btn quiet" type="button" data-action="expert-undo" data-id="${esc(c.case_id)}">Reopen</button>`}</td></tr>`).join('')}
       </tbody></table></div></section>` : ''}`;
 }
 
@@ -472,7 +491,7 @@ function expertCard(c, s, live) {
   return `<article class="expert-card" data-employee="${esc(c.employee_id)}" aria-labelledby="ex-${id}">
     <div class="section">
       <div class="row">${pill(c.reasonText, reasonTone, 'wrap')}</div>
-      <h3 id="ex-${id}">${esc(c.employee_name)}: "${esc(c.item.label)}"</h3>
+      <h3 id="ex-${id}">${esc(c.employee_name)}: "${esc(labelOf(c.item.label))}"</h3>
       <p class="small muted">Law ID ${c.item.law_id}, ${esc(c.item.item_type)}, tracking type "${esc(c.item.tracking_type)}", ${esc(rateText(c.item))}, agency on file "${esc(c.item.agency)}". ${esc(withheldText(c).replace(/^n/, 'N'))}.</p>
       ${EXPERT_HINT[c.reason] ? `<p class="hint-line">${esc(EXPERT_HINT[c.reason])}</p>` : ''}
       ${m ? `<p class="logged">Model suggestion${m.shown ? '' : ' (logged, hidden from the employer)'}: ${esc(m.entry_label ?? 'no defined entry')}, label silhouette ${m.item_silhouette.toFixed(2)}, ${m.confidence} confidence.</p>` : ''}
@@ -482,7 +501,7 @@ function expertCard(c, s, live) {
     <div class="expert-actions">
       ${live ? '<p class="muted">This company is live. Reopen work after an undo of go-live.</p>' : `
       <div class="map-row">
-        <label class="field" for="map-${id}">Map to a defined tax${stateTaxes.length ? `<select id="map-${id}"><option value="">Choose a tax</option>${options}</select>` : `<select id="map-${id}" disabled><option>No ${esc(data.catalog.states[c.state].name)} taxes in the catalogue yet</option></select>`}</label>
+        <label class="field" for="map-${id}">Map to a defined tax${stateTaxes.length ? `<select id="map-${id}"><option value="">Choose a tax</option>${options}</select>` : `<select id="map-${id}" disabled><option>No ${esc(stateName(c.state))} taxes in the catalogue yet</option></select>`}</label>
         <button class="btn" type="button" data-action="expert-map" data-id="${esc(c.case_id)}" data-select="map-${id}"${stateTaxes.length ? '' : ' disabled'}>Map</button>
       </div>
       <div class="row">
@@ -532,7 +551,7 @@ function viewGoLive(s) {
       <section class="panel section" aria-labelledby="checks-h">
         <h2 id="checks-h">Checks before the first cloud payroll</h2>
         <ul class="checks">${r.checks.map((c) => `<li>${mark(c.pass ? 'pass' : 'fail')}<div><strong>${esc(c.label)}</strong><span>${esc(c.detail)}</span></div></li>`).join('')}</ul>
-        ${r.expert.length ? `<p class="small muted">${plural(r.expert.length, 'line')} still with an expert will stay off: ${r.expert.map((c) => `${esc(c.employee_name)} "${esc(c.item.label)}"`).join(', ')}.</p>` : ''}
+        ${r.expert.length ? `<p class="small muted">${plural(r.expert.length, 'line')} still with an expert will stay off: ${r.expert.map((c) => `${esc(c.employee_name)} "${esc(labelOf(c.item.label))}"`).join(', ')}.</p>` : ''}
         ${live ? '' : `<div><button class="btn primary" type="button" data-action="go-live"${r.ready ? '' : ' disabled'}>Go live with confirmed taxes</button></div>`}
       </section>
       <section class="panel section" aria-labelledby="tie-h">
@@ -753,6 +772,10 @@ function handle(action, el) {
   const d = decisionsFor();
   const id = el.dataset?.id;
   switch (action) {
+    case 'company-switch':
+      state.companyId = el.dataset.id;
+      toast(`Opened ${companyById().name}`);
+      break;
     case 'company':
       state.companyId = el.value;
       toast(`Opened ${companyById().name}`);

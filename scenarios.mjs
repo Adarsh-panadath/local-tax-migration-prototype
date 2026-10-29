@@ -3,8 +3,10 @@
 import { analyseCompany, evaluateGates } from './engine/analysis.mjs';
 import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL } from './engine/workflow.mjs';
 import { monthSpan, rateCheck } from './engine/util.mjs';
+import { buildReport, casesCSV } from './report.mjs';
 
 export const GROUPS = [
+  { id: 'data', title: 'Before step 1: check the Desktop file' },
   { id: 'state', title: 'Step 1: find the state' },
   { id: 'expected', title: 'Step 2: list the expected taxes' },
   { id: 'model', title: 'Step 3: cluster custom labels, and the gates' },
@@ -67,6 +69,112 @@ export function scenarioContext(data) {
 }
 
 export const SCENARIOS = [
+  // ---------- Data checks (Ridgeview Print Shop has a deliberately messy file) ----------
+  {
+    id: 'data-blank-label', group: 'data', title: 'An item with a blank name',
+    where: { company: 'C-RPS', employee: 'E01', view: 'expert' },
+    expect: 'A name of only spaces has nothing to cluster, so an expert decides, and the school tax shows as a gap.',
+    check: (x) => {
+      const c = x.find('C-RPS', 'Leah Turner', '   ');
+      const g = x.gap('C-RPS', 'Leah Turner', 'OH-SD-2305');
+      return ok(c.route === 'not_in_database' && c.reason === 'weak_signal' && c.model.empty && g, `Route: ${ROUTE_WORD[c.route]} (${c.reason.replace('_', ' ')}); gap: ${g ? g.tax.name : 'none'}`);
+    },
+  },
+  {
+    id: 'data-unknown-address', group: 'data', title: 'An address the lookup has never seen',
+    where: { company: 'C-RPS', employee: 'E02', view: 'expert' },
+    expect: 'Reported as a file problem; the school line goes to an expert, while the work-based city tax still matches.',
+    check: (x) => {
+      const a = x.analyse('C-RPS');
+      const school = x.find('C-RPS', 'Marco Silva', 'School Tax');
+      const city = x.find('C-RPS', 'Marco Silva', 'Lancaster City Tax');
+      const warned = a.dataIssues.some((i) => /H-404/.test(i.text));
+      return ok(warned && school.reason === 'address_unresolved' && city.route === 'local_tax', `File problem reported: ${warned ? 'yes' : 'no'}; school tax: ${ROUTE_WORD[school.route]}; city tax: ${ROUTE_WORD[city.route]}`);
+    },
+  },
+  {
+    id: 'data-missing-item', group: 'data', title: 'An employee points at an item that does not exist',
+    where: { company: 'C-RPS', employee: 'E03', view: 'analysis' },
+    expect: 'The missing item is left out and reported; the rest of the employee still migrates.',
+    check: (x) => {
+      const a = x.analyse('C-RPS');
+      const lines = a.cases.filter((c) => c.employee_name === 'Nina Brooks');
+      const warned = a.dataIssues.some((i) => /I-OLD/.test(i.text));
+      return ok(warned && lines.length === 2 && lines.every((c) => c.route === 'local_tax'), `Reported: ${warned ? 'yes' : 'no'}; lines kept: ${lines.map((c) => c.item.label).join(', ')}`);
+    },
+  },
+  {
+    id: 'data-duplicate-item', group: 'data', title: 'The same item listed twice for one person',
+    where: { company: 'C-RPS', employee: 'E03', view: 'review' },
+    expect: 'Counted once, so the dollars are not doubled.',
+    check: (x) => {
+      const a = x.analyse('C-RPS');
+      const city = a.cases.filter((c) => c.employee_name === 'Nina Brooks' && c.item.label === 'Lancaster City Tax');
+      const warned = a.dataIssues.some((i) => /listed twice/.test(i.text));
+      return ok(warned && city.length === 1 && city[0].ytd === 848.7, `Lines: ${city.length}; year to date ${usd(city[0]?.ytd ?? 0)}`);
+    },
+  },
+  {
+    id: 'data-zero-rate', group: 'data', title: 'A 0% rate in Desktop',
+    where: { company: 'C-RPS', employee: 'E04', view: 'review' },
+    expect: 'Matched to the right district, flagged as under-withheld, and not bulk-confirmed.',
+    check: (x) => {
+      const c = x.eff('C-RPS', 'Victor Hale', 'School District Tax');
+      const r = c.proposal[0]?.rate;
+      return ok(c.ytd === 0 && r?.status === 'under' && r.difference === -405 && !c.verified, `${c.proposal[0]?.tax.name}: ${RATE_WORD[r?.status]} by ${usd(Math.abs(r?.difference ?? 0))}`);
+    },
+  },
+  {
+    id: 'data-move-state', group: 'data', title: 'Moves to another state mid-year',
+    where: { company: 'C-RPS', employee: 'E05', view: 'review' },
+    expect: 'Ohio school tax until June; Desktop kept withholding after the move to Pennsylvania, so those months are not owed.',
+    check: (x) => {
+      const c = x.find('C-RPS', 'Ruth Adams', 'School Tax');
+      const e = x.emp('C-RPS', 'Ruth Adams');
+      const noted = e.expected.notes.some((n) => /Pennsylvania/.test(n.text));
+      return ok(same(c.proposal[0]?.months, range(1, 6)) && same(c.unowed?.months, [7, 8, 9]) && c.unowed.amount === 166.5 && noted, `${c.proposal[0]?.tax.name} ${monthSpan(c.proposal[0]?.months ?? [])}; not owed ${usd(c.unowed?.amount ?? 0)} in ${monthSpan(c.unowed?.months ?? [])}`);
+    },
+  },
+  {
+    id: 'data-blocked', group: 'data', title: 'Problems that stop the analysis',
+    where: { company: 'C-RPS', view: 'analysis' },
+    expect: 'A migration month outside 1 to 12, negative wages, joining after leaving, a duplicate employee or a rate over 100% stops the run with a plain message.',
+    check: (x) => {
+      const base = x.data.companies.find((c) => c.company_id === 'C-RPS');
+      const broken = [
+        ['migration month 13', (c) => { c.migration_month = 13; }, /migration month/],
+        ['migration month 0', (c) => { c.migration_month = 0; }, /migration month/],
+        ['negative wages', (c) => { c.employees[0].monthly_wages = -1; }, /monthly wages/],
+        ['joined after leaving', (c) => { c.employees[0].hired_month = 8; c.employees[0].left_month = 3; }, /employment window/],
+        ['duplicate employee', (c) => { c.employees.push({ ...c.employees[0] }); }, /appears twice/],
+        ['rate over 100%', (c) => { c.items[0].calc.rate = 150; }, /0% to 100%/],
+        ['unknown work site', (c) => { c.employees[0].site_id = 'S9'; }, /work site S9/],
+      ];
+      const results = broken.map(([name, mutate, pattern]) => {
+        const c = structuredClone(base);
+        mutate(c);
+        try { analyseCompany(c, x.data, {}); return [name, false]; } catch (err) { return [name, err.name === 'DataError' && err.issues.some((i) => pattern.test(i.text))]; }
+      });
+      const caught = results.filter(([, y]) => y).length;
+      return ok(caught === broken.length, `${caught} of ${broken.length} stopped with a clear message${caught < broken.length ? `; missed: ${results.filter(([, y]) => !y).map(([n]) => n).join(', ')}` : ''}`);
+    },
+  },
+  {
+    id: 'data-unsafe-text', group: 'data', title: 'Labels with code or spreadsheet formulas',
+    where: { company: 'C-RPS', view: 'audit' },
+    expect: 'Treated as plain text: routed to an expert, and the CSV export cannot run a formula.',
+    check: (x) => {
+      const c = structuredClone(x.data.companies.find((y) => y.company_id === 'C-RPS'));
+      c.items[0].label = '=HYPERLINK("http://example.com","School Tax")';
+      c.items[1].label = '<img src=x onerror=alert(1)>';
+      const a = analyseCompany(c, x.data, {});
+      const csv = casesCSV(buildReport(a, emptyDecisions(), []));
+      const safe = !/(^|,)"?=HYPERLINK/m.test(csv) && csv.includes(`'=HYPERLINK`);
+      const routed = a.cases.filter((y) => y.item.label.startsWith('<img')).every((y) => y.route === 'not_in_database');
+      return ok(safe && routed, `CSV formula neutralised: ${safe ? 'yes' : 'no'}; code-like label sent to an expert: ${routed ? 'yes' : 'no'}`);
+    },
+  },
+
   // ---------- Step 1 ----------
   {
     id: 'state-label', group: 'state', title: 'The label names the state',
@@ -341,13 +449,14 @@ export const SCENARIOS = [
   {
     id: 'route-one-each', group: 'route', title: 'Every Desktop line ends in exactly one route',
     where: { company: 'C-FHS', view: 'analysis' },
-    expect: 'Local tax, not a tax, or not in database, for all five companies.',
+    expect: 'Local tax, not a tax, or not in database, for every company. Missing or repeated item references are reported, not counted.',
     check: (x) => {
       let n = 0;
       let lines = 0;
       for (const co of x.data.companies) {
         const a = x.analyse(co.company_id);
-        lines += co.employees.reduce((s, e) => s + e.items.length, 0);
+        const known = new Set(co.items.map((i) => i.item_id));
+        lines += co.employees.reduce((s, e) => s + new Set(e.items.filter((id) => known.has(id))).size, 0);
         n += a.cases.filter((c) => ['local_tax', 'not_a_tax', 'not_in_database'].includes(c.route)).length;
       }
       return ok(n === lines, `${n} of ${lines} lines routed`);

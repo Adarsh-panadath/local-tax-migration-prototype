@@ -28,6 +28,92 @@ export function indexData({ catalog, geocoder }) {
   return { catalog, addresses, taxes };
 }
 
+// ---------- Data checks: run before anything else ----------
+// Errors stop the analysis (nothing sensible can be computed). Warnings are cleaned up and reported.
+
+export class DataError extends Error {
+  constructor(issues) {
+    super(`The Desktop file cannot be analysed: ${issues.map((i) => i.text).join(' ')}`);
+    this.name = 'DataError';
+    this.issues = issues;
+  }
+}
+
+const isMonth = (m) => Number.isInteger(m) && m >= 1 && m <= 12;
+
+export function checkCompanyData(company, idx) {
+  const errors = [];
+  const warnings = [];
+  const fail = (text) => errors.push({ tone: 'fail', text });
+  const warn = (text) => warnings.push({ tone: 'warn', text });
+  if (!isMonth(company.migration_month)) fail(`The migration month must be a whole number from 1 to 12, not ${JSON.stringify(company.migration_month)}.`);
+
+  const sites = new Map();
+  for (const s of company.worksites ?? []) {
+    if (sites.has(s.site_id)) fail(`Work site ${s.site_id} appears twice.`);
+    sites.set(s.site_id, s);
+    const a = idx.addresses.get(s.address_id);
+    if (!a) fail(`Work site "${s.name ?? s.site_id}" has an address (${s.address_id}) the address lookup does not know, so its state and city tax cannot be found.`);
+    else if (!idx.catalog.states[a.state]) warn(`Work site "${s.name ?? s.site_id}" is in ${a.state}, which the tax catalog does not cover yet.`);
+  }
+  if (!sites.size) fail('The company has no work site, so no state or city tax can be found.');
+
+  const items = new Map();
+  for (const i of company.items ?? []) {
+    if (items.has(i.item_id)) fail(`Payroll item ${i.item_id} appears twice.`);
+    items.set(i.item_id, i);
+    const c = i.calc ?? {};
+    const validRate = c.kind === 'percent' ? typeof c.rate === 'number' && c.rate >= 0 && c.rate <= 100
+      : c.kind === 'flat_annual' ? typeof c.amount === 'number' && c.amount >= 0 : false;
+    if (!validRate) fail(`Payroll item "${i.label}" (${i.item_id}) needs a rate from 0% to 100% or a flat yearly amount of $0 or more.`);
+    if (i.origin === 'system' && !idx.taxes.has(i.system_tax_id)) fail(`System item "${i.label}" points at tax ${i.system_tax_id}, which is not in the catalog.`);
+    if (typeof i.label !== 'string') warn(`Payroll item ${i.item_id} has no name, so it is treated as blank and goes to an expert.`);
+  }
+
+  const ids = new Set();
+  const unknownAddresses = new Map();
+  const employees = [];
+  for (const e of company.employees ?? []) {
+    const who = e.name || e.employee_id;
+    if (ids.has(e.employee_id)) fail(`Employee ${e.employee_id} appears twice.`);
+    ids.add(e.employee_id);
+    if (!sites.has(e.site_id)) fail(`${who} is assigned to work site ${e.site_id}, which does not exist.`);
+    if (typeof e.monthly_wages !== 'number' || !(e.monthly_wages >= 0)) fail(`${who} needs monthly wages of $0 or more.`);
+    const hired = e.hired_month ?? 1;
+    const left = e.left_month ?? 12;
+    if (!isMonth(hired) || !isMonth(left) || hired > left) fail(`${who} has an invalid employment window (joined in month ${hired}, left in month ${left}). Both must be months 1 to 12, and joining comes first.`);
+    const starts = new Set();
+    const addresses = [];
+    for (const a of e.addresses ?? []) {
+      if (!isMonth(a.from_month)) { fail(`${who} has a home address starting in month ${JSON.stringify(a.from_month)}; it must be 1 to 12.`); continue; }
+      if (starts.has(a.from_month)) fail(`${who} has two home addresses starting in ${monthSpan([a.from_month])}.`);
+      starts.add(a.from_month);
+      const known = idx.addresses.get(a.address_id);
+      if (!known) {
+        warn(`${who}: home address ${a.address_id} (from ${monthSpan([a.from_month])}) is not in the address lookup. Lines that depend on it go to an expert.`);
+        unknownAddresses.set(a.address_id, { address_id: a.address_id, line1: `Address ${a.address_id}`, city: 'not in the lookup', state: null, zip: '', school_district: null, municipality: null, missing: true });
+      } else if (!idx.catalog.states[known.state]) {
+        warn(`${who} lives in ${known.state}, which the tax catalog does not cover yet.`);
+      }
+      addresses.push(a);
+    }
+    const seen = new Set();
+    const itemIds = [];
+    for (const id of e.items ?? []) {
+      if (!items.has(id)) { warn(`${who} has payroll item ${id}, which is not in the Desktop item list. It is left out.`); continue; }
+      if (seen.has(id)) { warn(`${who} has "${items.get(id).label}" listed twice. It is counted once.`); continue; }
+      seen.add(id);
+      itemIds.push(id);
+    }
+    employees.push({ ...e, addresses, items: itemIds });
+  }
+  if (!employees.length) warn('The company has no employees, so there is nothing to migrate.');
+
+  const cleanItems = [...items.values()].map((i) => (typeof i.label === 'string' ? i : { ...i, label: '' }));
+  const cleanIdx = unknownAddresses.size ? { ...idx, addresses: new Map([...idx.addresses, ...unknownAddresses]) } : idx;
+  return { errors, warnings, company: { ...company, items: cleanItems, employees }, idx: cleanIdx };
+}
+
 // ---------- Gates (exact boundaries: a value equal to the threshold passes) ----------
 
 export function evaluateGates({ rollout, silhouette, precision, sample }, thresholds = DEFAULT_THRESHOLDS) {
@@ -80,7 +166,7 @@ export function expectedTaxes(employee, company, idx) {
   }
 
   // Work location. A remote employee works where they live, so the city tax follows the home address.
-  const workState = idx.catalog.states[work.state];
+  const workState = idx.catalog.states[work.state] ?? { name: work.state, rollout: 'not_in_catalog' };
   const workCityFor = (homeAddress) => (remote ? (homeAddress ? findCity(idx, homeAddress.state, homeAddress.municipality) : null) : findCity(idx, work.state, work.municipality));
   if (remote) {
     notes.push({ tone: 'info', text: 'Works from home, so the city tax follows the home address (where the work is done), not the office.' });
@@ -96,7 +182,12 @@ export function expectedTaxes(employee, company, idx) {
   }
   for (const p of periods) {
     const home = idx.addresses.get(p.address_id);
-    const homeState = idx.catalog.states[home.state];
+    if (home.missing) {
+      unresolvedMonths.push(...p.months);
+      notes.push({ tone: 'warn', text: `Home address ${p.address_id} is not in the address lookup (${monthSpan(p.months)}). Confirm the address before mapping.` });
+      continue;
+    }
+    const homeState = idx.catalog.states[home.state] ?? { name: home.state, rollout: 'not_in_catalog' };
     if (homeState.rollout !== 'enabled') {
       notes.push({ tone: 'info', text: `Lives in ${homeState.name}, which is not enabled yet, so home-based taxes are not listed (${monthSpan(p.months)}).` });
       continue;
@@ -147,7 +238,7 @@ function detectState(item, employee, company, idx) {
   const hint = STATE_HINTS.find((h) => h.pattern.test(item.label));
   if (hint) return { state: hint.state, source: `label "${item.label}"`, fromLabel: true };
   const first = employee.addresses[0] && idx.addresses.get(employee.addresses[0].address_id);
-  if (first) return { state: first.state, source: 'home address' };
+  if (first && !first.missing) return { state: first.state, source: 'home address' };
   const site = company.worksites.find((s) => s.site_id === employee.site_id);
   return { state: idx.addresses.get(site.address_id).state, source: 'work address' };
 }
@@ -160,7 +251,7 @@ export function itemStates(item, company, idx) {
   for (const e of company.employees.filter((x) => x.items.includes(item.item_id))) {
     const first = e.addresses[0] && idx.addresses.get(e.addresses[0].address_id);
     const site = company.worksites.find((s) => s.site_id === e.site_id);
-    states.add(first ? first.state : idx.addresses.get(site.address_id).state);
+    states.add(first && !first.missing ? first.state : idx.addresses.get(site.address_id).state);
   }
   return states;
 }
@@ -267,8 +358,10 @@ function placeMentioned(label, place) {
 
 const typeWord = (t) => (t === 'school_district' ? 'school-district' : t === 'municipal' ? 'city' : 'local');
 
-export function analyseCompany(company, data, settings = {}) {
-  const idx = indexData(data);
+export function analyseCompany(rawCompany, data, settings = {}) {
+  const checked = checkCompanyData(rawCompany, indexData(data));
+  if (checked.errors.length) throw new DataError(checked.errors);
+  const { company, idx } = checked;
   const models = runModels(company, idx, data.pools, settings);
   const dMonths = desktopMonths(company);
   const cMonths = cloudMonths(company);
@@ -503,7 +596,7 @@ export function analyseCompany(company, data, settings = {}) {
     employees.push({ ...employee, expected, cases: employeeCases });
   }
 
-  return { company, idx, models, employees, cases, gaps };
+  return { company, idx, models, employees, cases, gaps, dataIssues: checked.warnings };
 }
 
 export { normalize };
