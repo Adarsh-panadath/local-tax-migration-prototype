@@ -26,7 +26,13 @@ Only these input facts and the catalog can be used to form suggestions. The fixt
 
 All catalog and input values are synthetic. A future real catalog would need provenance, supported product/version scope, effective dates, and independent verification.
 
-## Planned status rules
+## CSV imports
+
+The template contains the 11 source field names above as its header. All columns are required; optional values may be blank. The parser supports quoted commas, quotes, and line breaks. It rejects duplicate row IDs, invalid dates, invalid categories/payers, non-numeric rates, and files over 2 MB or 2,000 records. Zero is retained as a supplied rate.
+
+Reports escape spreadsheet formula prefixes in CSV. JSON retains the original text exactly. A report CSV includes additional review columns and is not the input template.
+
+## Implemented status rules
 
 1. Preserve every input row with a unique `record_id`. Flag repeated `(company_id, source_item_id, effective_on)` identities for review, even when their payloads agree; do not silently delete either row.
 2. Retain recognized non-tax deductions as `excluded_non_tax`; do not classify them as taxes because their names or rates look similar.
@@ -40,6 +46,10 @@ All catalog and input values are synthetic. A future real catalog would need pro
 Multiple checks can fail. Store all check results even when the interface chooses a primary status. The status is a summary, not a substitute for the evidence.
 
 After a review action, preserve the original values, record the correction and its stated evidence, and rerun validation. Approval cannot bypass a contradiction or unavailable destination. A human's click is not proof that an unsupported fact is true.
+
+An accepted compatible proposal becomes `reviewed_mapping`; no missing source code is invented. A confirmed duplicate becomes `excluded_duplicate`, while both original rows remain in the report. If the related record changes so that the exclusion no longer applies, the exclusion becomes a conflict and requires review again.
+
+The current simulation uses a small label rule set to rank plausible school/municipal candidates. It makes no model API call. Reports explicitly include `ai_mode: "simulated"`; bundled data is marked as synthetic, while an uploaded file's provenance is unknown.
 
 ## Expected outcomes
 

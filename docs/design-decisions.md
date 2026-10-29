@@ -1,17 +1,18 @@
 # Design decisions and their justification
 
-These are proposed implementation choices, not claims about completed software.
+The browser workflow and rules are implemented. The live-AI and AWS choices below describe future work, not connected services.
 
 | Choice | Reason | Evidence that could change the choice |
 | --- | --- | --- |
 | Define expected outcomes before coding | Makes the intended behavior concrete and exposes ambiguous requirements. | Faculty requirements or representative real records contradict the assumptions. |
-| One small web application | Keeps the user journey and request-processing code together. Next.js is the initial framework proposal. | Hosting restrictions or the actual integration require a different runtime. |
+| A static browser application for version 0.1 | Plain JavaScript modules and Node's built-in tools are enough for the demo workflow, with no package installation or API account. Separate modules keep matching and file handling testable. | A live AI provider requires a server endpoint to protect credentials; shared projects require authenticated storage. A framework can be added when that integration benefits from one. |
 | Deterministic checks for exact evidence | Known identifiers, allowed catalog entries, field completeness, and contradictions can be checked explicitly. | Reference data is incomplete or identifiers are unreliable. |
-| AI for interpreting inconsistent descriptions and proposing candidates | This is a bounded language task that can be compared with keyword matching. | AI provides no useful improvement or causes unacceptable errors. |
+| Simulated suggestions now, a live AI comparison next | The current label rules make the interaction testable. A real model can later interpret inconsistent descriptions and propose candidates for the same validated workflow. | The live model provides no useful improvement over rules or causes unacceptable errors. |
 | No initial clustering dependency | Grouping similar items does not, by itself, establish an exact destination or applicability. | A measured experiment shows clustering reduces useful review or labeling work. |
 | Fictional, labeled examples first | Lets us build and demonstrate behavior without claiming access to private payroll data. | An authorized representative dataset becomes available. |
 | GitHub for code and decisions | Version history makes the work reviewable and supports collaboration. | A faculty-mandated alternative is required. |
 | Optional AWS S3 for files | Gives AWS a concrete role: storing supplied inputs and reports. It is not a source of private QuickBooks data. | The rubric requires another cloud capability or no persistent files are needed. |
+| Browser storage for the first draft | Lets one person try corrections and revisit a local draft without a backend. Exports preserve a copy outside the browser. | Collaboration, durable records, access control, or real payroll data requires a different storage and security design. |
 | Targeted requests for missing facts | A missing distinguishing fact cannot be recovered reliably from an identical label and rate. | An authorized authoritative lookup can supply that fact automatically. |
 
 ## AI request and response contract
@@ -33,7 +34,6 @@ The fixtures in this starter are visible development examples. Do not report per
 ## Technical references
 
 - GitHub repository concepts: https://docs.github.com/en/repositories/creating-and-managing-repositories/about-repositories
-- Next.js request handling: https://nextjs.org/docs/app/guides/backend-for-frontend
 - OpenAI API authentication: https://developers.openai.com/api/reference/overview
 - OpenAI structured outputs and limitations: https://developers.openai.com/api/docs/guides/structured-outputs
 - Amazon S3 storage: https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html
