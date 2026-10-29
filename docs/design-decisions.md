@@ -1,41 +1,80 @@
-# Design decisions and their justification
+# Design decisions
 
-The browser workflow and rules are implemented. The live-AI and AWS choices below describe future work, not connected services.
+Each decision below follows the BRD v3 handoff summary. Where the prototype had to pick a detail the BRD left open, it says so.
 
-| Choice | Reason | Evidence that could change the choice |
+## 1. Addresses first, labels second
+
+A Desktop label like "School Tax" names a type of tax, not a jurisdiction. Online payroll needs the exact jurisdiction. So the prototype starts from each employee's addresses:
+
+- **School-district tax** follows the **home** address (Ohio).
+- **City tax** follows the **work** location. A home city that offers courtesy withholding (Columbus 2.5%) is listed as optional, not required.
+- A mid-year move splits the year into periods, and each period gets its own district.
+
+Each employee ends up with one to four expected taxes. The label only has to say *which kind* of tax a line is. The address says *which one*.
+
+## 2. Clustering is for labels, not for employees
+
+Custom items (Law ID 177 or 0) carry free text: "SD WH", "Schl Dist W/H", "Local Tax". The prototype clusters those labels **within each state**:
+
+- Labels are cleaned first: abbreviations expanded (`sd` → school district, `wh` → withholding), place names removed (so "Lancaster SD" and "Bremen SD" look the same).
+- Vectors are TF-IDF on words plus character trigrams (weight 0.35), so typos and run-together words still land close.
+- Average-linkage clustering, with k from 2 to 12 picked by the best silhouette score.
+- Each cluster is **named after the closest defined entry** (school district, municipal, union dues, garnishment, and so on). A cluster too far from every entry stays unnamed, and its lines go to an expert. "Local Tax" lands there on purpose.
+- An individual label with a silhouette below 0.25 counts as a weak signal and goes to an expert, even inside a named cluster.
+
+*Detail chosen by the prototype:* the 0.25 per-item floor and the 0.35 trigram weight.
+
+## 3. Gates decide whether suggestions are shown
+
+Per state, the model's suggestions are shown only if **all** of these pass:
+
+| Gate | Rule | Ohio in the demo |
 | --- | --- | --- |
-| Define expected outcomes before coding | Makes the intended behavior concrete and exposes ambiguous requirements. | Faculty requirements or representative real records contradict the assumptions. |
-| A static browser application for version 0.1 | Plain JavaScript modules and Node's built-in tools are enough for the demo workflow, with no package installation or API account. Separate modules keep matching and file handling testable. | A live AI provider requires a server endpoint to protect credentials; shared projects require authenticated storage. A framework can be added when that integration benefits from one. |
-| Deterministic checks for exact evidence | Known identifiers, allowed catalog entries, field completeness, and contradictions can be checked explicitly. | Reference data is incomplete or identifiers are unreliable. |
-| Simulated suggestions now, a live AI comparison next | The current label rules make the interaction testable. A real model can later interpret inconsistent descriptions and propose candidates for the same validated workflow. | The live model provides no useful improvement over rules or causes unacceptable errors. |
-| No initial clustering dependency | Grouping similar items does not, by itself, establish an exact destination or applicability. | A measured experiment shows clustering reduces useful review or labeling work. |
-| Fictional, labeled examples first | Lets us build and demonstrate behavior without claiming access to private payroll data. | An authorized representative dataset becomes available. |
-| GitHub for code and decisions | Version history makes the work reviewable and supports collaboration. | A faculty-mandated alternative is required. |
-| Optional AWS S3 for files | Gives AWS a concrete role: storing supplied inputs and reports. It is not a source of private QuickBooks data. | The rubric requires another cloud capability or no persistent files are needed. |
-| Browser storage for the first draft | Lets one person try corrections and revisit a local draft without a backend. Exports preserve a copy outside the browser. | Collaboration, durable records, access control, or real payroll data requires a different storage and security design. |
-| Targeted requests for missing facts | A missing distinguishing fact cannot be recovered reliably from an identical label and rate. | An authorized authoritative lookup can supply that fact automatically. |
+| Rollout | State switched on | On |
+| Silhouette | At least 0.5 | 0.54 |
+| Precision | At least 98% on expert-labelled labels | 100% (44 of 44 named) |
+| Sample | At least 40 labelled labels | 53 |
 
-## AI request and response contract
+If any gate fails, the state runs in **shadow mode**: suggestions are still logged, but hidden, and every custom line goes to an expert. Pennsylvania is in shadow mode (not switched on, only 7 labels). The sample gate of 40 is set for demo scale. A real rollout would need thousands.
 
-Send only the needed source fields, catalog candidates, and explicit instructions. Keep `evaluation/` out of application and model inputs: it contains expected answers.
+## 4. Three routes, one outcome per line
 
-The future API response should include candidate IDs drawn from the provided catalog or an explicit no-match result, the input fields supporting the suggestion, and unresolved questions. The server must validate allowed IDs and the underlying evidence. Generated prose is not an authoritative source. The application should construct factual validation explanations from recorded checks.
+Every Desktop line ends in exactly one route:
 
-Structured output controls format; it does not prove correctness. Do not turn a model's self-reported confidence into a promise of accuracy. Do not generate or invent tax rates, agency codes, account credentials, or missing jurisdiction evidence.
+- **Local tax**: matched to an expected tax. The rate is checked against the official rate, and any over- or under-withholding is shown in dollars.
+- **Not a tax**: Desktop already tracked it as an after-tax deduction (union dues), or the cluster says so.
+- **Not in database**: shadow mode, weak signal, no address, a tax nobody expects at this address, or a **conflict** (Desktop says tax, the cluster says garnishment). An expert then maps it, marks it not a tax, adds a structured custom entry (employer-managed, never paid by QuickBooks), or stops it.
 
-Use one existing model through an API initially. This is inference with a pretrained model, not a claim that the team trained a proprietary model. Keep the model choice configurable and select it using actual examples, latency, and cost.
+Conflicts always go to a person. The model never overrides what Desktop recorded.
 
-## Evaluation
+## 5. The employer confirms everything
 
-Compare rules-only and rules-plus-AI on the same independently checked cases. Track correct automatic mappings, incorrect automatic mappings, unresolved items, suggestion usefulness, and time spent reviewing. Keep those measurements separate.
+Expert decisions go back to the employer. A tax goes live only when the employer has confirmed it. Bulk confirm is offered only for verified matches: lines matched to an expected tax without an expert step, where the Desktop rate equals the official rate.
 
-The fixtures in this starter are visible development examples. Do not report performance on them as generalization accuracy. With real evaluation data, hold out whole companies and assess unfamiliar descriptions and jurisdictions. Correct answers require independent verification rather than treating legacy configuration as automatically correct.
+## 6. Go-live checks
 
-## Technical references
+Four checks must pass:
 
-- GitHub repository concepts: https://docs.github.com/en/repositories/creating-and-managing-repositories/about-repositories
-- OpenAI API authentication: https://developers.openai.com/api/reference/overview
-- OpenAI structured outputs and limitations: https://developers.openai.com/api/docs/guides/structured-outputs
-- Amazon S3 storage: https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html
+1. Every line decided by the employer.
+2. Every gap handled (added or explained).
+3. **Dollar tie-out**: every Desktop local-tax dollar has a destination (live tax, deduction, employer-managed, or stopped with a note).
+4. Agency account number and deposit frequency for every agency that QuickBooks will pay.
 
-These references explain service capabilities. They do not substantiate the fictional tax catalog or production suitability.
+## 7. History is relabelled, not recalculated
+
+For the W-2, the January to September Desktop amounts are relabelled to the confirmed jurisdiction. They keep what was actually withheld, even if the rate was wrong. October to December comes from Online payroll at the official rate. A stopped line stays off the W-2.
+
+## 8. Reconcile twice
+
+After the first cloud payroll and again after the first quarter, withholding is compared with the expected taxes. The flags:
+
+- Expected but not withheld (red).
+- Withheld in Desktop but not owed, so a correction with the agency is needed (amber).
+- Past withholding over or under the official rate (amber).
+- A line still with an expert, so nothing is withheld for it yet (amber).
+
+The payer depends on the plan: Premium and Elite let QuickBooks pay and file supported taxes. Core means the employer pays and files.
+
+## Why no live AI call
+
+The BRD's model is clustering, which runs in the browser with no key and no data leaving the page. A language model could later help name new clusters, but its output would still go through the same gates and the same employer confirmation.

@@ -1,6 +1,8 @@
 import { cp, mkdir, rm } from 'node:fs/promises';
-await rm(new URL('../dist/', import.meta.url), { recursive: true, force: true });
-await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
-await cp(new URL('../web/', import.meta.url), new URL('../dist/', import.meta.url), { recursive: true });
+
+const out = new URL('../dist/', import.meta.url);
+await rm(out, { recursive: true, force: true });
+await mkdir(out, { recursive: true });
+await cp(new URL('../web/', import.meta.url), out, { recursive: true });
 await cp(new URL('../data/', import.meta.url), new URL('../dist/data/', import.meta.url), { recursive: true });
-console.log('Built browser app. Evaluation answers are excluded.');
+console.log('Built the browser app into dist/.');

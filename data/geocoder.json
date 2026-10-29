@@ -1,0 +1,27 @@
+{
+  "metadata": {
+    "title": "Demo address lookup",
+    "notes": [
+      "Street addresses are fictional. Each one is assigned to a real 2026 Ohio school district by hand so the demo can run without a geocoding service.",
+      "In production this lookup is replaced by Intuit's tax applicability API or a commercial geocoder that maps rooftop coordinates to official tax boundaries."
+    ]
+  },
+  "addresses": [
+    { "address_id": "W-LAN-1", "line1": "1200 Mill Park Dr", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" },
+    { "address_id": "W-LAN-2", "line1": "455 Pike St", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" },
+    { "address_id": "W-YRK-1", "line1": "80 Freight Way", "city": "York", "state": "PA", "zip": "17402", "school_district": null, "municipality": "York" },
+    { "address_id": "H-001", "line1": "418 Wheeler Ave", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" },
+    { "address_id": "H-002", "line1": "77 Hill Rd N", "city": "Pickerington", "state": "OH", "zip": "43147", "school_district": "2307", "municipality": "Pickerington" },
+    { "address_id": "H-003", "line1": "1550 Oak St", "city": "Columbus", "state": "OH", "zip": "43205", "school_district": "NO-TAX-COLUMBUS", "municipality": "Columbus" },
+    { "address_id": "H-004", "line1": "29 Mulberry St", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" },
+    { "address_id": "H-005", "line1": "8120 Basil Rd", "city": "Carroll", "state": "OH", "zip": "43112", "school_district": "2303", "municipality": "Carroll" },
+    { "address_id": "H-006", "line1": "512 E Main St", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" },
+    { "address_id": "H-007", "line1": "36 Long St", "city": "Ashville", "state": "OH", "zip": "43103", "school_district": "6503", "municipality": "Ashville" },
+    { "address_id": "H-008", "line1": "903 N Columbus St", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" },
+    { "address_id": "H-009", "line1": "14 Bremen Rd", "city": "Bremen", "state": "OH", "zip": "43107", "school_district": "2304", "municipality": "Bremen" },
+    { "address_id": "H-010", "line1": "210 Basil Ave", "city": "Baltimore", "state": "OH", "zip": "43105", "school_district": "2306", "municipality": "Baltimore" },
+    { "address_id": "H-011", "line1": "6 Lakeview Dr", "city": "Millersport", "state": "OH", "zip": "43046", "school_district": "2308", "municipality": "Millersport" },
+    { "address_id": "H-012", "line1": "1180 Market St", "city": "York", "state": "PA", "zip": "17403", "school_district": null, "municipality": "York" },
+    { "address_id": "H-013", "line1": "61 Fair Ave", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" }
+  ]
+}
