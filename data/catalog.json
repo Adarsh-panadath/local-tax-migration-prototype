@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "title": "Demo local-tax catalogue",
+    "as_of": "2026-10-29",
+    "notes": [
+      "School-district codes, names, rates and tax bases are copied from the Ohio Department of Taxation list 'School Districts With an Income Tax for 2026'. Only a small subset is included.",
+      "City rates: Lancaster 2.3% (lancasterohio.gov, Income Tax page) and Columbus 2.5% (City of Columbus 2025 IR-25 instructions).",
+      "Columbus City School District levies no school-district income tax in 2026, so it appears under no_tax_districts.",
+      "Whether QuickBooks pays and files each tax ('qb_pays_and_files') is a demo assumption, not an Intuit statement. Pennsylvania's Local Services Tax is marked unsupported because Intuit says QuickBooks does not pay or file it.",
+      "This is not an Intuit catalogue, not a legal reference and not a QuickBooks schema."
+    ],
+    "sources": [
+      "https://dam.assets.ohio.gov/image/upload/tax.ohio.gov/employer_withholding/2025-2026%20NYP%20Updates/School_Districts_2026.pdf",
+      "https://www.lancasterohio.gov/356/Income-Tax",
+      "https://www.columbus.gov/files/sharedassets/city/v/4/city-auditor/tax-forms/individuals/2025-ir-25-instructions.pdf",
+      "https://quickbooks.intuit.com/community/getting-the-most-out-of-quickbooks-11/updates-to-quickbooks-workforce-taxes-287441"
+    ]
+  },
+  "states": {
+    "OH": {
+      "name": "Ohio",
+      "rollout": "enabled",
+      "taxes": [
+        { "tax_id": "OH-SD-2305", "type": "school_district", "code": "2305", "name": "Lancaster City School District", "place": "Lancaster", "rate": 1.5, "base": "Earned income only", "basis": "home", "agency": "Ohio Department of Taxation", "qb_pays_and_files": true },
+        { "tax_id": "OH-SD-2307", "type": "school_district", "code": "2307", "name": "Pickerington Local School District", "place": "Pickerington", "rate": 1.0, "base": "Traditional", "basis": "home", "agency": "Ohio Department of Taxation", "qb_pays_and_files": true },
+        { "tax_id": "OH-SD-2303", "type": "school_district", "code": "2303", "name": "Bloom-Carroll Local School District", "place": "Carroll", "rate": 1.25, "base": "Traditional", "basis": "home", "agency": "Ohio Department of Taxation", "qb_pays_and_files": true },
+        { "tax_id": "OH-SD-2304", "type": "school_district", "code": "2304", "name": "Fairfield Union Local School District", "place": "Bremen", "rate": 2.0, "base": "Traditional", "basis": "home", "agency": "Ohio Department of Taxation", "qb_pays_and_files": true },
+        { "tax_id": "OH-SD-2306", "type": "school_district", "code": "2306", "name": "Liberty Union-Thurston Local School District", "place": "Baltimore", "rate": 1.75, "base": "Traditional", "basis": "home", "agency": "Ohio Department of Taxation", "qb_pays_and_files": true },
+        { "tax_id": "OH-SD-6503", "type": "school_district", "code": "6503", "name": "Teays Valley Local School District", "place": "Ashville", "rate": 1.5, "base": "Earned income only", "basis": "home", "agency": "Ohio Department of Taxation", "qb_pays_and_files": true },
+        { "tax_id": "OH-SD-2308", "type": "school_district", "code": "2308", "name": "Walnut Township Local School District", "place": "Millersport", "rate": 1.75, "base": "Earned income only", "basis": "home", "agency": "Ohio Department of Taxation", "qb_pays_and_files": true },
+        { "tax_id": "OH-CITY-LANCASTER", "type": "municipal", "code": "LANCASTER", "name": "City of Lancaster income tax", "place": "Lancaster", "rate": 2.3, "base": "Wages", "basis": "work", "agency": "City of Lancaster Income Tax Department", "qb_pays_and_files": true },
+        { "tax_id": "OH-CITY-COLUMBUS", "type": "municipal", "code": "COLUMBUS", "name": "City of Columbus income tax", "place": "Columbus", "rate": 2.5, "base": "Wages", "basis": "work", "agency": "City of Columbus Income Tax Division", "qb_pays_and_files": true }
+      ],
+      "no_tax_districts": [
+        { "name": "Columbus City School District", "place": "Columbus", "note": "No school-district income tax in 2026" }
+      ],
+      "place_names": ["lancaster", "pickerington", "carroll", "bloom", "bremen", "fairfield", "liberty", "thurston", "baltimore", "teays", "valley", "ashville", "walnut", "millersport", "columbus", "newark", "bexley", "ohio", "oh"]
+    },
+    "PA": {
+      "name": "Pennsylvania",
+      "rollout": "not_yet_enabled",
+      "taxes": [],
+      "no_tax_districts": [],
+      "place_names": ["pennsylvania", "pa", "york", "harrisburg", "lancaster"]
+    }
+  },
+  "defined_entries": [
+    { "entry_id": "T-SD", "kind": "tax", "tax_type": "school_district", "states": ["OH"], "label": "School-district income tax", "text": "school district income tax withholding" },
+    { "entry_id": "T-MUNI", "kind": "tax", "tax_type": "municipal", "states": ["OH", "PA"], "label": "Municipal (city) income tax", "text": "city municipal income tax" },
+    { "entry_id": "T-EIT", "kind": "tax", "tax_type": "earned_income", "states": ["PA"], "label": "Local earned income tax", "text": "local earned income tax" },
+    { "entry_id": "T-LST", "kind": "tax", "tax_type": "local_services", "states": ["PA"], "label": "Local services tax", "text": "local services tax" },
+    { "entry_id": "N-DUES", "kind": "non_tax", "states": ["OH", "PA"], "label": "Union dues", "text": "union dues membership" },
+    { "entry_id": "N-GARN", "kind": "non_tax", "states": ["OH", "PA"], "label": "Wage garnishment or child support", "text": "garnishment child support court order levy" },
+    { "entry_id": "N-WC", "kind": "non_tax", "states": ["OH", "PA"], "label": "Workers' compensation", "text": "workers compensation bureau" },
+    { "entry_id": "N-PARK", "kind": "non_tax", "states": ["OH", "PA"], "label": "Parking", "text": "parking permit" },
+    { "entry_id": "N-CHAR", "kind": "non_tax", "states": ["OH", "PA"], "label": "Charitable giving", "text": "charity donation united way" }
+  ]
+}
