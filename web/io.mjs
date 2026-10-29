@@ -46,7 +46,8 @@ export function makeReport(state, evaluated) {
   return { version: '0.1.0', exported_at: new Date().toISOString(), dataset: state.name, data_origin: state.origin || 'unknown', synthetic_demo: state.origin === 'bundled' ? true : null, fictional_catalog: true, ai_mode: 'simulated', purpose: 'Mapping preparation review only; not a QuickBooks import or payroll authorization.', counts: evaluated.reduce((a,r) => ({...a,[r.status]:(a[r.status]||0)+1}),{}), items: evaluated.map(r => ({ ...r, review_history: state.audit.filter(a => a.record_id === r.current.record_id) })) };
 }
 export function reportCSV(report) {
-  const fields = [...FIELDS.map(f=>'original_'+f), ...FIELDS.map(f=>'current_'+f), 'status','mapped_target_id','candidate_ids','reason','checks','review_history'];
-  const rows = report.items.map(r => ({ ...Object.fromEntries(FIELDS.map(f=>['original_'+f,r.original[f]])), ...Object.fromEntries(FIELDS.map(f=>['current_'+f,r.current[f]])), status:r.status, mapped_target_id:r.target?.target_id||null, candidate_ids:r.candidates.map(t=>t.target_id), reason:r.reason, checks:r.checks, review_history:r.review_history }));
+  const metadata = ['dataset','data_origin','synthetic_demo','fictional_catalog','ai_mode','purpose','exported_at'];
+  const fields = [...metadata, ...FIELDS.map(f=>'original_'+f), ...FIELDS.map(f=>'current_'+f), 'status','mapped_target_id','candidate_ids','reason','checks','review_history'];
+  const rows = report.items.map(r => ({ ...Object.fromEntries(metadata.map(f=>[f,report[f]])), ...Object.fromEntries(FIELDS.map(f=>['original_'+f,r.original[f]])), ...Object.fromEntries(FIELDS.map(f=>['current_'+f,r.current[f]])), status:r.status, mapped_target_id:r.target?.target_id||null, candidate_ids:r.candidates.map(t=>t.target_id), reason:r.reason, checks:r.checks, review_history:r.review_history }));
   return csv(rows, fields);
 }

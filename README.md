@@ -6,6 +6,8 @@ An academic web prototype for reviewing proposed local-tax item mappings during 
 
 ## Start here
 
+[Open the private application](https://local-tax-review-manu.adarshpanadath2001.chatgpt.site/). Sign in with the owner's ChatGPT account. The source repository is public; the hosted app is owner-private.
+
 Requires Node.js 20 or later. No dependency installation or API key is needed.
 
 ```sh

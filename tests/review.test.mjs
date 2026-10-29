@@ -63,4 +63,6 @@ test('Reports contain all records, original and current fields, review evidence,
  assert.equal(r.ai_mode,'simulated');assert.equal(r.synthetic_demo,true);assert.equal(r.items.find(x=>x.original.record_id==='R011').status,'excluded_non_tax');
  assert.equal(makeReport({...s,origin:'uploaded'},evaluateAll(s,targets)).synthetic_demo,null);
  assert.equal(reportCSV(r).split('\r\n').length,21);
+ assert.ok(reportCSV(r).split('\r\n')[0].includes('"ai_mode"'));
+ assert.ok(reportCSV(r).split('\r\n').slice(1).every(line=>line.includes('"simulated"')));
 });
