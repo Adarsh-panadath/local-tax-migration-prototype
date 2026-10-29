@@ -1,0 +1,32 @@
+# Rebuilds the public website (GitHub Pages, gh-pages branch) whenever main changes.
+name: Publish website
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm test
+      - run: npm run build
+      - name: Push dist/ to the gh-pages branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_INDEX_FILE="$RUNNER_TEMP/pages-index"
+          git --work-tree=dist add -A
+          tree=$(git write-tree)
+          commit=$(git commit-tree "$tree" -m "Publish website from ${GITHUB_SHA}")
+          git push --force origin "$commit:refs/heads/gh-pages"

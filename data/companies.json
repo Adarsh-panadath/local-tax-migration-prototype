@@ -4,8 +4,10 @@
     "synthetic": true,
     "notes": [
       "All companies, people, items, account numbers and wages are fictional.",
-      "Desktop history covers January to September 2026; the move to Online Payroll happens in October 2026.",
-      "Law IDs are illustrative. 177 marks an employer-created custom item, as described in the case."
+      "Law IDs are illustrative. 177 marks an employer-created custom item, as described in the case.",
+      "Most companies move to Online Payroll in October 2026, so Desktop history covers January to September. Lakeview Bakery moves in January.",
+      "Ridgeview Print Shop has deliberate data problems (a blank item name, an unknown address, a missing and a duplicate item reference, a 0% rate) to show the file checks.",
+      "Optional employee fields: hired_month and left_month (first and last month on the payroll) and remote (works from home)."
     ]
   },
   "companies": [
@@ -32,7 +34,8 @@
         { "employee_id": "E06", "name": "Ana Gomez", "site_id": "S1", "monthly_wages": 4400, "addresses": [{ "address_id": "H-005", "from_month": 1 }, { "address_id": "H-006", "from_month": 6 }], "items": ["I-SCHOOL", "I-LANC"] },
         { "employee_id": "E07", "name": "Raj Patel", "site_id": "S1", "monthly_wages": 4800, "addresses": [{ "address_id": "H-007", "from_month": 1 }], "items": ["I-LANC"] },
         { "employee_id": "E08", "name": "Kevin O'Neil", "site_id": "S1", "monthly_wages": 3700, "addresses": [{ "address_id": "H-008", "from_month": 1 }], "items": ["I-SCHOOL", "I-LANC", "I-GARN"] }
-      ]
+      ],
+      "description": "Main demo: the core path, with one of each route."
     },
     {
       "company_id": "C-HVD",
@@ -49,17 +52,15 @@
         { "employee_id": "E01", "name": "Dana Whitfield", "site_id": "S1", "monthly_wages": 6200, "addresses": [{ "address_id": "H-013", "from_month": 1 }], "items": ["I-OHSD", "I-LANC"] },
         { "employee_id": "E02", "name": "Luis Ortega", "site_id": "S1", "monthly_wages": 3800, "addresses": [{ "address_id": "H-009", "from_month": 1 }], "items": ["I-OHSD2", "I-LANC"] },
         { "employee_id": "E03", "name": "Hannah Cole", "site_id": "S1", "monthly_wages": 4100, "addresses": [{ "address_id": "H-001", "from_month": 1 }], "items": ["I-OHSD", "I-LANC"] }
-      ]
+      ],
+      "description": "Core plan: the employer pays and files, and a missing account number blocks go-live."
     },
     {
       "company_id": "C-KSF",
       "name": "Keystone Freight",
       "plan": "Elite",
       "migration_month": 10,
-      "worksites": [
-        { "site_id": "S1", "name": "Lancaster depot", "address_id": "W-LAN-1" },
-        { "site_id": "S2", "name": "York terminal", "address_id": "W-YRK-1" }
-      ],
+      "worksites": [{ "site_id": "S1", "name": "Lancaster depot", "address_id": "W-LAN-1" }, { "site_id": "S2", "name": "York terminal", "address_id": "W-YRK-1" }],
       "items": [
         { "item_id": "I-SCHL", "label": "Schl Dist W/H", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.75 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-61877-02", "deposit_frequency": "Monthly" },
         { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-301144", "deposit_frequency": "Monthly" },
@@ -69,6 +70,80 @@
       "employees": [
         { "employee_id": "E01", "name": "Grace Kim", "site_id": "S1", "monthly_wages": 4500, "addresses": [{ "address_id": "H-011", "from_month": 1 }], "items": ["I-SCHL", "I-LANC"] },
         { "employee_id": "E02", "name": "Marcus Bell", "site_id": "S2", "monthly_wages": 4300, "addresses": [{ "address_id": "H-012", "from_month": 1 }], "items": ["I-EIT", "I-LST"] }
+      ],
+      "description": "Two states: Pennsylvania is still in shadow mode."
+    },
+    {
+      "company_id": "C-HHF",
+      "name": "Hocking Hills Fabrication",
+      "plan": "Premium",
+      "migration_month": 10,
+      "description": "Boundary cases: moves, duplicates, remote work, joiners and leavers, conflicting labels.",
+      "worksites": [{ "site_id": "S1", "name": "Lancaster plant", "address_id": "W-LAN-1" }],
+      "items": [
+        { "item_id": "I-SCHOOL", "label": "School Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70214-55", "deposit_frequency": "Monthly" },
+        { "item_id": "I-SCHOOL2", "label": "School Dist Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70214-55", "deposit_frequency": "Monthly" },
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-418806", "deposit_frequency": "Monthly" },
+        { "item_id": "I-PICK", "label": "Pickerington SD", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70214-55", "deposit_frequency": "Monthly" },
+        { "item_id": "I-COLS", "label": "Columbus City Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.5 }, "agency": "City of Columbus", "agency_account": "COL-552019", "deposit_frequency": "Quarterly" },
+        { "item_id": "I-SDDED", "label": "SD Tax", "law_id": 0, "origin": "custom", "item_type": "Deduction", "tracking_type": "None", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": null, "deposit_frequency": null },
+        { "item_id": "I-PAEIT", "label": "PA EIT", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.0 }, "agency": "York Adams Tax Bureau", "agency_account": null, "deposit_frequency": null },
+        { "item_id": "I-BARE", "label": "Lancaster", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-418806", "deposit_frequency": "Monthly" }
+      ],
+      "employees": [
+        { "employee_id": "E01", "name": "Ethan Moore", "site_id": "S1", "monthly_wages": 4200, "addresses": [{ "address_id": "H-009", "from_month": 1 }], "items": ["I-SCHOOL", "I-LANC"] },
+        { "employee_id": "E02", "name": "Olivia Grant", "site_id": "S1", "monthly_wages": 3800, "addresses": [{ "address_id": "H-015", "from_month": 1 }, { "address_id": "H-017", "from_month": 7 }], "items": ["I-SCHOOL", "I-LANC"] },
+        { "employee_id": "E03", "name": "Noah Diaz", "site_id": "S1", "monthly_wages": 4000, "addresses": [{ "address_id": "H-013", "from_month": 1 }, { "address_id": "H-016", "from_month": 10 }], "items": ["I-SCHOOL", "I-LANC"] },
+        { "employee_id": "E04", "name": "Emma Wilson", "site_id": "S1", "monthly_wages": 3600, "addresses": [{ "address_id": "H-017", "from_month": 1 }, { "address_id": "H-015", "from_month": 6 }], "items": ["I-LANC"] },
+        { "employee_id": "E05", "name": "Liam Turner", "site_id": "S1", "monthly_wages": 3900, "addresses": [{ "address_id": "H-004", "from_month": 1 }], "items": ["I-SCHOOL", "I-SCHOOL2", "I-LANC"] },
+        { "employee_id": "E06", "name": "Ava Martin", "site_id": "S1", "monthly_wages": 4100, "addresses": [{ "address_id": "H-013", "from_month": 1 }], "items": ["I-PICK", "I-LANC"] },
+        { "employee_id": "E07", "name": "Lucas Hall", "site_id": "S1", "monthly_wages": 4500, "addresses": [{ "address_id": "H-017", "from_month": 1 }], "items": ["I-LANC", "I-COLS"] },
+        { "employee_id": "E08", "name": "Mia Young", "site_id": "S1", "monthly_wages": 5200, "addresses": [{ "address_id": "H-003", "from_month": 1 }], "items": ["I-LANC"], "remote": true },
+        { "employee_id": "E09", "name": "Jacob King", "site_id": "S1", "monthly_wages": 3700, "addresses": [{ "address_id": "H-015", "from_month": 1 }], "items": ["I-SDDED", "I-LANC"] },
+        { "employee_id": "E10", "name": "Chloe Adams", "site_id": "S1", "monthly_wages": 4300, "addresses": [{ "address_id": "H-001", "from_month": 1 }], "items": ["I-SCHOOL", "I-LANC", "I-PAEIT"] },
+        { "employee_id": "E11", "name": "Ryan Scott", "site_id": "S1", "monthly_wages": 3500, "addresses": [{ "address_id": "H-014", "from_month": 1 }], "items": ["I-SCHOOL", "I-LANC"] },
+        { "employee_id": "E12", "name": "Zoe Clark", "site_id": "S1", "monthly_wages": 3400, "addresses": [{ "address_id": "H-006", "from_month": 1 }], "items": ["I-SCHOOL", "I-LANC"], "hired_month": 4 },
+        { "employee_id": "E13", "name": "Owen Baker", "site_id": "S1", "monthly_wages": 3900, "addresses": [{ "address_id": "H-008", "from_month": 1 }], "items": ["I-SCHOOL", "I-LANC"], "left_month": 6 },
+        { "employee_id": "E14", "name": "Ella Price", "site_id": "S1", "monthly_wages": 4000, "addresses": [{ "address_id": "H-012", "from_month": 1 }], "items": ["I-LANC"] },
+        { "employee_id": "E15", "name": "Henry Ward", "site_id": "S1", "monthly_wages": 3800, "addresses": [{ "address_id": "H-004", "from_month": 1 }], "items": ["I-SCHOOL", "I-BARE"] },
+        { "employee_id": "E16", "name": "Isaac Long", "site_id": "S1", "monthly_wages": 3300, "addresses": [], "items": ["I-SCHOOL", "I-LANC"] }
+      ]
+    },
+    {
+      "company_id": "C-LVB",
+      "name": "Lakeview Bakery",
+      "plan": "Premium",
+      "migration_month": 1,
+      "description": "Moves in January: there is no Desktop history this year to relabel.",
+      "worksites": [{ "site_id": "S1", "name": "Lancaster bakery", "address_id": "W-LAN-2" }],
+      "items": [
+        { "item_id": "I-SCHOOL", "label": "School Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-90311-08", "deposit_frequency": "Quarterly" },
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-660245", "deposit_frequency": "Quarterly" }
+      ],
+      "employees": [
+        { "employee_id": "E01", "name": "Sofia Reyes", "site_id": "S1", "monthly_wages": 3600, "addresses": [{ "address_id": "H-006", "from_month": 1 }], "items": ["I-SCHOOL", "I-LANC"] },
+        { "employee_id": "E02", "name": "Daniel Cho", "site_id": "S1", "monthly_wages": 4100, "addresses": [{ "address_id": "H-016", "from_month": 1 }], "items": ["I-LANC"] }
+      ]
+    },
+    {
+      "company_id": "C-RPS",
+      "name": "Ridgeview Print Shop",
+      "plan": "Premium",
+      "migration_month": 10,
+      "description": "A messy Desktop file: a blank item name, an unknown address, a missing item, a duplicate, a 0% rate and a move to another state.",
+      "worksites": [{ "site_id": "S1", "name": "Lancaster print shop", "address_id": "W-LAN-2" }],
+      "items": [
+        { "item_id": "I-SCH", "label": "School Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70415-33", "deposit_frequency": "Monthly" },
+        { "item_id": "I-BLANK", "label": "   ", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70415-33", "deposit_frequency": "Monthly" },
+        { "item_id": "I-ZERO", "label": "School District Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 0 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70415-33", "deposit_frequency": "Monthly" },
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-415502", "deposit_frequency": "Monthly" }
+      ],
+      "employees": [
+        { "employee_id": "E01", "name": "Leah Turner", "site_id": "S1", "monthly_wages": 3600, "addresses": [{ "address_id": "H-001", "from_month": 1 }], "items": ["I-BLANK", "I-LANC"] },
+        { "employee_id": "E02", "name": "Marco Silva", "site_id": "S1", "monthly_wages": 3900, "addresses": [{ "address_id": "H-404", "from_month": 1 }], "items": ["I-SCH", "I-LANC"] },
+        { "employee_id": "E03", "name": "Nina Brooks", "site_id": "S1", "monthly_wages": 4100, "addresses": [{ "address_id": "H-004", "from_month": 1 }], "items": ["I-SCH", "I-OLD", "I-LANC", "I-LANC"] },
+        { "employee_id": "E04", "name": "Victor Hale", "site_id": "S1", "monthly_wages": 4500, "addresses": [{ "address_id": "H-002", "from_month": 1 }], "items": ["I-ZERO", "I-LANC"] },
+        { "employee_id": "E05", "name": "Ruth Adams", "site_id": "S1", "monthly_wages": 3700, "addresses": [{ "address_id": "H-006", "from_month": 1 }, { "address_id": "H-012", "from_month": 7 }], "items": ["I-SCH", "I-LANC"] }
       ]
     }
   ]

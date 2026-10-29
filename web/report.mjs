@@ -11,6 +11,7 @@ export function buildReport(analysis, decisions, audit) {
     prototype: 'BRD v3 local-tax migration prototype (academic demo; fictional people and companies)',
     model_version: MODEL_VERSION,
     company: { id: analysis.company.company_id, name: analysis.company.name, plan: analysis.company.plan },
+    data_issues: (analysis.dataIssues ?? []).map((i) => i.text),
     models: Object.values(analysis.models).map((m) => ({
       state: m.state, mode: m.mode, forced_shadow: m.forced, silhouette: Number(m.silhouette.toFixed(3)),
       precision: Number(m.precision.toFixed(3)), coverage: Number(m.coverage.toFixed(3)), labelled_sample: m.poolSize, gates: m.gates,
@@ -30,7 +31,7 @@ export function buildReport(analysis, decisions, audit) {
       evidence: c.evidence.map((e) => e.text),
       decision: c.decision,
     })),
-    gaps: analysis.gaps.map((g) => ({ employee: g.employee_name, tax: g.tax.name, months: monthSpan(g.months), back_tax_estimate: g.backTaxEstimate, stage: gapStage(g, decisions) })),
+    gaps: analysis.gaps.map((g) => ({ employee: g.employee_name, tax: g.tax.name, months: monthSpan(g.months), back_tax_estimate: g.backTaxEstimate, stage: gapStage(g, decisions, cases) })),
     readiness: ready.checks,
     dollar_tie_out: ready.tie,
     live: decisions.live,

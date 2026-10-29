@@ -101,8 +101,12 @@ for (const [name, label, route, reason, taxes] of ROUTES) {
 test('every Desktop line ends in exactly one of the three routes', () => {
   for (const co of companies) {
     const a = analyseCompany(co, data, {});
-    const expected = co.employees.reduce((n, e) => n + e.items.length, 0);
+    // One line per employee per item that exists; missing or repeated references are reported, not counted.
+    const known = new Set(co.items.map((i) => i.item_id));
+    const expected = co.employees.reduce((n, e) => n + new Set(e.items.filter((id) => known.has(id))).size, 0);
+    const dropped = co.employees.reduce((n, e) => n + e.items.length, 0) - expected;
     assert.equal(a.cases.length, expected);
+    assert.equal(a.dataIssues.filter((i) => /not in the Desktop item list|listed twice/.test(i.text)).length, dropped);
     for (const c of a.cases) assert.ok(['local_tax', 'not_a_tax', 'not_in_database'].includes(c.route), c.case_id);
   }
 });

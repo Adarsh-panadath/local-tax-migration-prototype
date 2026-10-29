@@ -2,7 +2,7 @@
 // and naming of each cluster by its closest defined catalogue entry.
 import { normalize, buildVectorizer, cosine, centroid } from './text.mjs';
 
-export const MODEL_VERSION = 'label-clusters v1.0 (TF-IDF + trigrams, average linkage)';
+export const MODEL_VERSION = 'label-clusters v1.1 (fitted per state on the labelled pool; TF-IDF + trigrams, average linkage)';
 
 function distanceMatrix(vectors) {
   const n = vectors.length;
@@ -82,7 +82,7 @@ export function clusterLabels(labels, entries, placeNames, options = {}) {
   const entryVectors = entryTokens.map(vectorize);
 
   if (labels.length < 3) {
-    return { labels, tokens, clusters: [], assignment: labels.map(() => -1), itemScores: labels.map(() => 0), silhouette: 0, k: 0, vectors };
+    return { labels, tokens, clusters: [], assignment: labels.map(() => -1), itemScores: labels.map(() => 0), silhouette: 0, k: 0, vectors, vectorize, placeNames };
   }
 
   const d = distanceMatrix(vectors);
@@ -125,5 +125,27 @@ export function clusterLabels(labels, entries, placeNames, options = {}) {
     silhouette: best.mean,
     k: best.k,
     vectors,
+    vectorize,
+    placeNames,
   };
+}
+
+/**
+ * Score a new label against clusters that were fitted without it (the state model is fitted once,
+ * on the expert-labelled pool). The label joins the cluster with the smallest average distance
+ * (average linkage), and its own silhouette is (b - a) / max(a, b) against the fitted clusters.
+ * A label with no words left after clean-up joins no cluster.
+ */
+export function assignLabel(fitted, label) {
+  const tokens = normalize(label, fitted.placeNames);
+  if (!tokens.length || !fitted.clusters.length) return { cluster: -1, silhouette: 0, tokens, empty: !tokens.length };
+  const v = fitted.vectorize(tokens);
+  const means = fitted.clusters.map((c) => c.members.reduce((s, i) => s + (1 - cosine(v, fitted.vectors[i])), 0) / c.members.length);
+  let best = 0;
+  means.forEach((m, i) => { if (m < means[best]) best = i; });
+  const a = means[best];
+  const others = means.filter((_, i) => i !== best);
+  const b = others.length ? Math.min(...others) : a;
+  const denom = Math.max(a, b);
+  return { cluster: best, silhouette: denom === 0 ? 0 : (b - a) / denom, tokens, empty: false };
 }

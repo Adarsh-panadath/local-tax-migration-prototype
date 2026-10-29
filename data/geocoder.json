@@ -3,6 +3,7 @@
     "title": "Demo address lookup",
     "notes": [
       "Street addresses are fictional. Each one is assigned to a real 2026 Ohio school district by hand so the demo can run without a geocoding service.",
+      "school_district \"UNRESOLVED\" stands for an address the lookup could not place, such as a new build that is not in the boundary files yet.",
       "In production this lookup is replaced by Intuit's tax applicability API or a commercial geocoder that maps rooftop coordinates to official tax boundaries."
     ]
   },
@@ -22,6 +23,10 @@
     { "address_id": "H-010", "line1": "210 Basil Ave", "city": "Baltimore", "state": "OH", "zip": "43105", "school_district": "2306", "municipality": "Baltimore" },
     { "address_id": "H-011", "line1": "6 Lakeview Dr", "city": "Millersport", "state": "OH", "zip": "43046", "school_district": "2308", "municipality": "Millersport" },
     { "address_id": "H-012", "line1": "1180 Market St", "city": "York", "state": "PA", "zip": "17403", "school_district": null, "municipality": "York" },
-    { "address_id": "H-013", "line1": "61 Fair Ave", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" }
+    { "address_id": "H-013", "line1": "61 Fair Ave", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" },
+    { "address_id": "H-014", "line1": "12 Orchard Way (new build)", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "UNRESOLVED", "municipality": null },
+    { "address_id": "H-015", "line1": "305 Union St", "city": "Lancaster", "state": "OH", "zip": "43130", "school_district": "2305", "municipality": "Lancaster" },
+    { "address_id": "H-016", "line1": "18 Refugee Rd", "city": "Pickerington", "state": "OH", "zip": "43147", "school_district": "2307", "municipality": "Pickerington" },
+    { "address_id": "H-017", "line1": "940 Bryden Rd", "city": "Columbus", "state": "OH", "zip": "43205", "school_district": "NO-TAX-COLUMBUS", "municipality": "Columbus" }
   ]
 }

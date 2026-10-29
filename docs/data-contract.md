@@ -12,13 +12,13 @@ All files are in `data/`. Companies, people, street addresses, wages and account
 
 ## geocoder.json: stands in for an address lookup
 
-- `addresses[]`: `address_id`, `line1`, `city`, `state`, `zip`, `school_district` (an Ohio district code, `NO-TAX-...`, or null), `municipality`.
+- `addresses[]`: `address_id`, `line1`, `city`, `state`, `zip`, `school_district` (an Ohio district code, `NO-TAX-...`, `UNRESOLVED` for an address the lookup cannot place, or null), `municipality`.
 
 A home city that differs from the work city gives an optional tax (courtesy withholding), not a required one.
 
 ## companies.json: what came across from Desktop
 
-- Company: `company_id`, `name`, `plan` (`Core`, `Premium` or `Elite`), `migration_month` (10 = October), `worksites[]` (`site_id`, `name`, `address_id`), `items[]`, `employees[]`.
+- Company: `company_id`, `name`, `plan` (`Core`, `Premium` or `Elite`), `migration_month` (1 to 12; 10 = October), `description` (optional, shown on the analysis page), `worksites[]` (`site_id`, `name`, `address_id`), `items[]`, `employees[]`.
 - Item:
   - `item_id`, `label` (free text);
   - `law_id` (177 or 0 = employer-created custom item);
@@ -26,7 +26,14 @@ A home city that differs from the work city gives an optional tax (courtesy with
   - `item_type`, `tracking_type` (`None` means Desktop treats it as an after-tax deduction);
   - `calc` (`{kind: "percent", rate}` or `{kind: "flat_annual", amount}`);
   - `agency`, `agency_account`, `deposit_frequency`.
-- Employee: `employee_id`, `name`, `site_id`, `monthly_wages`, `addresses[]` (`{address_id, from_month}`; empty means no address on file), `items[]` (item ids withheld in Desktop).
+- Employee: `employee_id`, `name`, `site_id`, `monthly_wages`, `addresses[]` (`{address_id, from_month}`; empty means no address on file), `items[]` (item ids withheld in Desktop). Optional: `hired_month` and `left_month` (first and last month on the payroll), `remote` (works from home).
+
+## File checks
+
+`analyseCompany` checks the company first (`checkCompanyData` in `web/engine/analysis.mjs`).
+
+- **Errors** stop the analysis with a `DataError` listing every problem: migration month not 1 to 12; no work site, a duplicate one, or one whose address is unknown; duplicate employee or item IDs; an employee on a work site that does not exist; wages below $0; a rate outside 0% to 100% or a flat amount below $0; a system item whose tax is not in the catalog; a join month after the leave month; an address start month outside 1 to 12, or two addresses starting in the same month.
+- **Warnings** are cleaned up and returned as `analysis.dataIssues`: an unknown home address (kept as "not in the lookup", so dependent lines go to an expert), an item reference that does not exist (left out), an item listed twice for one person (counted once), an item with no name (treated as blank), a state the catalog does not cover, and a company with no employees.
 
 ## label-pool.json: expert answers for shadow mode
 
@@ -41,7 +48,7 @@ A suggestion is **high confidence** when its cluster has a name and the label's 
 
 **Download report (JSON)** contains:
 
-- `generated_at`, `prototype`, `model_version`, `company`;
+- `generated_at`, `prototype`, `model_version`, `company`, `data_issues` (the file warnings);
 - `models[]`: per state, the mode, silhouette, precision, coverage, sample size and gates;
 - `cases[]`: one per Desktop line, with the Desktop item, the first route and the current route, stage, proposal with rate check, model suggestion (and whether the employer saw it), evidence and decision;
 - `gaps[]`, `readiness`, `dollar_tie_out`, `live`;

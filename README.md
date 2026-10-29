@@ -4,26 +4,29 @@ A working prototype of the BRD v3 design for moving local payroll taxes from Qui
 
 **Model suggests, person decides.** The prototype finds the right local tax for every employee from their addresses, groups free-text Desktop labels with clustering, and routes every Desktop line to one of three places. Nothing is switched on until the employer confirms it.
 
-## Run it
+## Open it
 
-Requires Node.js 20 or later. There are no dependencies to install and no API keys.
+**Website: https://adarsh-panadath.github.io/local-tax-migration-prototype/**
+
+The site is public; no sign-in is needed. Progress is saved in your own browser only. Use **Reset demo** in the top bar to start again.
+
+To run it on your computer (Node.js 20 or later; no dependencies, no API keys):
 
 ```sh
-npm test        # 28 checks on the engine and workflow
+npm test        # 108 checks, including every scenario on the website
 npm run build   # copies web/ and data/ into dist/
 npm start       # serves dist/ at http://localhost:3000
 ```
-
-[Open the live demo](https://claude.ai/artifact/5VZAtVxjPoMrytwXFYLPxB). It is private to its owner until shared. Progress is saved in your browser only. Use **Reset demo** in the top bar to start again. In the hosted demo, the report is copied rather than downloaded.
 
 ## The design in one picture
 
 ```
 Desktop payroll file
   │
-  ├─ 1. Find the state ............ from the item label, else from the work address
+  ├─ 0. Check the file ............ stop on broken data; clean up and report smaller problems
+  ├─ 1. Find the state ............ from the item label, else the home address, else the work address
   ├─ 2. List expected taxes ....... home address → school district, work address → city
-  ├─ 3. Cluster custom labels ..... within each state; name each cluster after the closest defined entry
+  ├─ 3. Cluster custom labels ..... per state; name each cluster after the closest defined entry
   ├─ 4. Route every line
   │      ├─ Local tax ............. matched to an exact jurisdiction, rate checked
   │      ├─ Not a tax ............. moves to deductions
@@ -31,9 +34,40 @@ Desktop payroll file
   └─ 5. Employer confirms ......... only then does the tax go live
         │
         ├─ Past payroll relabelled for W-2s (boxes 18–20)
-        ├─ Gaps flagged both ways (expected but not withheld; withheld but not expected)
+        ├─ Gaps flagged both ways (expected but not withheld; withheld but not owed)
         └─ Reconcile after the first payroll and the first quarter
 ```
+
+## Six demo clients
+
+| Client | What it shows |
+| --- | --- |
+| Fairfield Hardware Supply | The main demo: one of each route, a move, a gap, an over-withheld rate |
+| Hocking Valley Dental | Core plan (the employer pays and files); a missing account number blocks go-live |
+| Keystone Freight | Two states; Pennsylvania is still in shadow mode |
+| Hocking Hills Fabrication | Boundary cases: moves in the migration month, remote work, duplicates, joiners and leavers, conflicting labels |
+| Lakeview Bakery | Moves in January, so there is no Desktop history to relabel |
+| Ridgeview Print Shop | A messy Desktop file: blank item name, unknown address, missing and duplicate items, 0% rate, a move to another state |
+
+## Scenario coverage
+
+The **Scenario coverage** page lists 69 scenarios, grouped by BRD step, and runs a live check for each one when it opens. Every row links to the client and employee it concerns. The same checks run in `npm test`.
+
+| Group | Scenarios |
+| --- | --- |
+| Before step 1: check the Desktop file | 8 |
+| Step 1: find the state | 5 |
+| Step 2: list the expected taxes | 9 |
+| Step 3: cluster custom labels, and the gates | 11 |
+| Step 4: route every line | 15 |
+| Gaps | 4 |
+| Step 5: employer and expert decisions | 4 |
+| Go-live checks | 4 |
+| W-2 history | 3 |
+| Reconcile | 3 |
+| Joiners, leavers and the migration month | 3 |
+
+Boundary values are tested exactly: a gate value equal to its threshold passes (silhouette 0.50, precision 98%, sample 40, label confidence 0.25), and a rate of 1.4999% against 1.5% counts as under-withheld. **Model governance → Try the gates** lets you change the thresholds and watch a state switch to shadow mode.
 
 ## Demo script (about five minutes)
 
@@ -52,10 +86,9 @@ The demo opens on **Fairfield Hardware Supply** (Premium plan, 8 employees, 17 D
 4. Back on **Employer review**, the employer confirms the three expert decisions.
 5. **Go live**: four checks pass. The dollar tie-out ($12,063.60 accounted for) and the W-2 boxes are projected. Click **Go live with confirmed taxes**.
 6. **Reconcile**: run the first payroll and the first quarter. No expected tax is missing. Had Raj's gap been skipped, this screen would show a red flag.
-7. **Model governance**: Ohio passes every gate (silhouette 0.54, precision 100%, 53 labels). Pennsylvania stays in shadow mode. Before going live, **Force shadow mode** for Ohio sends every custom line to an expert while system items still route.
-8. **Decision log**: every action, with the JSON and CSV export.
-
-The other two clients show other cases. **Hocking Valley Dental** is on the Core plan, so it pays and files itself, and a missing account number blocks go-live. **Keystone Freight** has a Pennsylvania worker whose lines go to an expert because Pennsylvania is in shadow mode.
+7. **Model governance**: Ohio passes every gate (silhouette 0.53, precision 100%, 53 labels). Pennsylvania stays in shadow mode. In **Try the gates**, set the silhouette threshold to 0.53 and Ohio drops to shadow mode (its score is 0.528); set it to 0.52 and suggestions come back.
+8. **Scenario coverage**: 69 of 69 pass. Open any row to see the case in the app.
+9. **Decision log**: every action, with the JSON and CSV export.
 
 ## What is real and what is not
 
@@ -76,13 +109,15 @@ This prototype is not affiliated with Intuit and is not tax advice. A 53-label p
 | Path | What it does |
 | --- | --- |
 | `web/engine/text.mjs` | Label clean-up (abbreviations, place names) and TF-IDF vectors |
-| `web/engine/cluster.mjs` | Average-linkage clustering, silhouette, naming clusters |
-| `web/engine/analysis.mjs` | Expected taxes, rollout gates, routing, rate checks, gaps |
+| `web/engine/cluster.mjs` | Average-linkage clustering, silhouette, naming clusters, scoring a new label |
+| `web/engine/analysis.mjs` | File checks, expected taxes, rollout gates, routing, rate checks, gaps |
 | `web/engine/workflow.mjs` | Decisions, expert actions, go-live checks, dollar tie-out, W-2, reconciliation |
+| `web/scenarios.mjs` | The 69 scenarios and their live checks |
 | `web/report.mjs` | JSON report and CSV export |
-| `web/app.mjs`, `web/styles.css` | The eight-screen app |
-| `data/` | Catalog, address lookup, three companies, expert-labelled label pool |
-| `tests/engine.test.mjs` | 28 checks |
+| `web/app.mjs`, `web/styles.css` | The app |
+| `data/` | Catalog, address lookup, six companies, expert-labelled label pool |
+| `tests/` | `engine.test.mjs` (engine and workflow) and `scenarios.test.mjs` (every scenario plus exact boundaries) |
+| `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |
 
 See [design decisions](docs/design-decisions.md) and the [data contract](docs/data-contract.md).

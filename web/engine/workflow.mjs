@@ -1,6 +1,6 @@
 // Decisions by employers and experts, the go-live checks, W-2 history and reconciliation.
 // Nothing here goes live without an employer decision (BRD: never activate without confirmation).
-import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum } from './util.mjs';
+import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs';
 
 const usd = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
@@ -17,33 +17,26 @@ export function emptyDecisions() {
   return { cases: {}, gaps: {}, accounts: {}, live: false, liveAt: null, reconciled: false };
 }
 
-function rateCheck(item, tax, months, wages) {
-  if (item.calc.kind !== 'percent' || typeof tax.rate !== 'number') {
-    return { status: 'not_comparable', desktop: item.calc.kind === 'percent' ? `${item.calc.rate}%` : `$${item.calc.amount} a year`, official: typeof tax.rate === 'number' ? `${tax.rate}%` : '—', difference: 0, months };
-  }
-  const diff = item.calc.rate - tax.rate;
-  return {
-    status: Math.abs(diff) < 0.0001 ? 'match' : diff > 0 ? 'over' : 'under',
-    desktop: `${item.calc.rate}%`,
-    official: `${tax.rate}%`,
-    difference: round2((diff / 100) * wages * months.length),
-    months,
-  };
-}
+const RATE_OK = new Set(['match', 'no_history']);
 
 // The case as it stands after any expert and employer decisions.
 export function effectiveCase(c, decisions, analysis) {
   const d = decisions.cases[c.case_id] ?? {};
   const employee = analysis.employees.find((e) => e.employee_id === c.employee_id);
-  let route = c.route;
-  let proposal = c.proposal;
+  const employed = employee.expected.employed;
+  const sent = Boolean(d.sentToExpert);
+  let route = sent ? 'not_in_database' : c.route;
+  let proposal = sent ? [] : c.proposal;
+  let reason = sent ? 'employer_sent' : c.reason;
+  let reasonText = sent ? `The employer disagreed with the suggestion${d.sentToExpert.note ? `: ${d.sentToExpert.note}` : ''}.` : c.reasonText;
+  let unowed = sent ? null : c.unowed;
   let entry = null;
-  if (c.route === 'not_in_database' && d.expert) {
+  if ((c.route === 'not_in_database' || sent) && d.expert) {
     const a = d.expert.action;
     if (a === 'map') {
       const tax = analysis.idx.taxes.get(d.expert.tax_id);
       const onList = employee.expected.list.find((e) => e.tax_id === tax.tax_id);
-      const months = onList ? onList.months : [...desktopMonths(analysis.company), ...cloudMonths(analysis.company)];
+      const months = (onList ? onList.months : employed).filter((m) => employed.includes(m));
       const past = months.filter((m) => desktopMonths(analysis.company).includes(m));
       proposal = [{
         tax_id: tax.tax_id,
@@ -54,6 +47,7 @@ export function effectiveCase(c, decisions, analysis) {
         history: sum(c.ytdByMonth.filter((x) => past.includes(x.month)).map((x) => x.amount)),
         fromExpert: true,
       }];
+      unowed = null;
       route = 'local_tax';
     } else if (a === 'not_a_tax') route = 'not_a_tax';
     else if (a === 'custom_entry') { route = 'custom_entry'; entry = d.expert.entry; }
@@ -63,16 +57,30 @@ export function effectiveCase(c, decisions, analysis) {
   if (route === 'not_in_database') stage = 'with_expert';
   else if (!d.employer) stage = 'awaiting_employer';
   else stage = { local_tax: 'confirmed', not_a_tax: 'moved_to_deduction', custom_entry: 'employer_managed', stop: 'stopped' }[route];
-  const verified = c.route === 'local_tax' && !d.expert && proposal.every((p) => p.rate.status === 'match');
-  return { ...c, route, proposal, entry, stage, verified, decision: d, employee };
+  // Verified (safe to confirm in bulk): the system's own match, rate equal, nothing flagged for a person to look at.
+  const verified = c.route === 'local_tax' && !sent && !d.expert && !c.unowed && !c.flags.length && proposal.every((p) => RATE_OK.has(p.rate.status));
+  return { ...c, route, proposal, reason, reasonText, unowed, entry, stage, verified, decision: d, employee };
 }
 
 export function effectiveAll(analysis, decisions) {
   return analysis.cases.map((c) => effectiveCase(c, decisions, analysis));
 }
 
-export function gapStage(gap, decisions) {
+/**
+ * A gap is "covered" once an expert maps one of the employee's Desktop lines to that tax
+ * (for example a conflicting line that turns out to be the school-district tax), "added" when the
+ * employer adds it from the first cloud payroll, and otherwise waits for the employer.
+ * @param scope the analysis, or the effective cases already computed for it
+ */
+export function gapStage(gap, decisions, scope) {
+  const cases = Array.isArray(scope) ? scope : scope ? effectiveAll(scope, decisions) : [];
+  const coveredBy = cases.find((c) => c.employee_id === gap.employee_id && c.route === 'local_tax' && c.decision.expert && c.proposal.some((p) => p.tax_id === gap.tax_id));
+  if (coveredBy) return 'covered';
   return decisions.gaps[gap.gap_id]?.action === 'add' ? 'added' : 'awaiting_employer';
+}
+
+export function gapCoveredBy(gap, decisions, analysis) {
+  return effectiveAll(analysis, decisions).find((c) => c.employee_id === gap.employee_id && c.route === 'local_tax' && c.decision.expert && c.proposal.some((p) => p.tax_id === gap.tax_id)) ?? null;
 }
 
 // ---------- Taxes that will run on cloud paychecks ----------
@@ -80,7 +88,8 @@ export function gapStage(gap, decisions) {
 export function liveTaxes(analysis, decisions) {
   const cloud = cloudMonths(analysis.company);
   const out = [];
-  for (const c of effectiveAll(analysis, decisions)) {
+  const cases = effectiveAll(analysis, decisions);
+  for (const c of cases) {
     if (c.stage === 'confirmed') {
       for (const p of c.proposal) {
         const months = p.months.filter((m) => cloud.includes(m));
@@ -88,11 +97,12 @@ export function liveTaxes(analysis, decisions) {
       }
     }
     if (c.stage === 'employer_managed' && c.entry) {
-      out.push({ key: `CUSTOM:${c.case_id}`, tax: { tax_id: `CUSTOM:${c.case_id}`, name: c.entry.name, agency: c.entry.agency, type: c.entry.type, rate: c.entry.rate, flat: c.entry.flat, qb_pays_and_files: false, custom: true, basis: c.entry.basis }, employee: c.employee, months: cloud, rate: c.entry.rate, source: 'custom_entry', case_id: c.case_id, item: c.item });
+      const months = cloud.filter((m) => c.employee.expected.employed.includes(m));
+      if (months.length) out.push({ key: `CUSTOM:${c.case_id}`, tax: { tax_id: `CUSTOM:${c.case_id}`, name: c.entry.name, agency: c.entry.agency, type: c.entry.type, rate: c.entry.rate, flat: c.entry.flat, qb_pays_and_files: false, custom: true, basis: c.entry.basis }, employee: c.employee, months, rate: c.entry.rate, source: 'custom_entry', case_id: c.case_id, item: c.item });
     }
   }
   for (const g of analysis.gaps) {
-    if (gapStage(g, decisions) !== 'added') continue;
+    if (gapStage(g, decisions, cases) !== 'added') continue;
     const employee = analysis.employees.find((e) => e.employee_id === g.employee_id);
     const months = g.months.filter((m) => cloud.includes(m));
     if (months.length) out.push({ key: g.tax_id, tax: g.tax, employee, months, rate: g.tax.rate, source: 'added_gap', gap_id: g.gap_id });
@@ -133,15 +143,25 @@ const DESTINATION = {
   awaiting_employer: 'Waiting for the employer',
 };
 
+// Desktop local-tax dollars: lines Desktop tracked as a tax, plus any line a person reclassified as a tax.
+const countsAsTaxDollars = (c) => desktopCountsAsTax(c.item) || ['local_tax', 'custom_entry'].includes(c.route);
+
 export function dollarTieOut(analysis, decisions) {
   const rows = new Map(Object.entries(DESTINATION).map(([stage, label]) => [stage, { stage, label, amount: 0, count: 0 }]));
   let total = 0;
-  for (const c of effectiveAll(analysis, decisions)) {
-    if (!desktopCountsAsTax(c.item)) continue;
-    total += c.ytd;
-    const row = rows.get(c.stage);
-    row.amount = round2(row.amount + c.ytd);
+  const put = (stage, amount) => {
+    const row = rows.get(stage);
+    row.amount = round2(row.amount + amount);
     row.count += 1;
+  };
+  for (const c of effectiveAll(analysis, decisions)) {
+    if (!countsAsTaxDollars(c)) continue;
+    total += c.ytd;
+    // Months withheld after the tax stopped applying are not relabelled: they need a correction.
+    if (c.stage === 'confirmed' && c.unowed?.amount) {
+      put('confirmed', c.ytd - c.unowed.amount);
+      put('stopped', c.unowed.amount);
+    } else put(c.stage, c.ytd);
   }
   const list = [...rows.values()].filter((r) => r.count);
   const waiting = rows.get('awaiting_employer').amount;
@@ -152,62 +172,74 @@ export function readiness(analysis, decisions) {
   const cases = effectiveAll(analysis, decisions);
   const waiting = cases.filter((c) => c.stage === 'awaiting_employer');
   const expert = cases.filter((c) => c.stage === 'with_expert');
-  const openGaps = analysis.gaps.filter((g) => gapStage(g, decisions) !== 'added');
+  const openGaps = analysis.gaps.filter((g) => !['added', 'covered'].includes(gapStage(g, decisions, cases)));
   const accounts = agencyAccounts(analysis, decisions);
   const tie = dollarTieOut(analysis, decisions);
   const checks = [
     { id: 'employer', label: 'Every item has the employer\'s decision', pass: waiting.length === 0, detail: waiting.length ? `${waiting.length} item${waiting.length === 1 ? '' : 's'} still waiting on the review screen.` : 'All decided.' },
     { id: 'gaps', label: 'Every expected tax with no Desktop item is handled', pass: openGaps.length === 0, detail: openGaps.length ? `${openGaps.length} expected tax${openGaps.length === 1 ? '' : 'es'} not yet added.` : 'None open.' },
     { id: 'dollars', label: 'Every Desktop local-tax dollar has a destination', pass: tie.waiting === 0, detail: `${usd(tie.accounted)} of ${usd(tie.total)} accounted for.` },
-    { id: 'accounts', label: 'Account number and deposit frequency for every agency', pass: accounts.every((a) => a.complete), detail: !accounts.length ? 'No taxes confirmed yet.' : accounts.filter((a) => !a.complete).map((a) => `Missing for ${a.agency}`).join('; ') || 'All agencies complete.' },
+    { id: 'accounts', label: 'Account number and deposit frequency for every agency', pass: accounts.every((a) => a.complete), detail: !accounts.length ? 'No taxes will run on Online paychecks yet.' : accounts.filter((a) => !a.complete).map((a) => `Missing for ${a.agency}`).join('; ') || 'All agencies complete.' },
   ];
   return { checks, ready: checks.every((c) => c.pass), expert, waiting, openGaps, accounts, tie };
 }
 
 // ---------- W-2 history (projected for the full year) ----------
 
+const box20 = (tax) => (tax.type === 'school_district' ? `SD ${tax.code} ${tax.name.replace(/ (City|Local|Exempted Village) School District$/, '')}` : tax.name.replace(/^City of /, '').replace(/ income tax$/, ''));
+
 export function w2Preview(analysis, decisions) {
   const dm = desktopMonths(analysis.company);
   const cm = cloudMonths(analysis.company);
   const byEmployee = new Map(analysis.employees.map((e) => [e.employee_id, { employee: e, lines: new Map(), notes: [] }]));
-  const line = (emp, key, box20) => {
-    if (!emp.lines.has(key)) emp.lines.set(key, { key, box20, wages: 0, desktop: 0, cloud: 0, months: [] });
+  const line = (emp, key, name) => {
+    if (!emp.lines.has(key)) emp.lines.set(key, { key, box20: name, wages: 0, desktop: 0, cloud: 0, months: [] });
     return emp.lines.get(key);
   };
-  for (const c of effectiveAll(analysis, decisions)) {
+  const cases = effectiveAll(analysis, decisions);
+  for (const c of cases) {
     const emp = byEmployee.get(c.employee_id);
     const wages = c.employee.monthly_wages;
+    const employed = c.employee.expected.employed;
     if (c.stage === 'confirmed') {
       for (const p of c.proposal) {
         const past = p.months.filter((m) => dm.includes(m));
         const future = p.months.filter((m) => cm.includes(m));
-        const l = line(emp, p.tax_id, p.tax.type === 'school_district' ? `SD ${p.tax.code} ${p.tax.name.replace(/ (City|Local) School District$/, '')}` : p.tax.name.replace(/^City of /, '').replace(/ income tax$/, ''));
+        const l = line(emp, p.tax_id, box20(p.tax));
         l.wages = round2(l.wages + wages * (past.length + future.length));
         l.desktop = round2(l.desktop + sum(c.ytdByMonth.filter((x) => past.includes(x.month)).map((x) => x.amount)));
         l.cloud = round2(l.cloud + (p.tax.rate / 100) * wages * future.length);
         l.months.push(...p.months);
         if (p.rate.status === 'over' || p.rate.status === 'under') emp.notes.push(`${p.tax.name}: Desktop withheld at ${p.rate.desktop} instead of ${p.rate.official} in ${monthSpan(p.rate.months)} (${p.rate.status === 'over' ? 'over' : 'under'} by ${usd(Math.abs(p.rate.difference))}). The W-2 shows what was actually withheld.`);
       }
+      if (c.unowed?.amount) emp.notes.push(`"${c.item.label}": ${usd(c.unowed.amount)} withheld in ${monthSpan(c.unowed.months)} was not owed. It stays off the W-2 until corrected with the agency.`);
     } else if (c.stage === 'employer_managed' && c.entry) {
+      const past = dm.filter((m) => employed.includes(m));
+      const future = cm.filter((m) => employed.includes(m));
       const l = line(emp, `CUSTOM:${c.case_id}`, c.entry.name);
-      l.wages = round2(l.wages + wages * (dm.length + cm.length));
+      l.wages = round2(l.wages + wages * (past.length + future.length));
       l.desktop = round2(l.desktop + c.ytd);
-      l.cloud = round2(l.cloud + (c.entry.flat ? (c.entry.flat / 12) * cm.length : ((c.entry.rate ?? 0) / 100) * wages * cm.length));
+      l.cloud = round2(l.cloud + (c.entry.flat ? (c.entry.flat / 12) * future.length : ((c.entry.rate ?? 0) / 100) * wages * future.length));
       l.employerManaged = true;
     } else if (c.stage === 'with_expert' || c.stage === 'awaiting_employer') {
-      if (desktopCountsAsTax(c.item)) emp.notes.push(`"${c.item.label}" (${usd(c.ytd)} so far) is not on the W-2 yet: ${STAGE_LABEL[c.stage].toLowerCase()}.`);
-    } else if (c.stage === 'stopped') {
+      if (countsAsTaxDollars(c) && c.ytd) emp.notes.push(`"${c.item.label}" (${usd(c.ytd)} so far) is not on the W-2 yet: ${STAGE_LABEL[c.stage].toLowerCase()}.`);
+    } else if (c.stage === 'stopped' && c.ytd) {
       emp.notes.push(`"${c.item.label}": ${usd(c.ytd)} was withheld but is not owed. It stays off the W-2 until corrected with the agency.`);
     }
   }
   for (const g of analysis.gaps) {
-    if (gapStage(g, decisions) !== 'added') continue;
+    if (gapStage(g, decisions, cases) !== 'added') continue;
     const emp = byEmployee.get(g.employee_id);
     const future = g.months.filter((m) => cm.includes(m));
-    const l = line(emp, g.tax_id, g.tax.type === 'school_district' ? `SD ${g.tax.code} ${g.tax.name.replace(/ (City|Local) School District$/, '')}` : g.tax.name);
-    l.wages = round2(l.wages + emp.employee.monthly_wages * future.length);
-    l.cloud = round2(l.cloud + (g.tax.rate / 100) * emp.employee.monthly_wages * future.length);
-    emp.notes.push(`${g.tax.name} starts with the first cloud payroll. Estimated back tax for ${monthSpan(g.pastMonths)}: ${usd(g.backTaxEstimate)}; discuss with the agency.`);
+    const back = g.pastMonths.length ? ` Estimated back tax for ${monthSpan(g.pastMonths)}: ${usd(g.backTaxEstimate)}; discuss with the agency.` : '';
+    if (future.length) {
+      const l = line(emp, g.tax_id, box20(g.tax));
+      l.wages = round2(l.wages + emp.employee.monthly_wages * future.length);
+      l.cloud = round2(l.cloud + (g.tax.rate / 100) * emp.employee.monthly_wages * future.length);
+      emp.notes.push(`${g.tax.name} starts with the first cloud payroll.${back}`);
+    } else {
+      emp.notes.push(`${g.tax.name} was owed but never withheld, and there are no Online paychecks to start it on.${back}`);
+    }
   }
   return [...byEmployee.values()].map((e) => ({
     employee: e.employee,
@@ -246,9 +278,13 @@ export function reconcile(analysis, decisions) {
   }
   for (const c of effectiveAll(analysis, decisions)) {
     if (c.stage === 'with_expert') flags.push({ tone: 'warn', text: `${c.employee_name}: "${c.item.label}" is still with an expert, so nothing is withheld for it.` });
-    if (c.stage === 'stopped') flags.push({ tone: 'warn', text: `${c.employee_name}: ${usd(c.ytd)} withheld in Desktop under "${c.item.label}" needs a correction with the agency.` });
+    if (c.stage === 'stopped' && c.ytd) flags.push({ tone: 'warn', text: `${c.employee_name}: ${usd(c.ytd)} withheld in Desktop under "${c.item.label}" needs a correction with the agency.` });
     if (c.stage === 'employer_managed') flags.push({ tone: 'info', text: `${c.employee_name}: "${c.entry?.name}" is employer-managed. Confirm you paid and filed it.` });
-    if (c.stage === 'confirmed') for (const p of c.proposal) if (p.rate.status === 'over' || p.rate.status === 'under') flags.push({ tone: 'warn', text: `${c.employee_name}: past ${p.tax.name} withholding was ${p.rate.status === 'over' ? 'over' : 'under'} by ${usd(Math.abs(p.rate.difference))}. New paychecks use the official ${p.rate.official}.` });
+    if (c.stage === 'confirmed') {
+      for (const p of c.proposal) if (p.rate.status === 'over' || p.rate.status === 'under') flags.push({ tone: 'warn', text: `${c.employee_name}: past ${p.tax.name} withholding was ${p.rate.status === 'over' ? 'over' : 'under'} by ${usd(Math.abs(p.rate.difference))}. New paychecks use the official ${p.rate.official}.` });
+      if (c.unowed?.amount) flags.push({ tone: 'warn', text: `${c.employee_name}: ${usd(c.unowed.amount)} withheld in ${monthSpan(c.unowed.months)} under "${c.item.label}" was not owed and needs a correction with the agency.` });
+      for (const p of c.proposal) if (p.optional) flags.push({ tone: 'info', text: `${c.employee_name}: optional ${p.tax.name} courtesy withholding kept at the employer's choice.` });
+    }
   }
   return {
     rows: [...rows.values()].map((r) => ({ ...r, employees: [...r.employees] })),
