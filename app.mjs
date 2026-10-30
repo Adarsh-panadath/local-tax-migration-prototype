@@ -1,10 +1,10 @@
 // Browser app for the BRD v3 local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs';
-import { MODEL_VERSION } from './engine/cluster.mjs';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL } from './engine/workflow.mjs';
-import { monthSpan, rateText, cloudMonths } from './engine/util.mjs';
-import { buildReport, casesCSV } from './report.mjs';
-import { GROUPS, runScenarios } from './scenarios.mjs';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=90b104e986';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=90b104e986';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL } from './engine/workflow.mjs?v=90b104e986';
+import { monthSpan, rateText, cloudMonths } from './engine/util.mjs?v=90b104e986';
+import { buildReport, casesCSV } from './report.mjs?v=90b104e986';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=90b104e986';
 
 const STORE = 'local-tax-migration:brd-v3';
 const VIEWS = ['clients', 'analysis', 'review', 'expert', 'golive', 'reconcile', 'scenarios', 'model', 'audit'];
@@ -1408,7 +1408,7 @@ function scrollToDetail() {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=90b104e986`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };
