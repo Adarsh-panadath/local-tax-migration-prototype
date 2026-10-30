@@ -77,7 +77,7 @@ Other cases the routing handles:
 
 ## 5. The employer confirms everything
 
-Expert decisions go back to the employer. A tax goes live only when the employer has confirmed it. The employer can also send any line, even a verified match, to an expert. A gap counts as covered once an expert maps one of the employee's lines to that tax, so it is never added twice. Bulk confirm is offered only for verified matches: lines matched to an expected tax without an expert step, where the Desktop rate equals the official rate.
+Expert decisions go back to the employer. A tax goes live only when the employer has confirmed it. The employer can also send any line, even one that is ready to confirm, to an expert. A gap counts as covered once an expert maps one of the employee's lines to that tax, so it is never added twice. Bulk confirm is offered only for lines that are **ready to confirm** (called verified matches in the code): matched to an expected tax without an expert step, where the Desktop rate equals the official rate. The screen never calls them verified, because the employer has not confirmed them yet.
 
 ## 5a. Automation: the employer decides the rules, not every line
 
