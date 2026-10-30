@@ -96,6 +96,8 @@ const ICONS = {
   spark: '<path d="M12 3v3"/><path d="M12 18v3"/><path d="m5.6 5.6 2.1 2.1"/><path d="m16.3 16.3 2.1 2.1"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="m5.6 18.4 2.1-2.1"/><path d="m16.3 7.7 2.1-2.1"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  arrow: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   reset: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
   list: '<path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
 };
@@ -233,26 +235,25 @@ function appbar(view, s) {
   const action = lines + gaps + s.expert;
   const share = total ? decided / total : 0;
   const used = statesInUse(s.a);
-  const modes = Object.values(s.a.models).filter((m) => used.has(m.state))
-    .map((m) => pill(`${m.name}: ${m.mode === 'assisted' ? 'suggestions on' : 'shadow mode'}`, m.mode === 'assisted' ? 'good' : 'warn')).join('');
   const statusTone = { 'Not started': 'info', 'In review': 'accent', Live: 'good', Reconciled: 'good' }[s.status];
+  const modeText = Object.values(s.a.models).filter((m) => used.has(m.state))
+    .map((m) => `<span class="mode ${m.mode === 'assisted' ? 'good' : 'warn'}"><span class="dot"></span>${esc(m.name)} ${m.mode === 'assisted' ? 'suggestions on' : 'in shadow mode'}</span>`).join('');
   const sc = scenarios();
   const passed = sc.filter((x) => x.pass).length;
-  const links = OVERSIGHT.map(([id, text, ic]) => `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}>${icon(ic)}${text}${id === 'scenarios' ? `<span class="count${passed === sc.length ? ' ok' : ''}">${passed}/${sc.length}</span>` : ''}</a>`).join('');
+  const links = OVERSIGHT.map(([id, text, ic]) => `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}>${icon(ic)}${text}${id === 'scenarios' ? `<span class="count ok">${passed}/${sc.length}</span>` : ''}</a>`).join('');
+  const breakdown = `${plural(lines, 'line')} waiting for the employer, ${s.expert} with an expert, ${plural(gaps, 'expected tax', 'expected taxes')} not withheld`;
   return `<header class="appbar">
     <div class="appbar-main">
-      <a class="logo" href="#analysis"><span class="logo-tile">${icon('landmark')}</span><span class="logo-text"><span class="name"><strong>Local Tax Migration</strong><span class="tag" title="Fictional companies and people; real Ohio tax rates">Demo data</span></span><small>Desktop to Online Payroll · BRD v3</small></span></a>
-      <div class="company-box">${icon('building')}<label class="sr-only" for="company">Client</label><select id="company" data-action="company">${options}</select>${pill(`${co.plan} plan`, 'info')}</div>
+      <a class="logo" href="#analysis"><span class="logo-tile">${icon('landmark')}</span><span class="logo-text"><strong>Local Tax Migration</strong><small>Desktop to Online Payroll · demo</small></span></a>
+      <label class="company-box"><span class="sr-only">Client</span>${icon('building')}<select id="company" data-action="company">${options}</select><span class="plan">${esc(co.plan)}</span></label>
       <nav class="tabs" aria-label="Migration steps">${STEP_TABS.map(tab).join('')}</nav>
-      <button class="btn quiet reset" type="button" data-action="reset" title="Clear every decision and start the demo again">${icon('reset')}Reset</button>
+      <button class="btn reset" type="button" data-action="reset" title="Clear every decision and start the demo again">${icon('reset')}<span>Reset</span></button>
     </div>
     <div class="batchbar">
-      <div class="batch-title">${icon('layers', 'lg')}<span class="bt-text">Local tax migration batch<small>Moves to Online payroll in ${monthSpan([co.migration_month])}</small></span>${pill(s.status, statusTone)}${modes}</div>
-      <div class="stats">
-        <div class="stat">Desktop lines<b>${total}</b></div>
-        <div class="stat">Decided<b class="good">${decided} of ${total} (${pct(share, 0)})</b><div class="progress" role="img" aria-label="${decided} of ${total} lines decided"><span style="width:${(share * 100).toFixed(1)}%"></span></div></div>
-        <div class="stat" title="${plural(lines, 'line')} waiting for the employer, ${s.expert} with an expert, ${plural(gaps, 'expected tax', 'expected taxes')} not withheld">Action needed<b class="${action ? 'warn' : ''}">${action}</b><small>${lines} employer · ${s.expert} expert · ${gaps} gap${gaps === 1 ? '' : 's'}</small></div>
-      </div>
+      <span class="status ${statusTone}"><span class="dot"></span>${esc(s.status)}</span>
+      <span class="batch-progress"><span class="progress" role="img" aria-label="${decided} of ${total} lines decided"><span style="width:${(share * 100).toFixed(1)}%"></span></span><span><b>${decided}</b> of ${total} lines decided</span></span>
+      <span class="batch-need" title="${esc(breakdown)}">${action ? `<b>${action}</b> need action` : 'Nothing waiting'}</span>
+      ${modeText}
       <nav class="batch-links" aria-label="Oversight">${links}</nav>
     </div>
   </header>`;
@@ -396,6 +397,7 @@ const FILTERS = {
 const badge = (text, tone = '') => `<span class="badge ${tone}">${esc(text)}</span>`;
 const rateFmt = (r) => `${Number(r).toFixed(2)}%`;
 const taxCode = (t) => (t.type === 'school_district' ? `SD ${t.code}` : t.place);
+const shortTax = (t) => (t.type === 'school_district' ? `${t.place} schools` : `${t.place} city`);
 const isOff = (c) => c.route === 'local_tax' && c.proposal.some((p) => p.rate.status === 'over' || p.rate.status === 'under');
 const siteOf = (e, a) => a.company.worksites.find((w) => w.site_id === e.site_id);
 const addrLine = (ad) => [ad.line1, ad.city, [ad.state, ad.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
@@ -435,6 +437,15 @@ function caseFoot(c) {
   return ['Reason', REASON_SHORT[c.reason] ?? c.reason, REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn'];
 }
 
+// Where a line is heading, in a few words, for the record list.
+function caseTo(c) {
+  if (c.route === 'local_tax') return [c.proposal.map((p) => `${shortTax(p.tax)} ${rateFmt(p.tax.rate)}`).join(', then '), c.verified || c.stage === 'confirmed' ? 'good' : 'warn'];
+  if (c.route === 'not_a_tax') return ['Deduction', ''];
+  if (c.route === 'custom_entry') return [c.entry.name, 'blue'];
+  if (c.route === 'stop') return ['Stop withholding', 'bad'];
+  return ['Expert decides', 'muted'];
+}
+
 function recordList(view, s) {
   const order = new Map(s.a.employees.map((e, i) => [e.employee_id, i]));
   const out = [];
@@ -450,8 +461,10 @@ function recordList(view, s) {
       if (!OPEN_STAGES.has(c.stage)) groups.add('done');
     } else groups.add(c.stage === 'with_expert' ? 'open' : 'decided');
     const foot = caseFoot(c);
+    const [to, toTone] = caseTo(c);
     out.push({
       key: `c|${c.case_id}`, kind: 'case', c, employee_id: c.employee_id, name: c.employee_name, badge: b, tone, groups, foot,
+      from: labelOf(c.item.label), to, toTone,
       sub: `"${labelOf(c.item.label)}" · Law ID ${c.item.law_id}`,
       loc: `${homeText(e)} · ${siteOf(e, s.a).name}`,
       text: [c.employee_name, c.item.label, b, foot[1], ...c.proposal.map((p) => p.tax.name)].join(' ').toLowerCase(),
@@ -466,6 +479,7 @@ function recordList(view, s) {
       out.push({
         key: `g|${g.gap_id}`, kind: 'gap', g, employee_id: g.employee_id, name: g.employee_name, badge: b, tone, groups,
         foot: ['Back tax', money(g.backTaxEstimate), stage === 'awaiting_employer' ? 'bad' : ''],
+        from: 'Nothing in Desktop', to: `${shortTax(g.tax)} ${rateFmt(g.tax.rate)}`, toTone: stage === 'awaiting_employer' ? 'bad' : 'good',
         sub: `No Desktop item · ${taxShort(g.tax)}`,
         loc: `${homeText(e)} · ${siteOf(e, s.a).name}`,
         text: [g.employee_name, g.tax.name, b, 'not withheld gap'].join(' ').toLowerCase(),
@@ -503,12 +517,9 @@ function workspace(view, s) {
     return `<button type="button" class="fchip${tone && n && filter !== id ? ` ${tone}` : ''}" data-action="queue-filter" data-view="${view}" data-value="${id}" aria-pressed="${filter === id}">${text}<span>${n}</span></button>`;
   }).join('');
   const items = list.map((r) => {
-    const [fl, fv, ft] = r.foot;
     return `<li data-text="${esc(r.text)}"><button type="button" class="record" data-action="select" data-key="${esc(r.key)}"${sel?.key === r.key ? ' aria-current="true"' : ''}>
       <span class="rec-top"><strong>${esc(r.name)}</strong>${badge(r.badge, r.tone)}</span>
-      <span class="rec-sub">${esc(r.sub)}</span>
-      <span class="rec-loc">${icon('pin')}${esc(r.loc)}</span>
-      <span class="rec-foot"><span>${esc(fl)}</span><span class="v ${ft}">${esc(fv)}</span></span>
+      <span class="rec-map"><span class="from">${esc(r.from)}</span>${icon('arrow')}<span class="to ${r.toTone}">${esc(r.to)}</span></span>
     </button></li>`;
   }).join('');
   const emptyText = {
@@ -546,40 +557,49 @@ function viewExpert(s) { return workspace('expert', s); }
 
 // ---------- record detail ----------
 
-function recordHeader(name, id, sub, pills, target, next) {
+function recordHeader({ name, id, meta, badgeHtml, flow, why, stage, next }) {
   return `<div class="rec-header">
     <div class="rec-title">
-      <div><h2>${esc(name)}<span class="idchip">${esc(id)}</span></h2><p class="sub">${sub}</p></div>
-      <div class="row">${pills}</div>
+      <div><h2>${esc(name)}</h2><p class="sub"><span class="idchip">${esc(id)}</span>${meta}</p></div>
+      ${badgeHtml}
     </div>
-    <div class="target-grid">${target}<div class="next"><span class="label">Next step</span><p>${esc(next)}</p></div></div>
+    ${flow}
+    ${why ? `<p class="why">${esc(why)}</p>` : ''}
+    <div class="next"><span class="next-ic">${icon('arrow')}</span><div><span class="next-label">Next step<span>${esc(stage)}</span></span><p>${esc(next)}</p></div></div>
   </div>`;
 }
 
-function targetCard(tone, ic, title, text) {
-  return `<div class="target ${tone}"><span class="tic">${icon(ic, 'lg')}</span><div><strong>${esc(title)}</strong><p>${esc(text)}</p></div></div>`;
+// The record's story in one line: what Desktop had, and where it goes in Online payroll.
+const flowSide = (side, label, title, meta, tone = '') => `<div class="flow-side ${side} ${tone}"><span class="flow-label">${label}</span><strong>${title}</strong>${meta ? `<span class="flow-meta">${meta}</span>` : ''}</div>`;
+const flow = (from, to) => `<div class="flow">${from}<span class="flow-arrow" aria-hidden="true">${icon('arrow')}</span>${to}</div>`;
+
+function caseFlow(c) {
+  const item = c.item;
+  const from = flowSide('from', 'Desktop payroll', esc(labelOf(item.label)), esc(`Law ID ${item.law_id} · ${item.origin === 'custom' ? 'custom item' : 'system item'} · ${rateText(item)}`));
+  let to;
+  if (c.route === 'local_tax') {
+    const title = c.proposal.map((p) => `${esc(p.tax.name)}${c.proposal.length > 1 ? ` <span class="flow-when">${esc(monthSpan(p.months))}</span>` : ''}`).join('<br>');
+    const p = c.proposal[0];
+    const meta = c.proposal.length > 1 ? 'Split by the move' : `${p.tax.type === 'school_district' ? `SD ${p.tax.code} · ` : ''}${rateFmt(p.tax.rate)} · ${basisText(p.basis)}`;
+    to = flowSide('to', 'Online payroll', title, esc(meta), c.verified || c.stage === 'confirmed' ? 'good' : 'warn');
+  } else if (c.route === 'not_a_tax') to = flowSide('to', 'Online payroll', 'Non-tax deduction', 'Moves to deductions; never filed as a tax', 'neutral');
+  else if (c.route === 'custom_entry') to = flowSide('to', 'Online payroll', esc(c.entry.name), esc(`Custom entry · employer-managed · ${c.entry.flat ? `${money(c.entry.flat)} a year` : `${c.entry.rate}%`}`), 'blue');
+  else if (c.route === 'stop') to = flowSide('to', 'Online payroll', 'Stop withholding', esc(c.ytd ? `${money(c.ytd)} to correct with the agency` : 'Nothing was withheld'), 'bad');
+  else to = flowSide('to', 'Online payroll', 'Waiting for an expert', esc(REASON_SHORT[c.reason] ?? 'Needs an expert'), REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn');
+  return flow(from, to);
 }
 
-function caseTarget(c) {
+function caseWhy(c) {
   if (c.route === 'local_tax') {
-    const title = `Target: ${c.proposal.map((p) => `${p.tax.name}${p.tax.type === 'school_district' ? ` (SD ${p.tax.code})` : ''}${c.proposal.length > 1 ? `, ${monthSpan(p.months)}` : ''}`).join('; then ')}`;
     const p = c.proposal[0];
+    if (p.fromExpert) return `Mapped by an expert: ${expertText(c)}.`;
     const where = p.address ? ` Found from the ${basisText(p.basis)}: ${[p.address.line1, p.address.city].filter(Boolean).join(', ')}.` : '';
-    const text = p.fromExpert ? `Mapped by an expert: ${expertText(c)}.` : `${c.reasonText}${where}`;
-    return targetCard(c.verified || c.stage === 'confirmed' ? '' : 'warn', 'target', title, text);
+    return `${c.reasonText}${where}`;
   }
-  if (c.route === 'not_a_tax') {
-    const why = c.decision.expert?.action === 'not_a_tax' ? 'An expert decided this is not a tax.' : c.reasonText;
-    return targetCard('neutral', 'file', 'Target: non-tax deduction', `${why} It moves to deductions and is never filed as a tax.`);
-  }
-  if (c.route === 'custom_entry') {
-    const e = c.entry;
-    return targetCard('blue', 'user', `Target: custom entry "${e.name}"`, `Employer-managed: you pay and file it. ${e.agency}, ${e.flat ? `${money(e.flat)} a year` : `${e.rate}%`}, ${basisText(e.basis)}, ${e.frequency}.`);
-  }
-  if (c.route === 'stop') {
-    return targetCard('bad', 'x', 'Target: stop withholding', `${c.decision.expert?.note || 'An expert found this tax does not apply to this employee.'}${c.ytd ? ` ${money(c.ytd)} withheld so far needs a correction with the agency.` : ''}`);
-  }
-  return targetCard(REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn', 'alert', `No target yet: ${(REASON_SHORT[c.reason] ?? 'needs an expert').toLowerCase()}`, `${c.reasonText} An expert decides; it stays off until then.`);
+  if (c.route === 'not_a_tax') return c.decision.expert?.action === 'not_a_tax' ? 'An expert decided this is not a tax.' : c.reasonText;
+  if (c.route === 'custom_entry') return `Employer-managed: you pay and file it. ${c.entry.agency}, ${basisText(c.entry.basis)}, ${c.entry.frequency}.`;
+  if (c.route === 'stop') return c.decision.expert?.note || 'An expert found this tax does not apply to this employee.';
+  return `${c.reasonText} It stays off until an expert decides.`;
 }
 
 function nextStep(c, view, live) {
@@ -640,14 +660,14 @@ function caseMapping(c, s) {
   const ytdRow = (n) => ['Year to date', `<span class="val">${money(c.ytd)}</span>`, n[0], n[1], 'total'];
   const rows = [];
   if (c.route === 'local_tax') {
-    const target = (fn) => stack(c.proposal.map((p) => tgt(fn(p), c.verified || c.stage === 'confirmed' ? '' : 'warn')));
+    const target = (fn, cls = () => '') => stack(c.proposal.map((p) => tgt(fn(p), cls(p))));
     const fromExpert = c.proposal.some((p) => p.fromExpert);
     rows.push(['Tax item', srcItem, target((p) => `${p.tax.name}${p.tax.type === 'school_district' ? ` · SD ${p.tax.code}` : ''}${c.proposal.length > 1 ? ` · ${monthSpan(p.months)}` : ''}`),
       fromExpert ? note('blue', 'user', 'Mapped by an expert') : custom ? note('good', 'check', `Clustered as ${c.model?.entry_label ?? 'a defined tax'}`) : note('good', 'check', 'Intuit-defined item')]);
     rows.push(['Jurisdiction', custom ? none('Not recorded in Desktop') : src(s.a.idx.taxes.get(item.system_tax_id)?.name ?? item.system_tax_id), target((p) => `${p.tax.place} · ${basisText(p.basis)}`), note('good', 'pin', 'From the address lookup')]);
     const sameAgency = c.proposal.every((p) => String(p.tax.agency).toLowerCase() === String(item.agency ?? '').toLowerCase());
     rows.push(['Agency', item.agency ? src(item.agency) : none('None on file'), target((p) => p.tax.agency), sameAgency ? note('good', 'check', 'Same agency') : note('', 'info', 'Replaced by the official agency')]);
-    rows.push(['Rate', src(rateText(item)), target((p) => `${rateFmt(p.tax.rate)}${p.tax.base ? ` ${p.tax.base.toLowerCase()}` : ''}`), stack(c.proposal.map((p) => {
+    rows.push(['Rate', src(rateText(item)), target((p) => `${rateFmt(p.tax.rate)}${p.tax.base ? ` ${p.tax.base.toLowerCase()}` : ''}`, (p) => (p.rate.status === 'over' || p.rate.status === 'under' ? 'warn' : '')), stack(c.proposal.map((p) => {
       const r = p.rate;
       if (r.status === 'match') return note('good', 'check', 'No difference');
       if (r.status === 'over' || r.status === 'under') return note('warn', 'alert', `${r.status === 'over' ? 'Over' : 'Under'}-withheld ${money(Math.abs(r.difference))} (${monthSpan(r.months)})`);
@@ -736,14 +756,14 @@ function caseDetail(c, s, view) {
   const e = c.employee;
   const site = siteOf(e, s.a);
   const [b, tone] = caseBadge(c);
-  const sub = `"${esc(labelOf(c.item.label))}" · Law ID ${c.item.law_id} (${c.item.origin === 'custom' ? 'custom item' : 'system item'}) · ${esc(site.name)} · ${money(e.monthly_wages)} a month${employmentText(e) ? ` · ${esc(employmentText(e))}` : ''}`;
+  const meta = `${esc(site.name)} · ${money(e.monthly_wages)} a month${employmentText(e) ? ` · ${esc(employmentText(e))}` : ''}`;
   // Findings in step order (a later check can add to an earlier step); stable for equal steps.
   const steps = c.evidence.map((x, i) => ({ x, i })).sort((a, b) => (a.x.step ?? 9) - (b.x.step ?? 9) || a.i - b.i).map((y) => y.x);
   if (c.decision.sentToExpert) steps.push({ tone: 'info', text: `The employer sent this to an expert${c.decision.sentToExpert.note ? `: ${c.decision.sentToExpert.note}` : ''}.` });
   if (c.decision.expert) steps.push({ tone: 'info', text: `Expert decision: ${expertText(c)}.` });
   const open = !c.verified && OPEN_STAGES.has(c.stage);
   return `${mobileBack(view)}
-    ${recordHeader(c.employee_name, e.employee_id, sub, `${pill(STAGE_LABEL[c.stage], STAGE_TONE[c.stage])}${badge(b, tone)}`, caseTarget(c), nextStep(c, view, live))}
+    ${recordHeader({ name: c.employee_name, id: e.employee_id, meta, badgeHtml: badge(b, tone), flow: caseFlow(c), why: caseWhy(c), stage: STAGE_LABEL[c.stage], next: nextStep(c, view, live) })}
     ${checksBanner(c)}
     ${view === 'expert' && c.stage === 'with_expert' && !live ? expertTools(c, s) : ''}
     ${caseMapping(c, s)}
@@ -752,7 +772,7 @@ function caseDetail(c, s, view) {
 }
 
 const logNote = `<span class="log-note">${icon('lock')}Decisions are logged with the time and role for the audit trail.</span>`;
-const moreMenu = (items) => (items.length ? `<details class="more"><summary class="btn">More actions${icon('chevron')}</summary><div class="more-menu">${items.join('')}</div></details>` : '');
+const moreMenu = (items) => (items.length ? `<details class="more"><summary class="btn" aria-label="More actions"><span class="more-text">More actions</span>${icon('chevron', 'more-chev')}${icon('dots', 'more-dots')}</summary><div class="more-menu">${items.join('')}</div></details>` : '');
 
 function caseActions(c, s, view) {
   const id = esc(c.case_id);
@@ -787,9 +807,12 @@ function gapDetail(g, s) {
   const by = stage === 'covered' ? gapCoveredBy(g, s.d, s.a) : null;
   const back = g.pastMonths.length ? `Nothing was withheld in ${monthSpan(g.pastMonths)}; estimated back tax ${money(g.backTaxEstimate)}.` : 'No Desktop months were missed, so there is no back tax.';
   const [b, tone] = { awaiting_employer: ['Not withheld', 'bad'], added: ['Added', 'done'], covered: ['Covered', 'done'] }[stage];
-  const target = stage === 'covered'
-    ? targetCard('neutral', 'check', `Covered: ${g.tax.name}${sd}`, `An expert mapped "${by?.item.label ?? ''}" to this tax, so it is not added twice.`)
-    : targetCard(stage === 'added' ? '' : 'bad', 'target', `${stage === 'added' ? 'Added' : 'Add'}: ${g.tax.name}${sd}`, `From the ${basisText(g.basis)} ${[g.address.line1, g.address.city].filter(Boolean).join(', ')}, ${monthSpan(g.months)}.`);
+  const gapFlow = flow(
+    flowSide('from', 'Desktop payroll', 'No item', esc(g.pastMonths.length ? `Nothing withheld ${monthSpan(g.pastMonths)}` : 'Nothing to withhold yet'), ''),
+    flowSide('to', 'Online payroll', esc(g.tax.name), esc(`${g.tax.type === 'school_district' ? `SD ${g.tax.code} · ` : ''}${rateFmt(g.tax.rate)} · ${basisText(g.basis)}`), stage === 'awaiting_employer' ? 'bad' : stage === 'added' ? 'good' : 'neutral'));
+  const why = stage === 'covered'
+    ? `An expert mapped "${by?.item.label ?? ''}" to this tax, so it is not added twice.`
+    : `Expected from the ${basisText(g.basis)} ${[g.address.line1, g.address.city].filter(Boolean).join(', ')}, ${monthSpan(g.months)}, but no Desktop item withholds it.`;
   const next = live ? 'This company is live, so decisions are locked.'
     : stage === 'awaiting_employer' ? (g.cloudMonths.length ? 'Add it from the first cloud payroll, and discuss the back tax with the agency.' : 'Record the back tax for the agency; there are no Online paychecks to withhold it from.')
       : stage === 'added' ? 'Done. Undo it from the action bar if needed.' : 'Nothing to do: the expert mapping covers it.';
@@ -810,7 +833,7 @@ function gapDetail(g, s) {
   const steps = [{ step: 2, tone: 'fail', text: `${g.tax.name} is on ${g.employee_name}'s expected list (${basisText(g.basis)}, ${monthSpan(g.months)}), but no Desktop item withholds it.` }];
   if (by) steps.push({ tone: 'info', text: `Covered by the expert mapping of "${by.item.label}".` });
   return `${mobileBack('review')}
-    ${recordHeader(g.employee_name, e.employee_id, `Expected tax with no Desktop item · ${esc(site.name)} · ${money(e.monthly_wages)} a month`, `${pill(stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? 'Added' : 'Covered', stage === 'awaiting_employer' ? 'accent' : 'good')}${badge(b, tone)}`, target, next)}
+    ${recordHeader({ name: g.employee_name, id: e.employee_id, meta: `${esc(site.name)} · ${money(e.monthly_wages)} a month`, badgeHtml: badge(b, tone), flow: gapFlow, why, stage: stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? 'Added' : 'Covered', next })}
     ${banner}
     ${mappingTable(rows)}
     ${evidenceCard(s, { employee: e, state: g.tax.state, match: new Set([g.tax_id]), steps, historyTarget: `${g.employee_name}: ${g.tax.name}`, openSteps: stage === 'awaiting_employer' })}
