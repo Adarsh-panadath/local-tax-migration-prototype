@@ -255,3 +255,14 @@ test('the report keeps every line and its CSV neutralises spreadsheet formulas',
   const csv = casesCSV(report);
   assert.ok(csv.includes(`"'=HYPERLINK(""x"")"`));
 });
+
+test('automation returns new decisions and leaves the input unchanged', async () => {
+  const { automate } = await import('../web/engine/workflow.mjs');
+  const a = fhs();
+  const before = emptyDecisions();
+  const snapshot = JSON.stringify(before);
+  const res = automate(a, before);
+  assert.equal(JSON.stringify(before), snapshot);
+  assert.ok(Object.values(res.decisions.cases).some((x) => x.employer?.auto));
+  assert.ok(res.actions.every((x) => x.rule && x.action && x.target));
+});

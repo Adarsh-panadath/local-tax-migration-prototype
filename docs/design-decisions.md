@@ -79,6 +79,22 @@ Other cases the routing handles:
 
 Expert decisions go back to the employer. A tax goes live only when the employer has confirmed it. The employer can also send any line, even a verified match, to an expert. A gap counts as covered once an expert maps one of the employee's lines to that tax, so it is never added twice. Bulk confirm is offered only for verified matches: lines matched to an expected tax without an expert step, where the Desktop rate equals the official rate.
 
+## 5a. Automation: the employer decides the rules, not every line
+
+*Added by the prototype to keep manual work to a minimum.* The BRD's principle is "model suggests, person decides". Here the person decides once, by approving seven rules, and the system applies them to every line they cover (`automate` in `web/engine/workflow.mjs`):
+
+1. Confirm matches the address supports.
+2. Use the official rate when Desktop's rate is wrong (the difference is flagged for a correction).
+3. Move after-tax deductions.
+4. Add expected taxes nobody withheld (from the first cloud payroll; back tax flagged).
+5. Stop taxes the address says are not owed (duplicates, and taxes not on the expected list for an address found in the lookup).
+6. Accept expert decisions.
+7. Go live and reconcile, only when nothing is left for a person and every go-live check passes.
+
+Never automated: a weak or missing label signal, conflicting evidence, a missing or unplaceable address, a label naming another state, a state in shadow mode, more than one possible tax, or a line someone sent to an expert. These are the exceptions a person handles; after each decision, automation re-runs and finishes what it now can.
+
+Every automatic step is logged with its rule. Any of them can be undone; an undone line is held for a person and automation skips it from then on. Each rule can be switched off.
+
 ## 6. Go-live checks
 
 Four checks must pass:

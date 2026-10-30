@@ -1,7 +1,7 @@
 // Browser app for the BRD v3 local-tax migration prototype. No framework, no build step.
 import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs';
 import { MODEL_VERSION } from './engine/cluster.mjs';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL } from './engine/workflow.mjs';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY } from './engine/workflow.mjs';
 import { monthSpan, rateText, cloudMonths } from './engine/util.mjs';
 import { buildReport, casesCSV } from './report.mjs';
 import { GROUPS, runScenarios } from './scenarios.mjs';
@@ -253,6 +253,7 @@ function appbar(view, s) {
       <span class="status ${statusTone}"><span class="dot"></span>${esc(s.status)}</span>
       <span class="batch-progress"><span class="progress" role="img" aria-label="${decided} of ${total} lines decided"><span style="width:${(share * 100).toFixed(1)}%"></span></span><span><b>${decided}</b> of ${total} lines decided</span></span>
       <span class="batch-need" title="${esc(breakdown)}">${action ? `<b>${action}</b> need action` : 'Nothing waiting'}</span>
+      ${s.d.autoRun ? `<span class="batch-auto">${icon('spark')}<b>${pct(automationStats(s.a, s.d).share, 0)}</b> automated</span>` : ''}
       ${modeText}
       <nav class="batch-links" aria-label="Oversight">${links}</nav>
     </div>
@@ -268,28 +269,95 @@ function footnote() {
   return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. Ohio school-district codes, names and rates come from the Ohio Department of Taxation's 2026 list; the Lancaster (2.3%) and Columbus (2.5%) city rates come from the cities' own pages. Companies, people, addresses, account numbers and wages are fictional. Not affiliated with or endorsed by Intuit.</p>`;
 }
 
+// ---------- automation ----------
+
+const policyOf = (d) => ({ ...DEFAULT_POLICY, ...(d.policy ?? {}) });
+const ruleLabel = (id) => AUTOMATION_RULES.find((r) => r.id === id)?.label ?? id;
+const EXCEPTION_TEXT = { held: 'Held after an undo', rule_off: 'Its rule is switched off', account_missing: 'Agency account number missing' };
+const exceptionText = (x) => EXCEPTION_TEXT[x.reason] ?? REASON_SHORT[x.reason] ?? x.reason;
+
+// Run the employer's automation rules for one company and record every automatic step in the log.
+function runAutomationFor(id, { explicit = false } = {}) {
+  const a = analysisFor(id);
+  const current = decisionsFor(id);
+  if (explicit) delete current.liveHold;
+  const res = automate(a, current, policyOf(current));
+  res.decisions.autoRun = true;
+  state.decisions[id] = res.decisions;
+  const prev = state.companyId;
+  state.companyId = id;
+  for (const x of res.actions) log('Automation', x.action, x.target, [`Rule: ${ruleLabel(x.rule)}`, x.detail].filter(Boolean).join('. '));
+  state.companyId = prev;
+  return res;
+}
+
+// What automation would do now, without changing anything (for the preview before the first run).
+function automationPreview(s) {
+  const res = automate(s.a, s.d, policyOf(s.d));
+  return { ...res, stats: automationStats(s.a, res.decisions) };
+}
+
+function automationCard(s) {
+  const d = s.d;
+  const ran = Boolean(d.autoRun);
+  const view = ran ? { decisions: d, exceptions: openExceptions(s.a, d), stats: automationStats(s.a, d) } : automationPreview(s);
+  const st = view.stats;
+  const left = view.exceptions;
+  const share = pct(st.share, 0);
+  const policy = policyOf(d);
+  const rules = AUTOMATION_RULES.map((r) => `<label class="rule"><input type="checkbox" data-action="auto-rule" data-rule="${r.id}"${policy[r.id] ? ' checked' : ''}${d.live ? ' disabled' : ''}><span><strong>${esc(r.label)}</strong><span>${esc(r.help)}</span></span></label>`).join('');
+  const owner = (x) => (x.owner === 'expert' ? 'Expert' : 'Employer');
+  const open = (x) => (x.kind === 'account' ? '<a class="btn" href="#golive">Add it</a>'
+    : `<button class="btn" type="button" data-action="goto" data-view="${x.owner === 'expert' ? 'expert' : 'review'}" data-key="${esc(x.kind === 'gap' ? `g|${x.gap_id}` : `c|${x.case_id}`)}">Open</button>`);
+  const leftList = left.length
+    ? `<div class="auto-left"><span class="label">${ran ? 'Left for a person' : 'Will be left for a person'} (${left.length})</span><ul>${left.map((x) => `<li><span class="who"><strong>${esc(x.employee ?? x.item)}</strong>${x.employee ? `<span>"${esc(labelOf(x.item))}"</span>` : ''}</span><span class="badge ${x.reason === 'account_missing' || x.owner === 'employer' ? 'warn' : REASON_TONE[x.reason] === 'bad' ? 'bad' : 'warn'}">${esc(exceptionText(x))}</span><span class="owner">${owner(x)}</span>${open(x)}</li>`).join('')}</ul></div>`
+    : `<p class="auto-done">${icon('check')}${d.live ? `Everything is settled. ${d.liveAuto ? 'The company went live and reconciled automatically.' : 'The company is live.'}` : 'Nothing is left for a person.'}</p>`;
+  const headline = ran
+    ? `<b>${st.auto}</b> of ${st.total} settled automatically`
+    : `<b>${st.auto}</b> of ${st.total} can be settled automatically`;
+  const sub = ran
+    ? `${st.manual ? `${plural(st.manual, 'decision')} by a person. ` : ''}${left.length ? 'The rest finishes by itself once these are decided.' : ''}`
+    : 'One click applies the rules below. Lines the BRD reserves for people are never guessed.';
+  return `<section class="auto-card" aria-labelledby="auto-h">
+    <div class="auto-head">
+      <div class="auto-title"><span class="auto-ic">${icon('spark')}</span><div><h2 id="auto-h">Automatic migration</h2><p>${ran ? (d.live ? 'Done.' : 'On. It re-runs after every decision a person makes.') : 'Ready to run.'}</p></div></div>
+      ${d.live ? '' : `<button class="btn ${ran ? '' : 'primary lg'}" type="button" data-action="run-auto">${icon('spark')}${ran ? 'Run again' : 'Run automatic migration'}</button>`}
+    </div>
+    <div class="auto-score">
+      <span class="auto-big">${share}</span>
+      <div><p class="auto-line">${headline}</p><div class="progress wide" role="img" aria-label="${share} settled automatically"><span style="width:${(st.share * 100).toFixed(1)}%"></span></div>${sub ? `<p class="auto-sub">${esc(sub)}</p>` : ''}</div>
+    </div>
+    ${leftList}
+    <details class="fold auto-rules"><summary>${icon('list')}Rules the employer approved (${AUTOMATION_RULES.filter((r) => policy[r.id]).length} of ${AUTOMATION_RULES.length} on)${icon('chevron', 'chev')}</summary><div class="fold-body">${rules}</div></details>
+  </section>`;
+}
+
 // ---------- clients (accountant) ----------
 
 function viewClients() {
+  const totals = { auto: 0, total: 0, left: 0, ran: 0 };
   const rows = data.companies.map((c) => {
     const s = summary(c.company_id);
     const tone = { 'Not started': '', 'In review': 'accent', Live: 'good', Reconciled: 'good' }[s.status];
+    const st = automationStats(s.a, s.d);
+    const left = openExceptions(s.a, s.d).length;
+    totals.auto += st.auto; totals.total += st.total; totals.left += s.d.autoRun ? left : 0; totals.ran += s.d.autoRun ? 1 : 0;
     return `<tr>
       <td><strong>${esc(c.name)}</strong><div class="small muted">${[...statesInUse(s.a)].map((x) => esc(stateName(x))).join(', ')}. Moves in ${monthSpan([c.migration_month])}.</div>${c.description ? `<div class="small">${esc(c.description)}</div>` : ''}</td>
       <td>${esc(c.plan)}</td>
       <td class="num">${c.employees.length}</td>
       <td class="num">${s.a.cases.length}</td>
-      <td class="num">${s.verified}</td>
-      <td class="num">${s.awaiting}</td>
-      <td class="num">${s.expert}</td>
+      <td class="num">${pct(st.share, 0)}</td>
+      <td class="num">${left}</td>
       <td>${pill(s.status, tone)}</td>
-      <td><div class="row nowrap"><button class="btn" type="button" data-action="open-client" data-id="${esc(c.company_id)}">Open</button><button class="btn quiet" type="button" data-action="bulk" data-company="${esc(c.company_id)}"${s.verified && !s.d.live ? '' : ' disabled'}>Confirm ${s.verified} verified</button></div></td>
+      <td><div class="row nowrap"><button class="btn" type="button" data-action="open-client" data-id="${esc(c.company_id)}">Open</button>${s.d.live ? '' : `<button class="btn quiet" type="button" data-action="run-auto" data-company="${esc(c.company_id)}">${s.d.autoRun ? 'Run again' : 'Run automation'}</button>`}</div></td>
     </tr>`;
   }).join('');
   return `<div class="page-head"><h1>Clients moving to Online payroll</h1>
-    <p class="lede">Where each client's local taxes stand. Verified matches (on the expected list, rate checked) can be confirmed in bulk for the employer; everything else needs the employer or an expert. Each client shows a different set of cases; <a href="#scenarios">Scenario coverage</a> lists them all.</p></div>
+    <p class="lede">Run the automatic migration for every client at once. The rules settle what they can; each client keeps only its true exceptions for a person.</p></div>
+    <div class="auto-strip"><span class="auto-big">${pct(totals.total ? totals.auto / totals.total : 0, 0)}</span><span><b>${totals.auto}</b> of ${totals.total} lines and expected taxes settled automatically${totals.ran ? `; ${plural(totals.left, 'item')} left for a person` : ''}</span><button class="btn primary" type="button" data-action="run-auto-all">${icon('spark')}Run automation for every client</button></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Client</th><th>Plan</th><th class="num">Employees</th><th class="num">Desktop lines</th><th class="num">Verified</th><th class="num">Waiting on employer</th><th class="num">With expert</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
+      <thead><tr><th>Client</th><th>Plan</th><th class="num">Employees</th><th class="num">Desktop lines</th><th class="num">Automated</th><th class="num">Left for a person</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 }
 
@@ -319,6 +387,7 @@ function viewAnalysis(s) {
 
   return `<div class="page-head"><h1>${esc(a.company.name)}: migration analysis</h1>
     <p class="lede">${plural(a.employees.length, 'employee')} and ${plural(a.cases.length, 'Desktop payroll line')} to check (one line per employee per item). ${s.routes.local_tax} match a tax on the employee's expected list, ${s.routes.not_a_tax} ${s.routes.not_a_tax === 1 ? 'is' : 'are'} not a tax, ${s.routes.not_in_database} need an expert, and ${plural(a.gaps.length, 'expected tax', 'expected taxes')} had no Desktop item at all.</p></div>
+    ${automationCard(s)}
     <section class="section" aria-labelledby="pipe-h">
       <div class="section-head"><h2 id="pipe-h">The five steps</h2><p>Run while the company is still on Desktop. Every line ends in exactly one route, and nothing goes live without the employer.</p></div>
       <ol class="pipeline">
@@ -326,7 +395,7 @@ function viewAnalysis(s) {
         <li><strong>List expected taxes</strong><p>Home and work addresses give a short list of taxes each person should have.</p><span class="result">${plural(expectedCount, 'expected tax', 'expected taxes')}${missingAddr ? `, ${plural(missingAddr, 'address', 'addresses')} missing` : ''}</span></li>
         <li><strong>Cluster custom items</strong><p>Custom labels are grouped within each state and named by the closest defined entry.</p><span class="result">${plural(custom, 'custom line')}. ${esc(modelLine)}</span></li>
         <li><strong>Route every item</strong><p>Local tax, not a tax, or not in database. Gaps are flagged both ways.</p><span class="result">${s.routes.local_tax} / ${s.routes.not_a_tax} / ${s.routes.not_in_database}, ${plural(a.gaps.length, 'gap')}</span></li>
-        <li><strong>Employer confirms</strong><p>Rate checked first; only then does a tax go live.</p><span class="result">${confirmed} of ${s.cases.length} decided</span></li>
+        <li><strong>Employer confirms</strong><p>By rules the employer approved once; people handle only the exceptions.</p><span class="result">${confirmed} of ${s.cases.length} decided</span></li>
       </ol>
     </section>
     <section class="routes" aria-label="Route counts">
@@ -369,10 +438,9 @@ function demoGuide() {
   return `<section class="panel section" aria-labelledby="guide-h">
     <h2 id="guide-h">Try the demo</h2>
     <ol class="marks">
-      <li>${mark('info')}<span><a href="#review">Employer review</a>: confirm the verified matches in one click, then confirm Priya Shah at the official 1.0% rate and add Raj Patel's missing Teays Valley school tax.</span></li>
-      <li>${mark('info')}<span><a href="#expert">Expert queue</a>: mark Kevin O'Neil's garnishment as not a tax, mark Mike Brown's school tax as not owed (Columbus City Schools has no income tax), and map Tom Reed's "Local Tax" once his address is known.</span></li>
-      <li>${mark('info')}<span>Back on the review screen, the employer confirms each expert decision. Nothing goes live without that.</span></li>
-      <li>${mark('info')}<span><a href="#golive">Go live</a>: check the dollar tie-out and the W-2 boxes, then switch the confirmed taxes on and <a href="#reconcile">reconcile</a> the first quarter.</span></li>
+      <li>${mark('info')}<span>Click <strong>Run automatic migration</strong> above. The employer's rules settle 16 of 18 items: the verified matches, Priya Shah at the official 1.0% rate, Sara Lee's union dues, Raj Patel's missing Teays Valley tax, and Mike Brown's school tax (not owed in Columbus City Schools).</span></li>
+      <li>${mark('info')}<span><a href="#expert">Expert queue</a>: only two lines are left. Mark Kevin O'Neil's garnishment as not a tax, and map Tom Reed's "Local Tax" to Lancaster CSD once his address is known.</span></li>
+      <li>${mark('info')}<span>Automation accepts both decisions, goes live and reconciles. Check <a href="#golive">Go live</a> for the W-2 boxes and the <a href="#audit">Decision log</a> for every automatic step and its rule.</span></li>
     </ol>
   </section>`;
 }
@@ -426,7 +494,10 @@ function caseBadge(c) {
     }
     return ['To decide', 'info'];
   }
-  return { confirmed: ['Confirmed', 'done'], moved_to_deduction: ['Deduction', 'done'], employer_managed: ['Employer-managed', 'done'], stopped: ['Stopped', 'done-bad'] }[c.stage] ?? [c.stage, 'info'];
+  const auto = c.decision.employer?.auto && (!c.decision.expert || c.decision.expert.auto);
+  return (auto
+    ? { confirmed: ['Auto-confirmed', 'done'], moved_to_deduction: ['Auto: deduction', 'done'], employer_managed: ['Auto: employer-managed', 'done'], stopped: ['Auto: stopped', 'done-bad'] }
+    : { confirmed: ['Confirmed', 'done'], moved_to_deduction: ['Deduction', 'done'], employer_managed: ['Employer-managed', 'done'], stopped: ['Stopped', 'done-bad'] })[c.stage] ?? [c.stage, 'info'];
 }
 
 function caseFoot(c) {
@@ -475,7 +546,7 @@ function recordList(view, s) {
       const stage = gapStage(g, s.d, s.cases);
       const e = s.a.employees.find((x) => x.employee_id === g.employee_id);
       const groups = new Set(['all', stage === 'awaiting_employer' ? 'todo' : 'done']);
-      const [b, tone] = { awaiting_employer: ['Not withheld', 'bad'], added: ['Added', 'done'], covered: ['Covered', 'done'] }[stage];
+      const [b, tone] = { awaiting_employer: ['Not withheld', 'bad'], added: [s.d.gaps[g.gap_id]?.auto ? 'Auto: added' : 'Added', 'done'], covered: ['Covered', 'done'] }[stage];
       out.push({
         key: `g|${g.gap_id}`, kind: 'gap', g, employee_id: g.employee_id, name: g.employee_name, badge: b, tone, groups,
         foot: ['Back tax', money(g.backTaxEstimate), stage === 'awaiting_employer' ? 'bad' : ''],
@@ -528,8 +599,11 @@ function workspace(view, s) {
   }[filter];
   const title = view === 'review' ? 'Employer review' : 'Expert queue';
   const blurb = view === 'review' ? plural(all.length, 'record') : `${all.filter((r) => r.groups.has('open')).length} open`;
+  const autoStats = automationStats(s.a, s.d);
   const foot = view === 'review'
-    ? `<div class="queue-foot"><button class="btn primary" type="button" data-action="bulk"${s.verified && !live ? '' : ' disabled'}>${icon('check')}Confirm ${plural(s.verified, 'verified match', 'verified matches')}</button><p>Verified: on the expected list, the rate matches, and nothing is flagged.</p></div>`
+    ? (s.d.autoRun || live
+      ? `<div class="queue-foot"><p>${icon('spark')}Automation is on: ${autoStats.auto} of ${autoStats.total} settled automatically.${live ? '' : ' Anything left here is an exception for a person.'}</p></div>`
+      : `<div class="queue-foot"><button class="btn primary" type="button" data-action="run-auto">${icon('spark')}Run automatic migration</button><p>Settles ${automationPreview(s).stats.auto} of ${autoStats.total} by the employer's rules; only exceptions stay here.</p></div>`)
     : '<div class="queue-foot"><p>Lines the system would not decide alone. An Intuit payroll expert decides; the employer still confirms before anything goes live.</p></div>';
   let detail;
   if (!sel) detail = `${mobileBack(view)}<div class="empty"><strong>${esc(emptyText)}</strong><span>${view === 'review' ? (s.expert ? `${plural(s.expert, 'line')} still with an expert. Those stay off until an expert decides and you confirm.` : 'Every line has a decision.') : 'Every line the system could not settle has an expert decision.'}</span><a class="btn" href="#golive">Go to go-live checks</a></div>`;
@@ -622,6 +696,8 @@ function nextStep(c, view, live) {
     }
     return 'Confirm the decision.';
   }
+  const e = c.decision.employer;
+  if (e?.auto) return `Done automatically (rule: ${ruleLabel(e.rule).toLowerCase()}). Undo it from the action bar if needed.`;
   return `Done: ${STAGE_LABEL[c.stage].toLowerCase()}. Undo it from the action bar if needed.`;
 }
 
@@ -1174,6 +1250,29 @@ function handle(action, el) {
     case 'bulk':
       bulkConfirm(el.dataset.company ?? state.companyId);
       break;
+    case 'run-auto': {
+      const cid = el.dataset.company ?? state.companyId;
+      const res = runAutomationFor(cid, { explicit: true });
+      const st = automationStats(analysisFor(cid), res.decisions);
+      toast(`${st.auto} of ${st.total} settled automatically.${res.exceptions.length ? ` ${plural(res.exceptions.length, 'item')} left for a person.` : res.decisions.live ? ' The company is live.' : ''}`);
+      break;
+    }
+    case 'run-auto-all': {
+      let auto = 0; let total = 0; let left = 0;
+      for (const c of data.companies) {
+        if (decisionsFor(c.company_id).live) continue;
+        const res = runAutomationFor(c.company_id, { explicit: true });
+        const st = automationStats(analysisFor(c.company_id), res.decisions);
+        auto += st.auto; total += st.total; left += res.exceptions.length;
+      }
+      toast(`Automation settled ${auto} of ${total} items across every client; ${plural(left, 'item')} left for a person.`);
+      break;
+    }
+    case 'auto-rule': {
+      d.policy = { ...policyOf(d), [el.dataset.rule]: el.checked };
+      log('Employer', el.checked ? 'Switched on an automation rule' : 'Switched off an automation rule', ruleLabel(el.dataset.rule));
+      break;
+    }
     case 'decide':
       decide(id);
       break;
@@ -1197,6 +1296,7 @@ function handle(action, el) {
       const c = findCase(id);
       if (d.live || !d.cases[id]) break;
       delete d.cases[id].employer;
+      d.cases[id].hold = true; // automation leaves it for a person from now on
       log('Employer', 'Undid decision', `${c.employee_name}: ${c.item.label}`);
       break;
     }
@@ -1210,7 +1310,7 @@ function handle(action, el) {
       break;
     }
     case 'undo-gap':
-      if (!d.live) delete d.gaps[id];
+      if (!d.live) d.gaps[id] = { action: 'hold' };
       break;
     case 'select': {
       const view = currentView();
@@ -1279,6 +1379,7 @@ function handle(action, el) {
       if (d.live || !d.cases[id]) break;
       delete d.cases[id].expert;
       delete d.cases[id].employer;
+      d.cases[id].hold = true;
       log('Expert', 'Reopened', `${c.employee_name}: ${c.item.label}`);
       break;
     }
@@ -1301,6 +1402,7 @@ function handle(action, el) {
     case 'undo-live':
       d.live = false;
       d.reconciled = false;
+      d.liveHold = true;
       log('Employer', 'Undid go-live (demo)', companyById().name);
       break;
     case 'run-reconcile':
@@ -1376,9 +1478,18 @@ function handle(action, el) {
     default:
       return;
   }
+  // With automation on, every decision a person makes lets the rules finish what they now can.
+  if (AUTO_FOLLOW.has(action) && decisionsFor().autoRun && !decisionsFor().live) {
+    const res = runAutomationFor(state.companyId);
+    if (res.actions.length) {
+      const live = res.decisions.live;
+      toast(`Automation took ${plural(res.actions.length, 'more step')}${live ? ': the company is now live and reconciled.' : '.'}`);
+    }
+  }
   save();
   render();
 }
+const AUTO_FOLLOW = new Set(['decide', 'unsend-expert', 'add-gap', 'expert-map', 'expert-nontax', 'expert-stop', 'expert-custom', 'account', 'auto-rule']);
 
 app.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-action]');
