@@ -69,21 +69,32 @@ The **Scenario coverage** page lists 69 scenarios, grouped by BRD step, and runs
 
 Boundary values are tested exactly: a gate value equal to its threshold passes (silhouette 0.50, precision 98%, sample 40, label confidence 0.25), and a rate of 1.4999% against 1.5% counts as under-withheld. **Model governance → Try the gates** lets you change the thresholds and watch a state switch to shadow mode.
 
+## The screens
+
+The interface follows the team's Google Stitch mockup:
+
+- **Top bar:** the client picker and the five migration steps as tabs.
+- **Batch strip:** the batch status, model mode, progress and links to the oversight pages.
+- **Review** and **Expert** are list-and-detail workspaces:
+  - On the left is a searchable record list with filter chips.
+  - On the right is the selected record. It shows the target tax and the next step, a checks banner, and a Desktop-versus-Online table. Below that come the supporting evidence (addresses and expected taxes), how the system decided, the model suggestion and the decision history. A sticky action bar sits at the bottom.
+- **On a phone:** the list opens into the record, with a back link and the action bar fixed at the bottom.
+
 ## Demo script (about five minutes)
 
 The demo opens on **Fairfield Hardware Supply** (Premium plan, 8 employees, 17 Desktop lines).
 
 1. **Analysis** shows the five steps, the Desktop items, and every employee's expected taxes. Ana Gomez moved house in June, so her school tax splits into two periods.
-2. **Employer review**:
-   - Click **Confirm 11 verified matches**.
-   - Priya Shah was over-withheld by $207 (Desktop 1.5%, Pickerington 1.0%). Confirm at the official rate.
-   - Move Sara Lee's union dues to deductions.
-   - Add the Teays Valley school tax that nobody withheld for Raj Patel ($648 back tax estimate).
-3. **Expert queue**:
+2. **Review** (employer):
+   - Click **Confirm 11 verified matches** under the list.
+   - Select Priya Shah's "School Tax". She was over-withheld by $207 (Desktop 1.5%, Pickerington 1.0%). Click **Confirm at official rate**.
+   - Select Sara Lee's "Union Dues" and click **Move to deductions**.
+   - Select Raj Patel's Teays Valley line: nobody withheld it ($648 back tax estimate). Click **Add from first cloud payroll**.
+3. **Expert**:
    - Kevin O'Neil's "Wage Garnishment" is set up as a tax in Desktop, so it conflicts. Mark it as not a tax.
-   - Mike Brown lives in Columbus City Schools, which has no school income tax. Stop that line.
+   - Mike Brown lives in Columbus City Schools, which has no school income tax. Click **Not owed: stop withholding**.
    - Tom Reed's "Local Tax" had no address. Map it to Lancaster CSD.
-4. Back on **Employer review**, the employer confirms the three expert decisions.
+4. Back on **Review**, the employer confirms the three expert decisions.
 5. **Go live**: four checks pass. The dollar tie-out ($12,063.60 accounted for) and the W-2 boxes are projected. Click **Go live with confirmed taxes**.
 6. **Reconcile**: run the first payroll and the first quarter. No expected tax is missing. Had Raj's gap been skipped, this screen would show a red flag.
 7. **Model governance**: Ohio passes every gate (silhouette 0.53, precision 100%, 53 labels). Pennsylvania stays in shadow mode. In **Try the gates**, set the silhouette threshold to 0.53 and Ohio drops to shadow mode (its score is 0.528); set it to 0.52 and suggestions come back.
