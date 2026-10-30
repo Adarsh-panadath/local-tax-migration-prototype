@@ -2,7 +2,7 @@
 import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs';
 import { MODEL_VERSION } from './engine/cluster.mjs';
 import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL } from './engine/workflow.mjs';
-import { monthSpan, rateText } from './engine/util.mjs';
+import { monthSpan, rateText, cloudMonths } from './engine/util.mjs';
 import { buildReport, casesCSV } from './report.mjs';
 import { GROUPS, runScenarios } from './scenarios.mjs';
 
@@ -17,12 +17,17 @@ let data = null;
 let state = loadState();
 const cache = new Map();
 let scenarioResults = null; // run once per page load, on the starting data
-let pendingFocus = null;    // an employee card to scroll to after the next render
+let pendingFocus = null;    // an employee row to scroll to after the next render (analysis, go live)
+let focusEmployee = null;   // an employee whose first record a workspace should select
+let lastView = null;
+let afterRender = null;     // one-off scroll adjustment after the next render
+let listY = 0;              // phone: where the record list was scrolled before opening a record
+let keepDetail = false;     // a link that opens a record in another view keeps the detail open
 
 // ---------- state ----------
 
 function freshState() {
-  return { companyId: 'C-FHS', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filter: 'action', open: {} };
+  return { companyId: 'C-FHS', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filters: { review: 'todo', expert: 'open' }, sel: {}, selIndex: {}, query: {}, detailOpen: false };
 }
 function loadState() {
   try {
@@ -30,7 +35,7 @@ function loadState() {
     if (raw) {
       const saved = JSON.parse(raw);
       const fresh = freshState();
-      return { ...fresh, ...saved, settings: { ...fresh.settings, ...(saved.settings ?? {}) } };
+      return { ...fresh, ...saved, settings: { ...fresh.settings, ...(saved.settings ?? {}) }, filters: { ...fresh.filters, ...(saved.filters ?? {}) }, sel: saved.sel ?? {}, selIndex: saved.selIndex ?? {}, query: saved.query ?? {} };
     }
   } catch { /* storage unavailable: start fresh */ }
   return freshState();
@@ -67,6 +72,34 @@ const money = (n) => usd.format(n);
 const pct = (x, digits = 1) => `${(x * 100).toFixed(digits)}%`;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const MARK = { pass: '✓', fail: '×', warn: '!', info: 'i' };
+// Line icons (24px grid, stroke drawn in the current text colour).
+const ICONS = {
+  landmark: '<path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M12 2 20 7H4z"/>',
+  building: '<path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/>',
+  home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+  pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  check: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  x: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  swap: '<path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/>',
+  file: '<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h4"/>',
+  target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  layers: '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+  user: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m16 11 2 2 4-4"/>',
+  history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+  steps: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+  spark: '<path d="M12 3v3"/><path d="M12 18v3"/><path d="m5.6 5.6 2.1 2.1"/><path d="m16.3 16.3 2.1 2.1"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="m5.6 18.4 2.1-2.1"/><path d="m16.3 7.7 2.1-2.1"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  reset: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  list: '<path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+};
+const icon = (name, cls = '') => `<svg class="ic${cls ? ` ${cls}` : ''}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[name]}</svg>`;
 const mark = (tone) => `<span class="mark ${tone}" aria-hidden="true">${MARK[tone]}</span>`;
 const labelOf = (l) => (String(l ?? '').trim() ? l : '(blank label)');
 const domId = (s) => String(s).replace(/[^A-Za-z0-9]/g, '-');
@@ -132,16 +165,49 @@ function render() {
       ${other ? `<p><button class="btn" type="button" data-action="company-switch" data-id="${esc(other.company_id)}">Open ${esc(other.name)}</button></p>` : ''}${footnote()}</div></main>`;
     return;
   }
+  const wide = view === 'review' || view === 'expert';
+  const listScroll = lastView === view ? document.querySelector('.records')?.scrollTop : null;
   const body = { clients: viewClients, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, reconcile: viewReconcile, scenarios: viewScenarios, model: viewModel, audit: viewAudit }[view](s);
-  app.innerHTML = `${topbar(s)}${rail(view, s)}<main class="main" id="main" tabindex="-1"><div class="page">${body}${footnote()}</div></main>`;
+  app.innerHTML = `${appbar(view, s)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
+  lastView = view;
+  if (wide) {
+    if (listScroll != null) { const r = document.querySelector('.records'); if (r) r.scrollTop = listScroll; }
+    applySearch(view);
+    // Keep the selected record visible inside the list, without moving the page.
+    const list = document.querySelector('.records');
+    const cur = list?.querySelector('.record[aria-current="true"]');
+    if (list && cur && list.scrollHeight > list.clientHeight) {
+      const lr = list.getBoundingClientRect();
+      const ir = cur.getBoundingClientRect();
+      if (ir.top < lr.top) list.scrollTop -= lr.top - ir.top;
+      else if (ir.bottom > lr.bottom) list.scrollTop += ir.bottom - lr.bottom;
+    }
+  }
+  if (afterRender) { const fn = afterRender; afterRender = null; fn(); }
   if (pendingFocus) {
     const id = pendingFocus;
     pendingFocus = null;
-    const target = document.getElementById(`emp-${domId(id)}`)?.closest('article') ?? document.querySelector(`[data-employee="${CSS.escape(id)}"]`);
+    const target = document.querySelector(`[data-employee="${CSS.escape(id)}"]`);
     if (target) {
       target.classList.add('spotlight');
       target.scrollIntoView({ block: 'start' });
     }
+  }
+}
+
+function applySearch(view) {
+  const q = (state.query[view] ?? '').trim().toLowerCase();
+  const items = [...document.querySelectorAll('.records > li')];
+  let shown = 0;
+  for (const li of items) {
+    const hit = !q || li.dataset.text.includes(q);
+    li.hidden = !hit;
+    if (hit) shown += 1;
+  }
+  const empty = document.getElementById('queue-empty');
+  if (empty) {
+    empty.hidden = shown > 0;
+    empty.textContent = items.length && !shown ? `No records match "${q}".` : empty.dataset.empty;
   }
 }
 
@@ -150,27 +216,46 @@ function scenarios() {
   return scenarioResults;
 }
 
-function topbar(s) {
+const STEP_TABS = [['analysis', 'Analysis'], ['review', 'Review'], ['expert', 'Expert'], ['golive', 'Go live'], ['reconcile', 'Reconcile']];
+const OVERSIGHT = [['scenarios', 'Scenarios', 'list'], ['model', 'Governance', 'gauge'], ['audit', 'Decision log', 'history'], ['clients', 'All clients', 'grid']];
+
+function appbar(view, s) {
+  const co = s.a.company;
   const options = data.companies.map((c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  const tab = ([id, text], i) => {
+    const n = id === 'review' ? s.awaiting : id === 'expert' ? s.expert : 0;
+    return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}><span class="step">${i + 1}</span>${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}</a>`;
+  };
+  const total = s.cases.length;
+  const decided = s.cases.filter((c) => !['awaiting_employer', 'with_expert'].includes(c.stage)).length;
+  const lines = s.cases.filter((c) => c.stage === 'awaiting_employer').length;
+  const gaps = s.awaiting - lines;
+  const action = lines + gaps + s.expert;
+  const share = total ? decided / total : 0;
   const used = statesInUse(s.a);
   const modes = Object.values(s.a.models).filter((m) => used.has(m.state))
     .map((m) => pill(`${m.name}: ${m.mode === 'assisted' ? 'suggestions on' : 'shadow mode'}`, m.mode === 'assisted' ? 'good' : 'warn')).join('');
-  return `<header class="topbar">
-    <div class="brand"><strong>Local Tax Migration</strong><span>Desktop to Online payroll · BRD v3 prototype</span></div>
-    <div class="company-picker"><label for="company">Company</label><select id="company" data-action="company">${options}</select>${pill(`${s.a.company.plan} plan`, 'info')}</div>
-    <div class="modes">${modes}</div>
-    <button class="btn quiet" type="button" data-action="reset">Reset demo</button>
+  const statusTone = { 'Not started': 'info', 'In review': 'accent', Live: 'good', Reconciled: 'good' }[s.status];
+  const sc = scenarios();
+  const passed = sc.filter((x) => x.pass).length;
+  const links = OVERSIGHT.map(([id, text, ic]) => `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}>${icon(ic)}${text}${id === 'scenarios' ? `<span class="count${passed === sc.length ? ' ok' : ''}">${passed}/${sc.length}</span>` : ''}</a>`).join('');
+  return `<header class="appbar">
+    <div class="appbar-main">
+      <a class="logo" href="#analysis"><span class="logo-tile">${icon('landmark')}</span><span class="logo-text"><span class="name"><strong>Local Tax Migration</strong><span class="tag" title="Fictional companies and people; real Ohio tax rates">Demo data</span></span><small>Desktop to Online Payroll · BRD v3</small></span></a>
+      <div class="company-box">${icon('building')}<label class="sr-only" for="company">Client</label><select id="company" data-action="company">${options}</select>${pill(`${co.plan} plan`, 'info')}</div>
+      <nav class="tabs" aria-label="Migration steps">${STEP_TABS.map(tab).join('')}</nav>
+      <button class="btn quiet reset" type="button" data-action="reset" title="Clear every decision and start the demo again">${icon('reset')}Reset</button>
+    </div>
+    <div class="batchbar">
+      <div class="batch-title">${icon('layers', 'lg')}<span class="bt-text">Local tax migration batch<small>Moves to Online payroll in ${monthSpan([co.migration_month])}</small></span>${pill(s.status, statusTone)}${modes}</div>
+      <div class="stats">
+        <div class="stat">Desktop lines<b>${total}</b></div>
+        <div class="stat">Decided<b class="good">${decided} of ${total} (${pct(share, 0)})</b><div class="progress" role="img" aria-label="${decided} of ${total} lines decided"><span style="width:${(share * 100).toFixed(1)}%"></span></div></div>
+        <div class="stat" title="${plural(lines, 'line')} waiting for the employer, ${s.expert} with an expert, ${plural(gaps, 'expected tax', 'expected taxes')} not withheld">Action needed<b class="${action ? 'warn' : ''}">${action}</b><small>${lines} employer · ${s.expert} expert · ${gaps} gap${gaps === 1 ? '' : 's'}</small></div>
+      </div>
+      <nav class="batch-links" aria-label="Oversight">${links}</nav>
+    </div>
   </header>`;
-}
-
-function rail(view, s) {
-  const link = (id, inner) => `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}>${inner}</a>`;
-  const steps = [['analysis', 'Analysis'], ['review', 'Employer review', s.awaiting], ['expert', 'Expert queue', s.expert], ['golive', 'Go live'], ['reconcile', 'Reconcile']];
-  return `<nav class="rail" aria-label="Sections">
-    <div class="rail-group"><span class="rail-title">Accountant</span>${link('clients', 'All clients')}</div>
-    <div class="rail-group"><span class="rail-title">Migration steps</span>${steps.map(([id, text, n], i) => link(id, `<span class="num">${i + 1}</span>${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}`)).join('')}</div>
-    <div class="rail-group"><span class="rail-title">Oversight</span>${link('scenarios', `Scenario coverage<span class="count ok" aria-label="${scenarioCount()}">${scenarioCount()}</span>`)}${link('model', 'Model governance')}${link('audit', 'Decision log')}</div>
-  </nav>`;
 }
 
 function scenarioCount() {
@@ -197,7 +282,7 @@ function viewClients() {
       <td class="num">${s.awaiting}</td>
       <td class="num">${s.expert}</td>
       <td>${pill(s.status, tone)}</td>
-      <td><div class="row"><button class="btn" type="button" data-action="open-client" data-id="${esc(c.company_id)}">Open</button><button class="btn quiet" type="button" data-action="bulk" data-company="${esc(c.company_id)}"${s.verified && !s.d.live ? '' : ' disabled'}>Confirm ${s.verified} verified</button></div></td>
+      <td><div class="row nowrap"><button class="btn" type="button" data-action="open-client" data-id="${esc(c.company_id)}">Open</button><button class="btn quiet" type="button" data-action="bulk" data-company="${esc(c.company_id)}"${s.verified && !s.d.live ? '' : ' disabled'}>Confirm ${s.verified} verified</button></div></td>
     </tr>`;
   }).join('');
   return `<div class="page-head"><h1>Clients moving to Online payroll</h1>
@@ -291,125 +376,445 @@ function demoGuide() {
   </section>`;
 }
 
-// ---------- 2 employer review ----------
+// ---------- 2 and 3: review workspaces (employer review and expert queue) ----------
+// A list of records on the left (Desktop lines, plus expected taxes nobody withheld) and the selected
+// record on the right: target, checks, Desktop-versus-Online mapping, evidence and a sticky action bar.
 
-function needsAction(e, cases, s) {
-  return cases.some((c) => c.stage === 'awaiting_employer') || s.a.gaps.some((g) => g.employee_id === e.employee_id && gapStage(g, s.d, s.cases) === 'awaiting_employer');
+const OPEN_STAGES = new Set(['awaiting_employer', 'with_expert']);
+const REASON_SHORT = {
+  shadow: 'Shadow mode', weak_signal: 'Weak signal', conflict: 'Conflict', not_expected: 'Not expected', duplicate: 'Duplicate',
+  state_conflict: 'Wrong state', no_address: 'No address', address_unresolved: 'Address not placed', ambiguous: 'Ambiguous', employer_sent: 'Sent by employer',
+};
+const REASON_TONE = {
+  conflict: 'bad', duplicate: 'bad', state_conflict: 'bad', not_expected: 'bad',
+  no_address: 'warn', address_unresolved: 'warn', weak_signal: 'warn', ambiguous: 'warn', shadow: 'info', employer_sent: 'blue',
+};
+const FILTERS = {
+  review: [['todo', 'Needs decision'], ['verified', 'Verified'], ['expert', 'With expert', 'warn'], ['done', 'Done'], ['all', 'All']],
+  expert: [['open', 'Open', 'warn'], ['decided', 'Decided'], ['all', 'All']],
+};
+const badge = (text, tone = '') => `<span class="badge ${tone}">${esc(text)}</span>`;
+const rateFmt = (r) => `${Number(r).toFixed(2)}%`;
+const taxCode = (t) => (t.type === 'school_district' ? `SD ${t.code}` : t.place);
+const isOff = (c) => c.route === 'local_tax' && c.proposal.some((p) => p.rate.status === 'over' || p.rate.status === 'under');
+const siteOf = (e, a) => a.company.worksites.find((w) => w.site_id === e.site_id);
+const addrLine = (ad) => [ad.line1, ad.city, [ad.state, ad.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+const fold = (ic, title, body, open = false) => `<details class="fold"${open ? ' open' : ''}><summary>${icon(ic)}${esc(title)}${icon('chevron', 'chev')}</summary><div class="fold-body">${body}</div></details>`;
+const note = (tone, ic, text) => `<span class="note ${tone}">${icon(ic)}<span>${esc(text)}</span></span>`;
+const place = (ic, cls, label, main, sub) => `<div class="place"><span class="pic ${cls}">${icon(ic)}</span><div><b>${esc(label)}</b><strong>${esc(main)}</strong><span>${esc(sub)}</span></div></div>`;
+
+function homeText(e) {
+  if (!e.expected.periods.length) return 'No home address';
+  const cities = [...new Set(e.expected.periods.map((p) => addressById(p.address_id)?.city || 'Unknown'))];
+  return `${cities.join(' to ')} home`;
 }
 
-function viewReview(s) {
+function caseBadge(c) {
+  if (c.stage === 'with_expert') return [REASON_SHORT[c.reason] ?? 'With an expert', REASON_TONE[c.reason] ?? 'warn'];
+  if (c.stage === 'awaiting_employer') {
+    if (c.decision.expert) return ['Expert decided', 'blue'];
+    if (c.route === 'not_a_tax') return ['Not a tax', 'info'];
+    if (c.route === 'local_tax') {
+      if (c.verified) return ['Verified', 'good'];
+      if (c.unowed?.amount) return ['Correction', 'warn'];
+      if (isOff(c)) return ['Rate differs', 'warn'];
+      if (c.flags.includes('label_place_mismatch')) return ['Check place', 'warn'];
+      if (c.proposal.some((p) => p.optional)) return ['Optional', 'info'];
+      return ['Suggested', 'accent'];
+    }
+    return ['To decide', 'info'];
+  }
+  return { confirmed: ['Confirmed', 'done'], moved_to_deduction: ['Deduction', 'done'], employer_managed: ['Employer-managed', 'done'], stopped: ['Stopped', 'done-bad'] }[c.stage] ?? [c.stage, 'info'];
+}
+
+function caseFoot(c) {
+  if (c.route === 'local_tax') return ['Proposed', c.proposal.map((p) => `${taxCode(p.tax)} ${rateFmt(p.tax.rate)}`).join(' then '), c.verified || c.stage === 'confirmed' ? 'good' : 'warn'];
+  if (c.route === 'not_a_tax') return ['Proposed', 'Deduction', ''];
+  if (c.route === 'custom_entry') return ['Outcome', c.entry.name, ''];
+  if (c.route === 'stop') return ['Outcome', 'Stop withholding', 'bad'];
+  return ['Reason', REASON_SHORT[c.reason] ?? c.reason, REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn'];
+}
+
+function recordList(view, s) {
+  const order = new Map(s.a.employees.map((e, i) => [e.employee_id, i]));
+  const out = [];
+  const cases = view === 'expert' ? s.cases.filter((c) => c.stage === 'with_expert' || c.decision.expert) : s.cases;
+  for (const c of cases) {
+    const e = c.employee;
+    const [b, tone] = caseBadge(c);
+    const groups = new Set(['all']);
+    if (view === 'review') {
+      if (c.stage === 'awaiting_employer') groups.add('todo');
+      if (c.stage === 'awaiting_employer' && c.verified) groups.add('verified');
+      if (c.stage === 'with_expert') groups.add('expert');
+      if (!OPEN_STAGES.has(c.stage)) groups.add('done');
+    } else groups.add(c.stage === 'with_expert' ? 'open' : 'decided');
+    const foot = caseFoot(c);
+    out.push({
+      key: `c|${c.case_id}`, kind: 'case', c, employee_id: c.employee_id, name: c.employee_name, badge: b, tone, groups, foot,
+      sub: `"${labelOf(c.item.label)}" · Law ID ${c.item.law_id}`,
+      loc: `${homeText(e)} · ${siteOf(e, s.a).name}`,
+      text: [c.employee_name, c.item.label, b, foot[1], ...c.proposal.map((p) => p.tax.name)].join(' ').toLowerCase(),
+    });
+  }
+  if (view === 'review') {
+    for (const g of s.a.gaps) {
+      const stage = gapStage(g, s.d, s.cases);
+      const e = s.a.employees.find((x) => x.employee_id === g.employee_id);
+      const groups = new Set(['all', stage === 'awaiting_employer' ? 'todo' : 'done']);
+      const [b, tone] = { awaiting_employer: ['Not withheld', 'bad'], added: ['Added', 'done'], covered: ['Covered', 'done'] }[stage];
+      out.push({
+        key: `g|${g.gap_id}`, kind: 'gap', g, employee_id: g.employee_id, name: g.employee_name, badge: b, tone, groups,
+        foot: ['Back tax', money(g.backTaxEstimate), stage === 'awaiting_employer' ? 'bad' : ''],
+        sub: `No Desktop item · ${taxShort(g.tax)}`,
+        loc: `${homeText(e)} · ${siteOf(e, s.a).name}`,
+        text: [g.employee_name, g.tax.name, b, 'not withheld gap'].join(' ').toLowerCase(),
+      });
+    }
+  }
+  return out.map((r, i) => ({ r, i })).sort((x, y) => order.get(x.r.employee_id) - order.get(y.r.employee_id) || x.i - y.i).map((x) => x.r);
+}
+
+// The selected record: kept across renders; a scenario link picks the employee's first record;
+// when the selected record leaves the list (decided), the next one in the same position is shown.
+function pickSelection(view, list) {
+  let key = state.sel[view];
+  if (focusEmployee) {
+    const hit = list.find((x) => x.employee_id === focusEmployee && x.groups.has('todo')) ?? list.find((x) => x.employee_id === focusEmployee);
+    if (hit) key = hit.key;
+    focusEmployee = null;
+  }
+  let i = list.findIndex((x) => x.key === key);
+  if (i < 0) i = Math.min(state.selIndex[view] ?? 0, list.length - 1);
+  const r = list[i] ?? null;
+  state.sel[view] = r?.key ?? null;
+  state.selIndex[view] = Math.max(i, 0);
+  return r;
+}
+
+function workspace(view, s) {
+  const all = recordList(view, s);
+  const filter = FILTERS[view].some(([id]) => id === state.filters[view]) ? state.filters[view] : FILTERS[view][0][0];
+  const list = all.filter((r) => r.groups.has(filter));
+  const sel = pickSelection(view, list);
   const live = s.d.live;
-  const filter = state.filter;
-  const cards = s.a.employees.map((e) => {
-    const cases = s.cases.filter((c) => c.employee_id === e.employee_id);
-    if (filter === 'action' && !needsAction(e, cases, s)) return '';
-    return employeeCard(e, cases, s, live);
+  const chips = FILTERS[view].map(([id, text, tone]) => {
+    const n = all.filter((r) => r.groups.has(id)).length;
+    return `<button type="button" class="fchip${tone && n && filter !== id ? ` ${tone}` : ''}" data-action="queue-filter" data-view="${view}" data-value="${id}" aria-pressed="${filter === id}">${text}<span>${n}</span></button>`;
   }).join('');
-  const toolbar = `<div class="toolbar">
-      <div class="segmented" role="group" aria-label="Show">
-        <button type="button" data-action="filter" data-value="action" aria-pressed="${filter === 'action'}">Needs your decision</button>
-        <button type="button" data-action="filter" data-value="all" aria-pressed="${filter === 'all'}">All employees</button>
+  const items = list.map((r) => {
+    const [fl, fv, ft] = r.foot;
+    return `<li data-text="${esc(r.text)}"><button type="button" class="record" data-action="select" data-key="${esc(r.key)}"${sel?.key === r.key ? ' aria-current="true"' : ''}>
+      <span class="rec-top"><strong>${esc(r.name)}</strong>${badge(r.badge, r.tone)}</span>
+      <span class="rec-sub">${esc(r.sub)}</span>
+      <span class="rec-loc">${icon('pin')}${esc(r.loc)}</span>
+      <span class="rec-foot"><span>${esc(fl)}</span><span class="v ${ft}">${esc(fv)}</span></span>
+    </button></li>`;
+  }).join('');
+  const emptyText = {
+    todo: 'Nothing is waiting for the employer.', verified: 'No verified matches are waiting.', expert: 'No lines are with an expert.',
+    done: 'No decisions yet.', all: 'No records.', open: 'The expert queue is empty.', decided: 'No expert decisions yet.',
+  }[filter];
+  const title = view === 'review' ? 'Employer review' : 'Expert queue';
+  const blurb = view === 'review' ? plural(all.length, 'record') : `${all.filter((r) => r.groups.has('open')).length} open`;
+  const foot = view === 'review'
+    ? `<div class="queue-foot"><button class="btn primary" type="button" data-action="bulk"${s.verified && !live ? '' : ' disabled'}>${icon('check')}Confirm ${plural(s.verified, 'verified match', 'verified matches')}</button><p>Verified: on the expected list, the rate matches, and nothing is flagged.</p></div>`
+    : '<div class="queue-foot"><p>Lines the system would not decide alone. An Intuit payroll expert decides; the employer still confirms before anything goes live.</p></div>';
+  let detail;
+  if (!sel) detail = `${mobileBack(view)}<div class="empty"><strong>${esc(emptyText)}</strong><span>${view === 'review' ? (s.expert ? `${plural(s.expert, 'line')} still with an expert. Those stay off until an expert decides and you confirm.` : 'Every line has a decision.') : 'Every line the system could not settle has an expert decision.'}</span><a class="btn" href="#golive">Go to go-live checks</a></div>`;
+  else if (sel.kind === 'gap') detail = gapDetail(sel.g, s);
+  else detail = caseDetail(sel.c, s, view);
+  return `<div class="workspace" data-open="${state.detailOpen && sel ? 'true' : 'false'}">
+    <aside class="queue" aria-label="${title} list">
+      <div class="queue-head">
+        <div class="queue-title"><h1>${title}</h1><span>${esc(blurb)}</span></div>
+        <label class="search">${icon('search')}<span class="sr-only">Search ${title.toLowerCase()}</span><input type="search" id="queue-search" placeholder="Search employee, item or tax" value="${esc(state.query[view] ?? '')}" autocomplete="off"></label>
+        <div class="filter-chips" role="group" aria-label="Show">${chips}</div>
       </div>
-      <button class="btn primary" type="button" data-action="bulk"${s.verified && !live ? '' : ' disabled'}>Confirm ${plural(s.verified, 'verified match', 'verified matches')}</button>
-    </div>`;
-  const empty = `<div class="empty"><strong>Nothing is waiting for the employer.</strong><span>${s.expert ? `${plural(s.expert, 'item')} still with an expert. Those stay off until an expert decides and you confirm.` : 'Every line has a decision.'}</span><a class="btn" href="#golive">Go to go-live checks</a></div>`;
-  return `<div class="page-head"><h1>Employer review</h1>
-    <p class="lede">One card per employee. The expected taxes come from their addresses; each Desktop line shows where it would go and why. ${live ? 'This company is live, so decisions are locked.' : 'Verified matches are on the expected list and pass the rate check; anything else shows what is wrong.'}</p></div>
-    ${toolbar}
-    ${cards || empty}`;
+      <ul class="records">${items}</ul>
+      <p class="queue-empty" id="queue-empty" data-empty="${esc(emptyText)}"${items ? ' hidden' : ''}>${esc(emptyText)}</p>
+      ${foot}
+    </aside>
+    <section class="detail" aria-label="Selected record">${detail}</section>
+  </div>`;
 }
 
-function employeeCard(e, cases, s, live) {
-  const site = s.a.company.worksites.find((w) => w.site_id === e.site_id);
-  const work = addressById(site.address_id);
-  const homes = e.expected.periods.length
-    ? e.expected.periods.map((p) => { const ad = addressById(p.address_id); return `<span>Home: ${esc([ad.line1, ad.city, [ad.state, ad.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '))}${e.expected.periods.length > 1 ? ` (${monthSpan(p.months)})` : ''}</span>`; }).join('')
-    : '<span class="bad-text">Home: missing in Desktop</span>';
-  const chips = e.expected.list.map((x) => {
-    const partYear = x.months.length < 12 ? `, ${monthSpan(x.months)}` : '';
-    return `<span class="chip${x.required ? '' : ' optional'}">${x.tax.type === 'school_district' ? `<span class="code">SD ${esc(x.tax.code)}</span>` : ''}${esc(taxShort(x.tax))} ${x.tax.rate}% <em>${x.basis}${x.required ? '' : ', optional'}${partYear}</em></span>`;
-  }).join('');
-  const notes = e.expected.notes.map((n) => `<span class="note ${n.tone === 'warn' ? 'warn' : ''}">${esc(n.text)}</span>`).join('');
-  const gaps = s.a.gaps.filter((g) => g.employee_id === e.employee_id).map((g) => gapRow(g, s, live)).join('');
-  const employment = employmentText(e);
-  return `<article class="employee" aria-labelledby="emp-${domId(e.employee_id)}">
-    <div class="employee-head">
-      <div><h3 id="emp-${domId(e.employee_id)}">${esc(e.name)}</h3><div class="facts">${homes}<span>Works at: ${esc(site.name)}, ${esc(work.city)}, ${esc(work.state)}${e.remote ? ' (works from home)' : ''}</span><span>Monthly wages: ${money(e.monthly_wages)}${employment ? `. ${esc(employment)}` : ''}</span></div></div>
-      <div class="expected"><span class="expected-title">Expected taxes, from the addresses</span><div class="chips">${chips || '<span class="muted small">None listed</span>'}</div>${notes ? `<div class="notes">${notes}</div>` : ''}</div>
+const mobileBack = (view) => `<div class="mobile-back"><button class="btn quiet" type="button" data-action="back">${icon('back')}Back to the ${view === 'review' ? 'review' : 'expert'} queue</button></div>`;
+
+function viewReview(s) { return workspace('review', s); }
+function viewExpert(s) { return workspace('expert', s); }
+
+// ---------- record detail ----------
+
+function recordHeader(name, id, sub, pills, target, next) {
+  return `<div class="rec-header">
+    <div class="rec-title">
+      <div><h2>${esc(name)}<span class="idchip">${esc(id)}</span></h2><p class="sub">${sub}</p></div>
+      <div class="row">${pills}</div>
     </div>
-    ${cases.map((c) => caseRow(c, live)).join('')}
-    ${gaps}
-  </article>`;
+    <div class="target-grid">${target}<div class="next"><span class="label">Next step</span><p>${esc(next)}</p></div></div>
+  </div>`;
 }
 
-function proposalHtml(c) {
+function targetCard(tone, ic, title, text) {
+  return `<div class="target ${tone}"><span class="tic">${icon(ic, 'lg')}</span><div><strong>${esc(title)}</strong><p>${esc(text)}</p></div></div>`;
+}
+
+function caseTarget(c) {
   if (c.route === 'local_tax') {
-    const rows = c.proposal.map((p) => {
-      const off = p.rate.status === 'over' || p.rate.status === 'under';
-      const notes = [];
-      if (p.fromExpert) notes.push('Mapped by an expert');
-      if (p.optional) notes.push('Optional courtesy withholding: the employer decides');
-      if (p.rate.status === 'no_history') notes.push(`No Desktop months to compare; Online uses ${esc(p.rate.official)}`);
-      return `<div class="proposal"><strong>${esc(p.tax.name)}</strong>${p.tax.type === 'school_district' ? ` <span class="code">SD ${esc(p.tax.code)}</span>` : ''}
-        <span class="sub">${p.tax.rate}%${p.tax.base ? ` ${esc(p.tax.base.toLowerCase())}` : ''}, ${basisText(p.basis)}, ${monthSpan(p.months)}${notes.length ? `. ${notes.join('. ')}` : ''}${off ? `. <span class="bad-text">Desktop used ${esc(p.rate.desktop)}: ${p.rate.status === 'over' ? 'over' : 'under'}-withheld ${money(Math.abs(p.rate.difference))}</span>` : ''}</span></div>`;
-    }).join('');
-    const extra = [];
-    if (c.unowed?.amount) extra.push(`<span class="bad-text">${money(c.unowed.amount)} withheld in ${monthSpan(c.unowed.months)} was not owed (after a move). It needs a correction with the agency.</span>`);
-    if (c.flags.includes('label_place_mismatch')) extra.push('<span class="warn-text">The label names a different place than the address. The address decides.</span>');
-    return rows + (extra.length ? `<div class="proposal-notes">${extra.join('')}</div>` : '');
+    const title = `Target: ${c.proposal.map((p) => `${p.tax.name}${p.tax.type === 'school_district' ? ` (SD ${p.tax.code})` : ''}${c.proposal.length > 1 ? `, ${monthSpan(p.months)}` : ''}`).join('; then ')}`;
+    const p = c.proposal[0];
+    const where = p.address ? ` Found from the ${basisText(p.basis)}: ${[p.address.line1, p.address.city].filter(Boolean).join(', ')}.` : '';
+    const text = p.fromExpert ? `Mapped by an expert: ${expertText(c)}.` : `${c.reasonText}${where}`;
+    return targetCard(c.verified || c.stage === 'confirmed' ? '' : 'warn', 'target', title, text);
   }
   if (c.route === 'not_a_tax') {
     const why = c.decision.expert?.action === 'not_a_tax' ? 'An expert decided this is not a tax.' : c.reasonText;
-    return `<div class="proposal"><strong>Non-tax deduction</strong><span class="sub">${esc(why)} It will never be filed as a tax.</span></div>`;
+    return targetCard('neutral', 'file', 'Target: non-tax deduction', `${why} It moves to deductions and is never filed as a tax.`);
   }
   if (c.route === 'custom_entry') {
     const e = c.entry;
-    return `<div class="proposal"><strong>${esc(e.name)}</strong> <span class="code">Custom entry</span><span class="sub">Employer-managed: you pay and file it. ${esc(e.agency)}, ${e.flat ? `${money(e.flat)} a year` : `${e.rate}%`}, ${basisText(e.basis)}, ${esc(e.frequency)}.</span></div>`;
+    return targetCard('blue', 'user', `Target: custom entry "${e.name}"`, `Employer-managed: you pay and file it. ${e.agency}, ${e.flat ? `${money(e.flat)} a year` : `${e.rate}%`}, ${basisText(e.basis)}, ${e.frequency}.`);
   }
   if (c.route === 'stop') {
-    return `<div class="proposal"><strong>Not owed: stop withholding</strong><span class="sub">${esc(c.decision.expert?.note || 'An expert found this tax does not apply to this employee.')} ${c.ytd ? `${money(c.ytd)} withheld so far needs a correction with the agency.` : ''}</span></div>`;
+    return targetCard('bad', 'x', 'Target: stop withholding', `${c.decision.expert?.note || 'An expert found this tax does not apply to this employee.'}${c.ytd ? ` ${money(c.ytd)} withheld so far needs a correction with the agency.` : ''}`);
   }
-  return `<div class="proposal"><strong>Not in database</strong><span class="sub">${esc(c.reasonText)} An expert decides; it stays off until then.</span></div>`;
+  return targetCard(REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn', 'alert', `No target yet: ${(REASON_SHORT[c.reason] ?? 'needs an expert').toLowerCase()}`, `${c.reasonText} An expert decides; it stays off until then.`);
 }
 
-function withheldText(c) {
-  const months = c.ytdByMonth.map((x) => x.month);
-  return months.length ? `${money(c.ytd)} withheld ${monthSpan(months)}` : 'nothing withheld in Desktop this year';
+function nextStep(c, view, live) {
+  if (live) return OPEN_STAGES.has(c.stage) ? 'This company is live, so decisions are locked. Undo go-live to change them.' : `Done: ${STAGE_LABEL[c.stage].toLowerCase()}. This company is live.`;
+  if (view === 'expert') {
+    if (c.stage === 'with_expert') return EXPERT_HINT[c.reason] ?? 'Decide how this line should migrate.';
+    return `Decided: ${expertText(c)}. The employer ${c.stage === 'awaiting_employer' ? 'confirms it next' : 'has confirmed it'}.`;
+  }
+  if (c.stage === 'with_expert') return c.decision.sentToExpert && !c.decision.expert ? 'You sent this to an expert. Take it back from More actions if that was a mistake.' : 'Nothing to do yet. An expert decides first, then you confirm.';
+  if (c.stage === 'awaiting_employer') {
+    if (c.decision.expert) return `An expert decided: ${expertText(c)}. Confirm to accept it.`;
+    if (c.route === 'not_a_tax') return 'Move it to deductions. It will never be filed as a tax.';
+    if (c.route === 'local_tax') {
+      if (c.unowed?.amount) return `Confirm, and flag ${money(c.unowed.amount)} withheld after the move for a correction with the agency.`;
+      const off = c.proposal.find((p) => p.rate.status === 'over' || p.rate.status === 'under');
+      if (off) return `Confirm at the official ${off.rate.official}. Desktop used ${off.rate.desktop}; the W-2 keeps what was really withheld.`;
+      if (c.flags.includes('label_place_mismatch')) return 'Check the address: the label names another place. The address decides.';
+      if (c.proposal.some((p) => p.optional)) return 'Decide whether to keep the optional home-city withholding.';
+      return 'Confirm the mapping. It is on the expected list and the rate matches.';
+    }
+    return 'Confirm the decision.';
+  }
+  return `Done: ${STAGE_LABEL[c.stage].toLowerCase()}. Undo it from the action bar if needed.`;
 }
 
-function caseRow(c, live) {
-  const decided = !['awaiting_employer', 'with_expert'].includes(c.stage);
-  const open = state.open[c.case_id] ?? !(c.verified || decided);
-  const route = ROUTE[c.route];
-  const evidence = [...c.evidence];
-  if (c.decision.sentToExpert) evidence.push({ tone: 'info', text: `The employer sent this to an expert${c.decision.sentToExpert.note ? `: ${c.decision.sentToExpert.note}` : ''}.` });
-  if (c.decision.expert) evidence.push({ tone: 'info', text: `Expert decision: ${expertText(c)}.` });
-  const id = domId(c.case_id);
-  let actions = '';
-  if (!live) {
-    if (c.stage === 'with_expert') {
-      actions = c.decision.sentToExpert && !c.decision.expert
-        ? `<span class="hint">You sent this to an expert.</span><button class="btn quiet" type="button" data-action="unsend-expert" data-id="${esc(c.case_id)}">Take it back</button>`
-        : '<span class="hint">In the expert queue. Stays off until an expert decides.</span>';
-    } else if (c.stage === 'awaiting_employer') {
-      const off = c.route === 'local_tax' && c.proposal.some((p) => p.rate.status === 'over' || p.rate.status === 'under');
-      const optional = c.route === 'local_tax' && c.proposal.some((p) => p.optional);
-      const label = { local_tax: optional ? 'Keep courtesy withholding' : c.unowed?.amount ? 'Confirm and flag correction' : off ? 'Confirm at official rate' : 'Confirm', not_a_tax: 'Move to deductions', custom_entry: 'Accept as employer-managed', stop: 'Stop withholding' }[c.route];
-      const send = !c.decision.expert ? `<button class="btn quiet" type="button" data-action="send-expert" data-id="${esc(c.case_id)}">Send to expert</button>` : '';
-      actions = `<button class="btn primary" type="button" data-action="decide" data-id="${esc(c.case_id)}">${label}</button>${send}`;
-    } else actions = `<button class="btn quiet" type="button" data-action="undo-decide" data-id="${esc(c.case_id)}">Undo</button>`;
+function checksBanner(c) {
+  const meta = `<span class="meta">${esc(stateName(c.state))} · ${c.model ? (c.model.shown ? 'model shown' : 'model logged only') : 'rules only'}</span>`;
+  if (c.decision.expert) return `<div class="banner info">${icon('user', 'lg')}<div><strong>Expert decision:</strong> ${esc(expertText(c))}. The system's original findings are under "How the system decided".</div>${meta}</div>`;
+  const issues = c.evidence.filter((x) => x.tone === 'fail' || x.tone === 'warn').map((x) => x.text);
+  if (c.decision.sentToExpert) issues.push('The employer sent this line to an expert.');
+  if (!issues.length) {
+    const why = c.route === 'local_tax' ? 'On the expected list, the rate matches, no conflicts.' : c.route === 'not_a_tax' ? 'Desktop and the label agree this is not a tax.' : 'No blocking conflicts.';
+    return `<div class="banner good">${icon('check', 'lg')}<div><strong>All checks passed.</strong> ${why}</div>${meta}</div>`;
   }
-  return `<div class="case${decided ? ' decided' : ''}">
-    <div class="case-item"><strong>${esc(labelOf(c.item.label))}</strong>
-      <div class="meta">Law ID ${c.item.law_id} (${c.item.origin === 'custom' ? 'custom' : 'system-defined'}), ${esc(rateText(c.item))}, ${withheldText(c)}</div></div>
-    <div class="case-body">
-      <div class="row">${pill(route.label, route.tone)}${pill(STAGE_LABEL[c.stage], STAGE_TONE[c.stage])}${c.verified && c.stage === 'awaiting_employer' ? pill('Verified', 'good') : ''}</div>
-      ${proposalHtml(c)}
-      <div><button class="btn quiet why" type="button" data-action="toggle" data-id="${esc(c.case_id)}" aria-expanded="${open}" aria-controls="ev-${id}">${open ? 'Hide evidence' : 'Show evidence'}</button>
-      <ul class="marks" id="ev-${id}"${open ? '' : ' hidden'}>${evidence.map((x) => `<li>${mark(x.tone)}<span>${esc(x.text)}</span></li>`).join('')}</ul></div>
-    </div>
-    <div class="case-actions">${actions}</div>
-  </div>`;
+  const tone = c.stage === 'with_expert' && REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn';
+  return `<div class="banner ${tone}">${icon('alert', 'lg')}<div><strong>${plural(issues.length, 'thing', 'things')} to check</strong><ul>${issues.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>${meta}</div>`;
+}
+
+function mappingTable(rows) {
+  return `<section class="card" aria-label="Desktop versus Online mapping">
+    <div class="card-head"><span class="card-title">${icon('swap')}Desktop versus Online mapping</span><span class="meta">QuickBooks Desktop → QuickBooks Online Payroll</span></div>
+    <div class="table-wrap"><table class="map-table"><thead><tr><th>Field</th><th>Desktop (source)</th><th>Online (target)</th><th>Check</th></tr></thead><tbody>
+      ${rows.map(([k, a, b, n, cls]) => `<tr${cls ? ` class="${cls}"` : ''}><td>${esc(k)}</td><td data-l="Desktop">${a}</td><td data-l="Online">${b}</td><td>${n}</td></tr>`).join('')}
+    </tbody></table></div>
+  </section>`;
+}
+
+function caseMapping(c, s) {
+  const item = c.item;
+  const custom = item.origin === 'custom';
+  const srcItem = `<span class="src">${esc(labelOf(item.label))}</span>${custom ? ' <span class="none">free text</span>' : ''}`;
+  const src = (t) => `<span class="src">${esc(t)}</span>`;
+  const tgt = (t, cls = '') => `<span class="tgt ${cls}">${esc(t)}</span>`;
+  const none = (t) => `<span class="none">${esc(t)}</span>`;
+  const stack = (list) => `<div class="cell-stack">${list.join('')}</div>`;
+  const desktopMonthsList = c.ytdByMonth.map((x) => x.month);
+  const cloud = cloudMonths(s.a.company).filter((m) => c.employee.expected.employed.includes(m));
+  const ytdRow = (n) => ['Year to date', `<span class="val">${money(c.ytd)}</span>`, n[0], n[1], 'total'];
+  const rows = [];
+  if (c.route === 'local_tax') {
+    const target = (fn) => stack(c.proposal.map((p) => tgt(fn(p), c.verified || c.stage === 'confirmed' ? '' : 'warn')));
+    const fromExpert = c.proposal.some((p) => p.fromExpert);
+    rows.push(['Tax item', srcItem, target((p) => `${p.tax.name}${p.tax.type === 'school_district' ? ` · SD ${p.tax.code}` : ''}${c.proposal.length > 1 ? ` · ${monthSpan(p.months)}` : ''}`),
+      fromExpert ? note('blue', 'user', 'Mapped by an expert') : custom ? note('good', 'check', `Clustered as ${c.model?.entry_label ?? 'a defined tax'}`) : note('good', 'check', 'Intuit-defined item')]);
+    rows.push(['Jurisdiction', custom ? none('Not recorded in Desktop') : src(s.a.idx.taxes.get(item.system_tax_id)?.name ?? item.system_tax_id), target((p) => `${p.tax.place} · ${basisText(p.basis)}`), note('good', 'pin', 'From the address lookup')]);
+    const sameAgency = c.proposal.every((p) => String(p.tax.agency).toLowerCase() === String(item.agency ?? '').toLowerCase());
+    rows.push(['Agency', item.agency ? src(item.agency) : none('None on file'), target((p) => p.tax.agency), sameAgency ? note('good', 'check', 'Same agency') : note('', 'info', 'Replaced by the official agency')]);
+    rows.push(['Rate', src(rateText(item)), target((p) => `${rateFmt(p.tax.rate)}${p.tax.base ? ` ${p.tax.base.toLowerCase()}` : ''}`), stack(c.proposal.map((p) => {
+      const r = p.rate;
+      if (r.status === 'match') return note('good', 'check', 'No difference');
+      if (r.status === 'over' || r.status === 'under') return note('warn', 'alert', `${r.status === 'over' ? 'Over' : 'Under'}-withheld ${money(Math.abs(r.difference))} (${monthSpan(r.months)})`);
+      if (r.status === 'no_history') return note('', 'info', 'No Desktop months to compare');
+      return note('', 'info', 'Flat amount: not compared');
+    }))]);
+    rows.push(['Months', desktopMonthsList.length ? src(monthSpan(desktopMonthsList)) : none('None this year'), cloud.length ? tgt(monthSpan(cloud)) : none('No Online paychecks'), note('', 'history', desktopMonthsList.length ? 'Desktop months relabelled on the W-2' : 'No Desktop history to relabel')]);
+    rows.push(ytdRow(c.unowed?.amount
+      ? [tgt(money(c.ytd), 'warn'), note('bad', 'alert', `${money(c.unowed.amount)} not owed (${monthSpan(c.unowed.months)}): correction needed`)]
+      : [`<span class="val">${money(c.ytd)}</span>`, note('good', 'check', 'Kept as withheld')]));
+    if (c.flags.includes('label_place_mismatch')) rows.splice(2, 0, ['Place in label', srcItem, target((p) => p.tax.place), note('warn', 'alert', 'The label names another place; the address decides')]);
+    return mappingTable(rows);
+  }
+  if (c.route === 'not_a_tax') {
+    rows.push(['Tax item', srcItem, tgt('Non-tax deduction'), c.decision.expert ? note('blue', 'user', 'Decided by an expert') : note('good', 'check', c.reasonText)]);
+    rows.push(['Desktop setting', src(`${item.item_type}, ${item.tracking_type}`), tgt('After-tax deduction'), note('', 'info', 'Never filed as a tax')]);
+    rows.push(['Rate', src(rateText(item)), tgt(rateText(item)), note('good', 'check', 'Amount unchanged')]);
+    rows.push(ytdRow([`<span class="val">${money(c.ytd)}</span>`, note('', 'info', 'Stays a deduction on the W-2')]));
+    return mappingTable(rows);
+  }
+  if (c.route === 'custom_entry') {
+    const e = c.entry;
+    rows.push(['Tax item', srcItem, tgt(e.name, 'blue'), note('blue', 'user', 'Structured custom entry by an expert')]);
+    rows.push(['Type and basis', src(`${item.item_type}, ${item.tracking_type}`), tgt(`${e.type} · ${basisText(e.basis)}`, 'blue'), note('', 'info', 'Sent to catalogue review')]);
+    rows.push(['Agency', item.agency ? src(item.agency) : none('None on file'), tgt(e.agency, 'blue'), note('', 'info', `Files ${String(e.frequency).toLowerCase()}`)]);
+    rows.push(['Rate', src(rateText(item)), tgt(e.flat ? `${money(e.flat)} a year` : rateFmt(e.rate), 'blue'), note('warn', 'alert', 'Employer-managed: QuickBooks will not pay or file it')]);
+    rows.push(ytdRow([`<span class="val">${money(c.ytd)}</span>`, note('good', 'check', 'Kept as withheld')]));
+    return mappingTable(rows);
+  }
+  if (c.route === 'stop') {
+    rows.push(['Tax item', srcItem, tgt('Stop withholding', 'bad'), note('blue', 'user', 'Decided by an expert')]);
+    rows.push(['Rate', src(rateText(item)), tgt('0.00%', 'bad'), note('', 'info', 'Nothing withheld from Online paychecks')]);
+    rows.push(ytdRow([tgt(money(c.ytd), 'bad'), note('bad', 'alert', c.ytd ? 'Not owed: correction needed with the agency' : 'Nothing withheld')]));
+    return mappingTable(rows);
+  }
+  const other = c.duplicateOf ? s.cases.find((x) => x.case_id === c.duplicateOf) : null;
+  rows.push(['Tax item', srcItem, none('No target yet'), note(REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn', 'alert', REASON_SHORT[c.reason] ?? 'Needs an expert')]);
+  if (other) rows.push(['Already withheld by', none('This line'), tgt(`"${labelOf(other.item.label)}"`, 'warn'), note('bad', 'alert', 'Keeping both would withhold twice')]);
+  rows.push(['Desktop setting', src(`${item.item_type}, ${item.tracking_type}`), none('An expert decides'), note('', 'info', `Law ID ${item.law_id}${custom ? ', custom item' : ''}`)]);
+  if (c.model) rows.push(['Model suggestion', none('Label only'), c.model.entry_label ? tgt(c.model.entry_label, 'blue') : none('No defined entry'), note(c.model.shown ? 'blue' : '', 'spark', `${c.model.confidence} confidence, silhouette ${c.model.item_silhouette.toFixed(2)}${c.model.shown ? '' : ' (logged, hidden)'}`)]);
+  rows.push(['Rate', src(rateText(item)), none('After the decision'), note('', 'info', 'Checked once a tax is chosen')]);
+  rows.push(ytdRow(['<span class="none">Not migrated yet</span>', note('warn', 'alert', 'Stays off until decided')]));
+  return mappingTable(rows);
+}
+
+function districtText(ad, s) {
+  if (ad.missing) return 'Not in the address lookup';
+  if (ad.school_district === 'UNRESOLVED') return 'School district: could not be placed';
+  if (String(ad.school_district ?? '').startsWith('NO-TAX')) return 'School district with no income tax';
+  if (!ad.school_district) return 'No school district on file';
+  const sd = [...s.a.idx.taxes.values()].find((t) => t.type === 'school_district' && t.code === ad.school_district);
+  return sd ? `SD ${sd.code} · ${sd.name}` : `School district ${ad.school_district}`;
+}
+
+function evidenceCard(s, { employee: e, state: st, match = new Set(), steps = [], model = null, historyTarget = '', openSteps = false }) {
+  const site = siteOf(e, s.a);
+  const work = addressById(site.address_id);
+  const homes = e.expected.periods.length
+    ? e.expected.periods.map((p) => { const ad = addressById(p.address_id); return place('home', ad.missing ? 'bad' : '', `Home${e.expected.periods.length > 1 ? `, ${monthSpan(p.months)}` : ''}`, addrLine(ad), districtText(ad, s)); }).join('')
+    : place('home', 'bad', 'Home', 'Missing in Desktop', 'Home-based taxes cannot be listed');
+  const cityTax = [...s.a.idx.taxes.values()].find((t) => t.type === 'municipal' && t.state === work.state && t.place.toLowerCase() === String(work.municipality ?? '').toLowerCase());
+  const workRow = place('building', 'work', e.remote ? 'Workplace (works from home)' : 'Workplace', `${site.name}: ${addrLine(work)}`, cityTax ? `City tax: ${cityTax.name}, ${rateFmt(cityTax.rate)}` : 'No city tax in the catalogue');
+  const exp = e.expected.list.map((x) => `<li class="${match.has(x.tax_id) ? 'match' : ''}"><strong>${esc(x.tax.name)}</strong><span class="r">${rateFmt(x.tax.rate)}</span><span class="m">${x.tax.type === 'school_district' ? `SD ${esc(x.tax.code)}, ` : ''}${basisText(x.basis)}, ${monthSpan(x.months)}${x.required ? '' : ', optional'}</span></li>`).join('');
+  const notes = e.expected.notes.map((n) => `<span class="${n.tone === 'warn' ? 'warn' : ''}">${esc(n.text)}</span>`).join('');
+  const hist = state.audit.filter((a) => a.company_id === state.companyId && a.target === historyTarget);
+  const modelBody = model ? `<div class="model-grid">
+      <div><span>Closest defined entry</span><b>${esc(model.entry_label ?? 'None')}</b></div>
+      <div><span>Label silhouette</span><b>${model.item_silhouette.toFixed(2)}</b></div>
+      <div><span>Confidence</span><b>${esc(model.confidence)}</b></div>
+      <div><span>Shown to the employer</span><b>${model.shown ? 'Yes' : 'No (shadow or weak)'}</b></div>
+    </div><p class="small muted">${esc(MODEL_VERSION)}. The model suggests a type; the address picks the exact tax; a person decides.</p>` : '';
+  return `<section class="card" aria-label="Supporting evidence">
+    <div class="card-head"><span class="card-title">${icon('file')}Supporting evidence</span><span class="meta">Address lookup · ${esc(stateName(st))}</span></div>
+    <div class="card-body"><div class="evidence-grid">
+      <div class="ev-box"><span class="label">Where the employee lives and works</span>${homes}${workRow}</div>
+      <div class="ev-box"><span class="label">Expected taxes, from the addresses</span>${exp ? `<ul class="exp-list">${exp}</ul>` : '<span class="none">None listed</span>'}${notes ? `<div class="exp-notes">${notes}</div>` : ''}</div>
+    </div></div>
+    ${fold('steps', 'How the system decided', `<ul class="marks steps-list">${steps.map((x) => `<li>${mark(x.tone)}<span>${x.step ? `<span class="step-n">STEP ${x.step}</span>` : ''}${esc(x.text)}</span></li>`).join('')}</ul>`, openSteps)}
+    ${model ? fold('spark', 'Model suggestion', modelBody) : ''}
+    ${fold('history', `Decision history (${hist.length})`, hist.length ? `<ul class="history">${hist.map((a) => `<li><time datetime="${esc(a.at)}">${esc(new Date(a.at).toLocaleString())}</time><span><strong>${esc(a.actor)}</strong>: ${esc(a.action)}${a.detail ? `. ${esc(a.detail)}` : ''}</span></li>`).join('')}</ul>` : '<span class="none">No decisions yet.</span>')}
+  </section>`;
+}
+
+function caseDetail(c, s, view) {
+  const live = s.d.live;
+  const e = c.employee;
+  const site = siteOf(e, s.a);
+  const [b, tone] = caseBadge(c);
+  const sub = `"${esc(labelOf(c.item.label))}" · Law ID ${c.item.law_id} (${c.item.origin === 'custom' ? 'custom item' : 'system item'}) · ${esc(site.name)} · ${money(e.monthly_wages)} a month${employmentText(e) ? ` · ${esc(employmentText(e))}` : ''}`;
+  // Findings in step order (a later check can add to an earlier step); stable for equal steps.
+  const steps = c.evidence.map((x, i) => ({ x, i })).sort((a, b) => (a.x.step ?? 9) - (b.x.step ?? 9) || a.i - b.i).map((y) => y.x);
+  if (c.decision.sentToExpert) steps.push({ tone: 'info', text: `The employer sent this to an expert${c.decision.sentToExpert.note ? `: ${c.decision.sentToExpert.note}` : ''}.` });
+  if (c.decision.expert) steps.push({ tone: 'info', text: `Expert decision: ${expertText(c)}.` });
+  const open = !c.verified && OPEN_STAGES.has(c.stage);
+  return `${mobileBack(view)}
+    ${recordHeader(c.employee_name, e.employee_id, sub, `${pill(STAGE_LABEL[c.stage], STAGE_TONE[c.stage])}${badge(b, tone)}`, caseTarget(c), nextStep(c, view, live))}
+    ${checksBanner(c)}
+    ${view === 'expert' && c.stage === 'with_expert' && !live ? expertTools(c, s) : ''}
+    ${caseMapping(c, s)}
+    ${evidenceCard(s, { employee: e, state: c.state, match: new Set(c.proposal.map((p) => p.tax_id)), steps, model: c.model, historyTarget: `${c.employee_name}: ${c.item.label}`, openSteps: open })}
+    ${caseActions(c, s, view)}`;
+}
+
+const logNote = `<span class="log-note">${icon('lock')}Decisions are logged with the time and role for the audit trail.</span>`;
+const moreMenu = (items) => (items.length ? `<details class="more"><summary class="btn">More actions${icon('chevron')}</summary><div class="more-menu">${items.join('')}</div></details>` : '');
+
+function caseActions(c, s, view) {
+  const id = esc(c.case_id);
+  const key = esc(`c|${c.case_id}`);
+  if (s.d.live) return `<div class="action-bar">${logNote}<a class="btn" href="#golive">Live: see go-live</a></div>`;
+  if (view === 'expert') {
+    if (c.stage === 'with_expert') return `<div class="action-bar">${logNote}<button class="btn" type="button" data-action="goto" data-view="review" data-key="${key}">Open in employer review</button></div>`;
+    return `<div class="action-bar">${logNote}<button class="btn" type="button" data-action="expert-undo" data-id="${id}">Reopen</button><button class="btn primary" type="button" data-action="goto" data-view="review" data-key="${key}">Open in employer review</button></div>`;
+  }
+  if (c.stage === 'with_expert') {
+    const items = c.decision.sentToExpert && !c.decision.expert ? [`<button class="btn" type="button" data-action="unsend-expert" data-id="${id}">Take it back from the expert</button>`] : [];
+    return `<div class="action-bar">${logNote}${moreMenu(items)}<button class="btn primary" type="button" data-action="goto" data-view="expert" data-key="${key}">Open in the expert queue</button></div>`;
+  }
+  if (c.stage === 'awaiting_employer') {
+    const optional = c.route === 'local_tax' && c.proposal.some((p) => p.optional);
+    const label = {
+      local_tax: optional ? 'Keep courtesy withholding' : c.unowed?.amount ? 'Confirm and flag correction' : isOff(c) ? 'Confirm at official rate' : 'Confirm mapping',
+      not_a_tax: 'Move to deductions', custom_entry: 'Accept as employer-managed', stop: 'Stop withholding',
+    }[c.route];
+    const items = c.decision.expert ? [] : [`<button class="btn" type="button" data-action="send-expert" data-id="${id}">Send to an expert</button>`];
+    return `<div class="action-bar">${logNote}${moreMenu(items)}<button class="btn primary lg" type="button" data-action="decide" data-id="${id}">${icon('check')}${label}</button></div>`;
+  }
+  return `<div class="action-bar">${logNote}<button class="btn" type="button" data-action="undo-decide" data-id="${id}">Undo decision</button></div>`;
+}
+
+function gapDetail(g, s) {
+  const stage = gapStage(g, s.d, s.cases);
+  const e = s.a.employees.find((x) => x.employee_id === g.employee_id);
+  const site = siteOf(e, s.a);
+  const live = s.d.live;
+  const sd = g.tax.type === 'school_district' ? ` (SD ${g.tax.code})` : '';
+  const by = stage === 'covered' ? gapCoveredBy(g, s.d, s.a) : null;
+  const back = g.pastMonths.length ? `Nothing was withheld in ${monthSpan(g.pastMonths)}; estimated back tax ${money(g.backTaxEstimate)}.` : 'No Desktop months were missed, so there is no back tax.';
+  const [b, tone] = { awaiting_employer: ['Not withheld', 'bad'], added: ['Added', 'done'], covered: ['Covered', 'done'] }[stage];
+  const target = stage === 'covered'
+    ? targetCard('neutral', 'check', `Covered: ${g.tax.name}${sd}`, `An expert mapped "${by?.item.label ?? ''}" to this tax, so it is not added twice.`)
+    : targetCard(stage === 'added' ? '' : 'bad', 'target', `${stage === 'added' ? 'Added' : 'Add'}: ${g.tax.name}${sd}`, `From the ${basisText(g.basis)} ${[g.address.line1, g.address.city].filter(Boolean).join(', ')}, ${monthSpan(g.months)}.`);
+  const next = live ? 'This company is live, so decisions are locked.'
+    : stage === 'awaiting_employer' ? (g.cloudMonths.length ? 'Add it from the first cloud payroll, and discuss the back tax with the agency.' : 'Record the back tax for the agency; there are no Online paychecks to withhold it from.')
+      : stage === 'added' ? 'Done. Undo it from the action bar if needed.' : 'Nothing to do: the expert mapping covers it.';
+  const banner = stage === 'awaiting_employer'
+    ? `<div class="banner bad">${icon('alert', 'lg')}<div><strong>Expected, but nothing withheld.</strong> ${esc(back)}</div><span class="meta">Gap check</span></div>`
+    : `<div class="banner ${stage === 'added' ? 'good' : 'info'}">${icon('check', 'lg')}<div><strong>${stage === 'added' ? 'Added.' : 'Covered.'}</strong> ${esc(back)}</div><span class="meta">Gap check</span></div>`;
+  const rows = [
+    ['Tax item', '<span class="none">No Desktop item</span>', `<span class="tgt ${stage === 'awaiting_employer' ? 'bad' : ''}">${esc(g.tax.name)}${esc(sd)}</span>`, note('bad', 'alert', 'Missing in Desktop')],
+    ['Jurisdiction', '<span class="none">Not recorded</span>', `<span class="tgt">${esc(g.tax.place)} · ${esc(basisText(g.basis))}</span>`, note('good', 'pin', 'From the address lookup')],
+    ['Rate', '<span class="none">None</span>', `<span class="tgt">${rateFmt(g.tax.rate)}</span>`, note('', 'info', g.tax.agency)],
+    ['Months', g.pastMonths.length ? `<span class="none">Nothing withheld ${esc(monthSpan(g.pastMonths))}</span>` : '<span class="none">None missed</span>', g.cloudMonths.length ? `<span class="tgt">${esc(monthSpan(g.cloudMonths))}</span>` : '<span class="none">No Online paychecks</span>', note('', 'history', 'Starts with the first cloud payroll')],
+    ['Back tax estimate', '<span class="val">$0.00</span>', `<span class="tgt ${g.backTaxEstimate ? 'warn' : ''}">${money(g.backTaxEstimate)}</span>`, note(g.backTaxEstimate ? 'warn' : '', 'info', g.backTaxEstimate ? 'Discuss with the agency' : 'Nothing owed for past months'), 'total'],
+  ];
+  const addLabel = g.cloudMonths.length ? 'Add from first cloud payroll' : 'Record back tax for the agency';
+  const actions = live ? `<div class="action-bar">${logNote}<a class="btn" href="#golive">Live: see go-live</a></div>`
+    : stage === 'awaiting_employer' ? `<div class="action-bar">${logNote}<button class="btn primary lg" type="button" data-action="add-gap" data-id="${esc(g.gap_id)}">${icon('check')}${addLabel}</button></div>`
+      : stage === 'added' ? `<div class="action-bar">${logNote}<button class="btn" type="button" data-action="undo-gap" data-id="${esc(g.gap_id)}">Undo</button></div>` : '';
+  const steps = [{ step: 2, tone: 'fail', text: `${g.tax.name} is on ${g.employee_name}'s expected list (${basisText(g.basis)}, ${monthSpan(g.months)}), but no Desktop item withholds it.` }];
+  if (by) steps.push({ tone: 'info', text: `Covered by the expert mapping of "${by.item.label}".` });
+  return `${mobileBack('review')}
+    ${recordHeader(g.employee_name, e.employee_id, `Expected tax with no Desktop item · ${esc(site.name)} · ${money(e.monthly_wages)} a month`, `${pill(stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? 'Added' : 'Covered', stage === 'awaiting_employer' ? 'accent' : 'good')}${badge(b, tone)}`, target, next)}
+    ${banner}
+    ${mappingTable(rows)}
+    ${evidenceCard(s, { employee: e, state: g.tax.state, match: new Set([g.tax_id]), steps, historyTarget: `${g.employee_name}: ${g.tax.name}`, openSteps: stage === 'awaiting_employer' })}
+    ${actions}`;
 }
 
 function expertText(c) {
@@ -420,44 +825,6 @@ function expertText(c) {
   if (x.action === 'custom_entry') return `structured custom entry "${x.entry.name}", employer-managed`;
   if (x.action === 'stop') return 'not owed, stop withholding';
   return x.action;
-}
-
-function gapRow(g, s, live) {
-  const stage = gapStage(g, s.d, s.cases);
-  const head = `${esc(g.tax.name)}${g.tax.type === 'school_district' ? ` (SD ${esc(g.tax.code)})` : ''}, ${g.tax.rate}%`;
-  const from = `From the ${basisText(g.basis)} ${esc(g.address.line1)}, ${esc(g.address.city)}, ${monthSpan(g.months)}.`;
-  const back = g.pastMonths.length ? `Nothing was withheld in ${monthSpan(g.pastMonths)}; estimated back tax ${money(g.backTaxEstimate)}.` : 'No Desktop months were missed, so there is no back tax.';
-  if (stage === 'covered') {
-    const by = gapCoveredBy(g, s.d, s.a);
-    return `<div class="gap-row done"><div><strong>Covered: ${head}</strong><div class="small">An expert mapped "${esc(by?.item.label ?? '')}" to this tax, so it is not added twice. ${back}</div></div></div>`;
-  }
-  const done = stage === 'added';
-  const cloud = g.cloudMonths.length;
-  const addLabel = cloud ? 'Add from first cloud payroll' : 'Record back tax for the agency';
-  const action = live ? '' : done
-    ? `<button class="btn quiet" type="button" data-action="undo-gap" data-id="${esc(g.gap_id)}">Undo</button>`
-    : `<button class="btn primary" type="button" data-action="add-gap" data-id="${esc(g.gap_id)}">${addLabel}</button>`;
-  const after = done ? (cloud ? ' Withholding starts with the first cloud payroll.' : ' Recorded; there are no Online paychecks to withhold it from.') : '';
-  return `<div class="gap-row${done ? ' done' : ''}">
-    <div><strong>${done ? 'Added' : 'Expected, but no Desktop item'}: ${head}</strong>
-      <div class="small">${from} ${back}${after}</div></div>
-    ${action}
-  </div>`;
-}
-
-// ---------- 3 expert queue ----------
-
-function viewExpert(s) {
-  const open = s.cases.filter((c) => c.stage === 'with_expert');
-  const resolved = s.cases.filter((c) => c.decision.expert);
-  const live = s.d.live;
-  return `<div class="page-head"><h1>Expert queue</h1>
-    <p class="lede">Lines the system would not decide alone: a weak cluster signal, conflicting evidence, a tax not owed at the address, a duplicate, a missing or unplaceable address, a state named in the label that does not fit, a state still in shadow mode, or a suggestion the employer disagreed with. An Intuit payroll expert decides each one. The employer still confirms before anything goes live.</p></div>
-    ${open.length ? open.map((c) => expertCard(c, s, live)).join('') : '<div class="empty"><strong>The queue is empty.</strong><span>Every line the system could not settle has an expert decision.</span></div>'}
-    ${resolved.length ? `<section class="section" aria-labelledby="resolved-h"><div class="section-head"><h2 id="resolved-h">Decided by an expert</h2><p>Each now waits for, or already has, the employer's confirmation.</p></div>
-      <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Desktop item</th><th>Expert decision</th><th>Employer</th><th></th></tr></thead><tbody>
-      ${resolved.map((c) => `<tr><td>${esc(c.employee_name)}</td><td>${esc(labelOf(c.item.label))}</td><td>${esc(expertText(c))}</td><td>${pill(STAGE_LABEL[c.stage], STAGE_TONE[c.stage])}</td><td>${live ? '' : `<button class="btn quiet" type="button" data-action="expert-undo" data-id="${esc(c.case_id)}">Reopen</button>`}</td></tr>`).join('')}
-      </tbody></table></div></section>` : ''}`;
 }
 
 const EXPERT_HINT = {
@@ -473,36 +840,26 @@ const EXPERT_HINT = {
   employer_sent: 'The employer disagreed with the suggestion. Check the address and the Desktop item, then decide.',
 };
 
-function expertCard(c, s, live) {
+function expertTools(c, s) {
   const id = domId(c.case_id);
-  const homeStates = new Set([c.state, ...c.employee.addresses.map((x) => addressById(x.address_id)?.state), addressById(s.a.company.worksites.find((w) => w.site_id === c.employee.site_id).address_id).state]);
+  const homeStates = new Set([c.state, ...c.employee.addresses.map((x) => addressById(x.address_id)?.state), addressById(siteOf(c.employee, s.a).address_id).state]);
   const stateTaxes = [...s.a.idx.taxes.values()].filter((t) => homeStates.has(t.state));
   const expectedIds = new Set(c.employee.expected.list.map((x) => x.tax_id));
   const options = [...stateTaxes].sort((x, y) => Number(expectedIds.has(y.tax_id)) - Number(expectedIds.has(x.tax_id)))
     .map((t) => `<option value="${esc(t.tax_id)}">${esc(t.name)}${t.type === 'school_district' ? ` (SD ${esc(t.code)})` : ''}, ${t.rate}%${expectedIds.has(t.tax_id) ? ' - on expected list' : ''}</option>`).join('');
-  const reasonTone = { shadow: 'info', conflict: 'bad', not_expected: 'bad', duplicate: 'bad', state_conflict: 'bad', no_address: 'warn', address_unresolved: 'warn', weak_signal: 'warn', ambiguous: 'warn', employer_sent: 'accent' }[c.reason] ?? 'warn';
   const m = c.model;
   const suggestType = m?.tax_type;
   const typeGuess = { earned_income: 'Local earned income tax', local_services: 'Local services tax', municipal: 'Municipal income tax', school_district: 'School-district income tax' }[suggestType] ?? 'Other local tax';
   const basisGuess = suggestType === 'local_services' ? 'work' : suggestType === 'earned_income' ? 'higher' : suggestType === 'municipal' ? 'work' : 'home';
   const flat = c.item.calc.kind === 'flat_annual';
   const sel = (name, values, current) => `<select id="${name}-${id}" name="${name}">${values.map(([v, t]) => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
-  const chips = c.employee.expected.list.map((x) => `<span class="chip">${esc(taxShort(x.tax))} ${x.tax.rate}% <em>${x.basis}</em></span>`).join('') || '<span class="muted small">None listed</span>';
-  return `<article class="expert-card" data-employee="${esc(c.employee_id)}" aria-labelledby="ex-${id}">
-    <div class="section">
-      <div class="row">${pill(c.reasonText, reasonTone, 'wrap')}</div>
-      <h3 id="ex-${id}">${esc(c.employee_name)}: "${esc(labelOf(c.item.label))}"</h3>
-      <p class="small muted">Law ID ${c.item.law_id}, ${esc(c.item.item_type)}, tracking type "${esc(c.item.tracking_type)}", ${esc(rateText(c.item))}, agency on file "${esc(c.item.agency)}". ${esc(withheldText(c).replace(/^n/, 'N'))}.</p>
+  return `<section class="card" aria-label="Expert decision">
+    <div class="card-head"><span class="card-title">${icon('user')}Expert decision</span><span class="meta">Goes back to the employer to confirm</span></div>
+    <div class="card-body tools">
       ${EXPERT_HINT[c.reason] ? `<p class="hint-line">${esc(EXPERT_HINT[c.reason])}</p>` : ''}
-      ${m ? `<p class="logged">Model suggestion${m.shown ? '' : ' (logged, hidden from the employer)'}: ${esc(m.entry_label ?? 'no defined entry')}, label silhouette ${m.item_silhouette.toFixed(2)}, ${m.confidence} confidence.</p>` : ''}
-      <ul class="marks">${c.evidence.map((x) => `<li>${mark(x.tone)}<span>${esc(x.text)}</span></li>`).join('')}</ul>
-      <div class="expected"><span class="expected-title">This employee's expected taxes</span><div class="chips">${chips}</div></div>
-    </div>
-    <div class="expert-actions">
-      ${live ? '<p class="muted">This company is live. Reopen work after an undo of go-live.</p>' : `
       <div class="map-row">
         <label class="field" for="map-${id}">Map to a defined tax${stateTaxes.length ? `<select id="map-${id}"><option value="">Choose a tax</option>${options}</select>` : `<select id="map-${id}" disabled><option>No ${esc(stateName(c.state))} taxes in the catalogue yet</option></select>`}</label>
-        <button class="btn" type="button" data-action="expert-map" data-id="${esc(c.case_id)}" data-select="map-${id}"${stateTaxes.length ? '' : ' disabled'}>Map</button>
+        <button class="btn primary" type="button" data-action="expert-map" data-id="${esc(c.case_id)}" data-select="map-${id}"${stateTaxes.length ? '' : ' disabled'}>Map</button>
       </div>
       <div class="row">
         <button class="btn" type="button" data-action="expert-nontax" data-id="${esc(c.case_id)}">Mark as not a tax</button>
@@ -523,9 +880,9 @@ function expertCard(c, s, live) {
           <p class="small muted">A custom entry is marked employer-managed: QuickBooks will not pay or file it. It also goes to Intuit's catalogue review so the next company can match it.</p>
           <div><button class="btn primary" type="submit">Save custom entry</button></div>
         </form>
-      </details>`}
+      </details>
     </div>
-  </article>`;
+  </section>`;
 }
 
 // ---------- 4 go live ----------
@@ -778,6 +1135,7 @@ function handle(action, el) {
       break;
     case 'company':
       state.companyId = el.value;
+      state.detailOpen = false;
       toast(`Opened ${companyById().name}`);
       break;
     case 'reset':
@@ -831,16 +1189,32 @@ function handle(action, el) {
     case 'undo-gap':
       if (!d.live) delete d.gaps[id];
       break;
-    case 'toggle': {
-      const c = findCase(id);
-      const decided = !['awaiting_employer', 'with_expert'].includes(c.stage);
-      const open = state.open[id] ?? !(c.verified || decided);
-      state.open[id] = !open;
+    case 'select': {
+      const view = currentView();
+      if (window.innerWidth <= 900 && !state.detailOpen) listY = window.scrollY;
+      state.sel[view] = el.dataset.key;
+      state.detailOpen = true;
+      afterRender = scrollToDetail;
       break;
     }
-    case 'filter':
-      state.filter = el.dataset.value;
+    case 'back':
+      state.detailOpen = false;
+      afterRender = () => window.scrollTo(0, listY);
       break;
+    case 'queue-filter':
+      state.filters[el.dataset.view] = el.dataset.value;
+      state.selIndex[el.dataset.view] = 0;
+      break;
+    case 'goto': {
+      const view = el.dataset.view;
+      state.sel[view] = el.dataset.key;
+      state.filters[view] = 'all';
+      state.detailOpen = true;
+      keepDetail = true;
+      save();
+      location.hash = `#${view}`;
+      return;
+    }
     case 'expert-map': {
       const select = document.getElementById(el.dataset.select);
       const tax = analysisFor().idx.taxes.get(select.value);
@@ -928,8 +1302,12 @@ function handle(action, el) {
       break;
     case 'open-scenario': {
       state.companyId = el.dataset.company;
-      state.filter = 'all';
-      if (el.dataset.employee) pendingFocus = el.dataset.employee;
+      const view = el.dataset.view;
+      if (view === 'review' || view === 'expert') {
+        state.filters[view] = 'all';
+        state.detailOpen = Boolean(el.dataset.employee);
+        if (el.dataset.employee) { focusEmployee = el.dataset.employee; keepDetail = true; }
+      } else if (el.dataset.employee) pendingFocus = el.dataset.employee;
       save();
       const target = `#${el.dataset.view}`;
       if (location.hash === target) render();
@@ -995,12 +1373,37 @@ app.addEventListener('submit', (ev) => {
   ev.preventDefault();
   handle(form.dataset.action, form);
 });
+app.addEventListener('input', (ev) => {
+  if (ev.target.id !== 'queue-search') return;
+  state.query[currentView()] = ev.target.value;
+  save();
+  applySearch(currentView());
+});
+// Close an open "More actions" menu when clicking elsewhere or pressing Escape.
+document.addEventListener('click', (ev) => {
+  for (const d of document.querySelectorAll('details.more[open]')) if (!d.contains(ev.target)) d.open = false;
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  for (const d of document.querySelectorAll('details.more[open]')) { d.open = false; d.querySelector('summary')?.focus(); }
+});
 window.addEventListener('hashchange', () => {
-  const focusing = Boolean(pendingFocus);
-  if (!focusing) window.scrollTo(0, 0);
+  if (!keepDetail) state.detailOpen = false;
+  keepDetail = false;
+  if (!pendingFocus) window.scrollTo(0, 0);
   render();
+  if (state.detailOpen) scrollToDetail();
   document.getElementById('main')?.focus({ preventScroll: true });
 });
+
+// Keep the selected record's detail in view after choosing it: on a phone the list is replaced by the
+// detail, and on a wide screen the page scrolls back up if the detail's top is out of view.
+function scrollToDetail() {
+  const d = document.querySelector('.detail');
+  if (!d) return;
+  const top = d.getBoundingClientRect().top + window.scrollY - 10;
+  if (window.innerWidth <= 900 || window.scrollY > top) window.scrollTo(0, Math.max(0, top));
+}
 
 async function boot() {
   try {
