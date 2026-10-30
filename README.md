@@ -102,12 +102,14 @@ Boundary values are tested exactly: a gate value equal to its threshold passes (
 
 The interface follows the team's Google Stitch mockup:
 
-- **Top bar:** the client picker and the five migration steps as tabs.
+- **Top bar:** a deep-green band with the client picker and the five migration steps. A step shows a tick once nothing is left in it, so the tabs double as a progress tracker; amber counts show what is waiting.
 - **Status line:** one count for the whole client: items settled out of Desktop lines plus expected taxes nobody withheld, then who holds the rest (the employer or an expert), the model mode and links to the oversight pages.
 - **Review** and **Expert** are list-and-detail workspaces:
   - On the left is a searchable record list with filter chips, grouped by employee. Each row shows the Desktop item and where it is heading.
   - On the right is the selected record. It shows the target tax and the next step, a checks banner, and a Desktop-versus-Online table. Below that come the supporting evidence (addresses and expected taxes), how the system decided, the model suggestion and the decision history. A sticky action bar sits at the bottom.
 - **On a phone:** the list opens into the record, with a back link and the action bar fixed at the bottom. The clients table becomes one block per client.
+
+Colour always means the same thing: green is settled or ready, amber is waiting for the employer, blue is with an expert, red is a gap or a tax that is not owed.
 
 Wording is chosen so that nothing looks decided before a person decides it:
 
