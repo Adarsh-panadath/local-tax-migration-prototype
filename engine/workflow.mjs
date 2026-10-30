@@ -1,6 +1,6 @@
 // Decisions by employers and experts, the go-live checks, W-2 history and reconciliation.
 // Nothing here goes live without an employer decision (BRD: never activate without confirmation).
-import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs?v=abe177840a';
+import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs?v=297b02517a';
 
 const usd = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
@@ -176,7 +176,7 @@ export function readiness(analysis, decisions) {
   const accounts = agencyAccounts(analysis, decisions);
   const tie = dollarTieOut(analysis, decisions);
   const checks = [
-    { id: 'employer', label: 'Every item has the employer\'s decision', pass: waiting.length === 0, detail: waiting.length ? `${waiting.length} item${waiting.length === 1 ? '' : 's'} still waiting on the review screen.` : 'All decided.' },
+    { id: 'employer', label: 'Every Desktop line has the employer\'s decision', pass: waiting.length === 0, detail: waiting.length ? `${waiting.length} line${waiting.length === 1 ? '' : 's'} still waiting on the review screen.` : 'All decided.' },
     { id: 'gaps', label: 'Every expected tax with no Desktop item is handled', pass: openGaps.length === 0, detail: openGaps.length ? `${openGaps.length} expected tax${openGaps.length === 1 ? '' : 'es'} not yet added.` : 'None open.' },
     { id: 'dollars', label: 'Every Desktop local-tax dollar has a destination', pass: tie.waiting === 0, detail: `${usd(tie.accounted)} of ${usd(tie.total)} accounted for.` },
     { id: 'accounts', label: 'Account number and deposit frequency for every agency', pass: accounts.every((a) => a.complete), detail: !accounts.length ? 'No taxes will run on Online paychecks yet.' : accounts.filter((a) => !a.complete).map((a) => `Missing for ${a.agency}`).join('; ') || 'All agencies complete.' },

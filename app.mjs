@@ -1,10 +1,10 @@
 // Browser app for the BRD v3 local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=abe177840a';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=abe177840a';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY } from './engine/workflow.mjs?v=abe177840a';
-import { monthSpan, rateText, cloudMonths } from './engine/util.mjs?v=abe177840a';
-import { buildReport, casesCSV } from './report.mjs?v=abe177840a';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=abe177840a';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=297b02517a';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=297b02517a';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY } from './engine/workflow.mjs?v=297b02517a';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=297b02517a';
+import { buildReport, casesCSV } from './report.mjs?v=297b02517a';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=297b02517a';
 
 const STORE = 'local-tax-migration:brd-v3';
 const VIEWS = ['clients', 'analysis', 'review', 'expert', 'golive', 'reconcile', 'scenarios', 'model', 'audit'];
@@ -23,6 +23,9 @@ let lastView = null;
 let afterRender = null;     // one-off scroll adjustment after the next render
 let listY = 0;              // phone: where the record list was scrolled before opening a record
 let keepDetail = false;     // a link that opens a record in another view keeps the detail open
+let byKeyboard = false;     // the last activation came from the keyboard (move focus to what it opened)
+let resetArmed = false;     // Reset needs a second click within a few seconds
+let resetTimer = null;
 
 // ---------- state ----------
 
@@ -151,9 +154,19 @@ function statesInUse(a) {
 
 // ---------- shell ----------
 
+// After a re-render, put keyboard focus back on the same control, or on the record that replaced it,
+// so a keyboard user is not sent back to the top of the page after every action.
+function focusSelector(el) {
+  if (!el || el === document.body || !app.contains(el)) return null;
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  if (!el.dataset?.action) return null;
+  return ['action', 'id', 'key', 'value', 'view', 'rule'].filter((k) => el.dataset[k] != null).map((k) => `[data-${k}="${CSS.escape(el.dataset[k])}"]`).join('');
+}
+
 function render() {
   if (!data) return;
   const view = currentView();
+  const prevFocus = focusSelector(document.activeElement);
   let s;
   try {
     s = summary();
@@ -170,7 +183,7 @@ function render() {
   const wide = view === 'review' || view === 'expert';
   const listScroll = lastView === view ? document.querySelector('.records')?.scrollTop : null;
   const body = { clients: viewClients, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, reconcile: viewReconcile, scenarios: viewScenarios, model: viewModel, audit: viewAudit }[view](s);
-  app.innerHTML = `${appbar(view, s)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
+  app.innerHTML = `<button class="skip" type="button" data-action="skip">Skip to main content</button>${appbar(view, s)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
   lastView = view;
   if (wide) {
     if (listScroll != null) { const r = document.querySelector('.records'); if (r) r.scrollTop = listScroll; }
@@ -186,6 +199,10 @@ function render() {
     }
   }
   if (afterRender) { const fn = afterRender; afterRender = null; fn(); }
+  if (prevFocus && !app.contains(document.activeElement)) {
+    const target = document.querySelector(prevFocus) ?? (byKeyboard && wide ? document.getElementById('detail-title') : null);
+    target?.focus({ preventScroll: true });
+  }
   if (pendingFocus) {
     const id = pendingFocus;
     pendingFocus = null;
@@ -199,13 +216,14 @@ function render() {
 
 function applySearch(view) {
   const q = (state.query[view] ?? '').trim().toLowerCase();
-  const items = [...document.querySelectorAll('.records > li')];
+  const items = [...document.querySelectorAll('.records li[data-text]')];
   let shown = 0;
   for (const li of items) {
     const hit = !q || li.dataset.text.includes(q);
     li.hidden = !hit;
     if (hit) shown += 1;
   }
+  for (const g of document.querySelectorAll('.records > .rec-group')) g.hidden = !g.querySelector('li[data-text]:not([hidden])');
   const empty = document.getElementById('queue-empty');
   if (empty) {
     empty.hidden = shown > 0;
@@ -229,11 +247,10 @@ function appbar(view, s) {
     return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}><span class="step">${i + 1}</span>${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}</a>`;
   };
   const total = s.cases.length;
-  const decided = s.cases.filter((c) => !['awaiting_employer', 'with_expert'].includes(c.stage)).length;
   const lines = s.cases.filter((c) => c.stage === 'awaiting_employer').length;
   const gaps = s.awaiting - lines;
   const action = lines + gaps + s.expert;
-  const share = total ? decided / total : 0;
+  const items = total + s.a.gaps.length; // Desktop lines plus expected taxes nobody withheld
   const used = statesInUse(s.a);
   const statusTone = { 'Not started': 'info', 'In review': 'accent', Live: 'good', Reconciled: 'good' }[s.status];
   const modeText = Object.values(s.a.models).filter((m) => used.has(m.state))
@@ -241,18 +258,17 @@ function appbar(view, s) {
   const sc = scenarios();
   const passed = sc.filter((x) => x.pass).length;
   const links = OVERSIGHT.map(([id, text, ic]) => `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}>${icon(ic)}${text}${id === 'scenarios' ? `<span class="count ok">${passed}/${sc.length}</span>` : ''}</a>`).join('');
-  const breakdown = `${plural(lines, 'line')} waiting for the employer, ${s.expert} with an expert, ${plural(gaps, 'expected tax', 'expected taxes')} not withheld`;
   return `<header class="appbar">
     <div class="appbar-main">
       <a class="logo" href="#analysis"><span class="logo-tile">${icon('landmark')}</span><span class="logo-text"><strong>Local Tax Migration</strong><small>Desktop to Online Payroll · demo</small></span></a>
       <label class="company-box"><span class="sr-only">Client</span>${icon('building')}<select id="company" data-action="company">${options}</select><span class="plan">${esc(co.plan)}</span></label>
       <nav class="tabs" aria-label="Migration steps">${STEP_TABS.map(tab).join('')}</nav>
-      <button class="btn reset" type="button" data-action="reset" title="Clear every decision and start the demo again">${icon('reset')}<span>Reset</span></button>
+      <button class="btn reset${resetArmed ? ' armed' : ''}" type="button" data-action="reset" title="Clear every decision and start the demo again">${icon('reset')}<span>${resetArmed ? 'Click again to reset' : 'Reset'}</span></button>
     </div>
     <div class="batchbar">
       <span class="status ${statusTone}"><span class="dot"></span>${esc(s.status)}</span>
-      <span class="batch-progress"><span class="progress" role="img" aria-label="${decided} of ${total} lines decided"><span style="width:${(share * 100).toFixed(1)}%"></span></span><span><b>${decided}</b> of ${total} lines decided</span></span>
-      <span class="batch-need" title="${esc(breakdown)}">${action ? `<b>${action}</b> need action` : 'Nothing waiting'}</span>
+      <span class="batch-progress"><span class="progress" role="img" aria-label="${items - action} of ${items} items settled"><span style="width:${(items ? ((items - action) / items) * 100 : 0).toFixed(1)}%"></span></span><span><b>${items - action}</b> of ${items} items settled</span></span>
+      ${action ? `${lines + gaps ? `<span class="batch-need"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.expert ? `<span class="batch-need"><b>${s.expert}</b> with an expert</span>` : ''}` : '<span class="batch-need done">Nothing waiting</span>'}
       ${s.d.autoRun ? `<span class="batch-auto">${icon('spark')}<b>${pct(automationStats(s.a, s.d).share, 0)}</b> automated</span>` : ''}
       ${modeText}
       <nav class="batch-links" aria-label="Oversight">${links}</nav>
@@ -317,7 +333,7 @@ function automationCard(s) {
     : `<b>${st.auto}</b> of ${st.total} can be settled automatically`;
   const sub = ran
     ? `${st.manual ? `${plural(st.manual, 'decision')} by a person. ` : ''}${left.length ? 'The rest finishes by itself once these are decided.' : ''}`
-    : 'One click applies the rules below. Lines the BRD reserves for people are never guessed.';
+    : 'One click applies the rules below. Lines that need human judgement are never guessed: they stay for a person.';
   return `<section class="auto-card" aria-labelledby="auto-h">
     <div class="auto-head">
       <div class="auto-title"><span class="auto-ic">${icon('spark')}</span><div><h2 id="auto-h">Automatic migration</h2><p>${ran ? (d.live ? 'Done.' : 'On. It re-runs after every decision a person makes.') : 'Ready to run.'}</p></div></div>
@@ -340,23 +356,24 @@ function viewClients() {
     const s = summary(c.company_id);
     const tone = { 'Not started': '', 'In review': 'accent', Live: 'good', Reconciled: 'good' }[s.status];
     const st = automationStats(s.a, s.d);
+    const ran = Boolean(s.d.autoRun);
     const left = openExceptions(s.a, s.d).length;
-    totals.auto += st.auto; totals.total += st.total; totals.left += s.d.autoRun ? left : 0; totals.ran += s.d.autoRun ? 1 : 0;
+    totals.auto += st.auto; totals.total += st.total; totals.left += ran ? left : 0; totals.ran += ran ? 1 : 0;
     return `<tr>
       <td><strong>${esc(c.name)}</strong><div class="small muted">${[...statesInUse(s.a)].map((x) => esc(stateName(x))).join(', ')}. Moves in ${monthSpan([c.migration_month])}.</div>${c.description ? `<div class="small">${esc(c.description)}</div>` : ''}</td>
-      <td>${esc(c.plan)}</td>
-      <td class="num">${c.employees.length}</td>
-      <td class="num">${s.a.cases.length}</td>
-      <td class="num">${pct(st.share, 0)}</td>
-      <td class="num">${left}</td>
-      <td>${pill(s.status, tone)}</td>
+      <td data-l="Plan">${esc(c.plan)}</td>
+      <td class="num" data-l="Employees">${c.employees.length}</td>
+      <td class="num" data-l="Desktop lines">${s.a.cases.length}</td>
+      <td class="num" data-l="Automated">${ran ? pct(st.share, 0) : '<span class="muted">Not run</span>'}</td>
+      <td class="num" data-l="Left for a person">${ran ? left : '<span class="muted" aria-label="Not run yet">–</span>'}</td>
+      <td data-l="Status">${pill(s.status, tone)}</td>
       <td><div class="row nowrap"><button class="btn" type="button" data-action="open-client" data-id="${esc(c.company_id)}">Open</button>${s.d.live ? '' : `<button class="btn quiet" type="button" data-action="run-auto" data-company="${esc(c.company_id)}">${s.d.autoRun ? 'Run again' : 'Run automation'}</button>`}</div></td>
     </tr>`;
   }).join('');
   return `<div class="page-head"><h1>Clients moving to Online payroll</h1>
     <p class="lede">Run the automatic migration for every client at once. The rules settle what they can; each client keeps only its true exceptions for a person.</p></div>
-    <div class="auto-strip"><span class="auto-big">${pct(totals.total ? totals.auto / totals.total : 0, 0)}</span><span><b>${totals.auto}</b> of ${totals.total} lines and expected taxes settled automatically${totals.ran ? `; ${plural(totals.left, 'item')} left for a person` : ''}</span><button class="btn primary" type="button" data-action="run-auto-all">${icon('spark')}Run automation for every client</button></div>
-    <div class="table-wrap"><table>
+    <div class="auto-strip">${totals.ran ? `<span class="auto-big">${pct(totals.total ? totals.auto / totals.total : 0, 0)}</span>` : ''}<span><b>${totals.auto}</b> of ${totals.total} lines and expected taxes settled automatically${totals.ran ? `; ${plural(totals.left, 'item')} left for a person` : ''}.${totals.ran < data.companies.length ? ` Not run yet for ${plural(data.companies.length - totals.ran, 'client')}.` : ''}</span><button class="btn primary" type="button" data-action="run-auto-all">${icon('spark')}Run automation for every client</button></div>
+    <div class="table-wrap"><table class="clients-table">
       <thead><tr><th>Client</th><th>Plan</th><th class="num">Employees</th><th class="num">Desktop lines</th><th class="num">Automated</th><th class="num">Left for a person</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 }
@@ -366,7 +383,7 @@ function viewClients() {
 function viewAnalysis(s) {
   const a = s.a;
   const used = [...statesInUse(a)];
-  const byState = used.map((st) => `${stateName(st)} ${a.cases.filter((c) => c.state === st).length}`).join(', ');
+  const byState = used.map((st) => `${stateName(st)}: ${plural(a.cases.filter((c) => c.state === st).length, 'line')}`).join('; ');
   const expectedCount = a.employees.reduce((n, e) => n + e.expected.list.length, 0);
   const missingAddr = a.employees.filter((e) => !e.expected.periods.length).length;
   const custom = a.cases.filter((c) => c.item.origin === 'custom').length;
@@ -386,25 +403,25 @@ function viewAnalysis(s) {
   }).join('');
 
   return `<div class="page-head"><h1>${esc(a.company.name)}: migration analysis</h1>
-    <p class="lede">${plural(a.employees.length, 'employee')} and ${plural(a.cases.length, 'Desktop payroll line')} to check (one line per employee per item). ${s.routes.local_tax} match a tax on the employee's expected list, ${s.routes.not_a_tax} ${s.routes.not_a_tax === 1 ? 'is' : 'are'} not a tax, ${s.routes.not_in_database} need an expert, and ${plural(a.gaps.length, 'expected tax', 'expected taxes')} had no Desktop item at all.</p></div>
+    <p class="lede">${plural(a.employees.length, 'employee')} and ${plural(a.cases.length, 'Desktop payroll line')} (one per employee per item) to move to Online payroll. Every line gets a proposed destination; nothing switches on until the employer confirms it.</p></div>
     ${automationCard(s)}
+    ${a.company.company_id === 'C-FHS' ? demoGuide() : companyNote(a.company)}
     <section class="section" aria-labelledby="pipe-h">
       <div class="section-head"><h2 id="pipe-h">The five steps</h2><p>Run while the company is still on Desktop. Every line ends in exactly one route, and nothing goes live without the employer.</p></div>
       <ol class="pipeline">
         <li><strong>Find the state</strong><p>From the item's label, or else the employee's address.</p><span class="result">${esc(byState)}</span></li>
         <li><strong>List expected taxes</strong><p>Home and work addresses give a short list of taxes each person should have.</p><span class="result">${plural(expectedCount, 'expected tax', 'expected taxes')}${missingAddr ? `, ${plural(missingAddr, 'address', 'addresses')} missing` : ''}</span></li>
-        <li><strong>Cluster custom items</strong><p>Custom labels are grouped within each state and named by the closest defined entry.</p><span class="result">${plural(custom, 'custom line')}. ${esc(modelLine)}</span></li>
-        <li><strong>Route every item</strong><p>Local tax, not a tax, or not in database. Gaps are flagged both ways.</p><span class="result">${s.routes.local_tax} / ${s.routes.not_a_tax} / ${s.routes.not_in_database}, ${plural(a.gaps.length, 'gap')}</span></li>
-        <li><strong>Employer confirms</strong><p>By rules the employer approved once; people handle only the exceptions.</p><span class="result">${confirmed} of ${s.cases.length} decided</span></li>
+        <li><strong>Group custom labels</strong><p>Free-text labels are clustered within each state and named after the closest defined entry.</p><span class="result">${plural(custom, 'custom line')}. ${esc(modelLine)}</span></li>
+        <li><strong>Route every line</strong><p>Local tax, not a tax, or an expert. Taxes nobody withheld are flagged too.</p><span class="result">${s.routes.local_tax} local tax, ${s.routes.not_a_tax} not a tax, ${s.routes.not_in_database} to an expert</span></li>
+        <li><strong>Employer confirms</strong><p>By rules the employer approved once; people handle only the exceptions.</p><span class="result">${confirmed} of ${plural(s.cases.length, 'line')} decided</span></li>
       </ol>
     </section>
     <section class="routes" aria-label="Route counts">
       <div class="route-tile local"><span class="n">${s.routes.local_tax}</span><span class="t">Local tax</span><p>Matches a defined tax on the expected list.</p></div>
       <div class="route-tile nontax"><span class="n">${s.routes.not_a_tax}</span><span class="t">Not a tax</span><p>After-tax in Desktop, or a known non-tax item.</p></div>
-      <div class="route-tile notdb"><span class="n">${s.routes.not_in_database}</span><span class="t">Not in database</span><p>No match, weak signal, conflict, or shadow mode.</p></div>
+      <div class="route-tile notdb"><span class="n">${s.routes.not_in_database}</span><span class="t">Needs an expert</span><p>The "not in database" route: no match, a weak signal, a conflict, or shadow mode.</p></div>
       <div class="route-tile gap"><span class="n">${a.gaps.length}</span><span class="t">Expected, not withheld</span><p>On the expected list, but no Desktop item covers it.</p></div>
     </section>
-    ${a.company.company_id === 'C-FHS' ? demoGuide() : companyNote(a.company)}
     ${a.dataIssues.length ? `<section class="section" aria-labelledby="dq-h">
       <div class="section-head"><h2 id="dq-h">Problems found in the Desktop file</h2><p>Checked before anything else. These were cleaned up so the analysis could run; fix them in the file before the move.</p></div>
       <ul class="marks">${a.dataIssues.map((i) => `<li>${mark('warn')}<span>${esc(i.text)}</span></li>`).join('')}</ul>
@@ -437,10 +454,10 @@ function companyNote(company) {
 function demoGuide() {
   return `<section class="panel section" aria-labelledby="guide-h">
     <h2 id="guide-h">Try the demo</h2>
-    <ol class="marks">
-      <li>${mark('info')}<span>Click <strong>Run automatic migration</strong> above. The employer's rules settle 16 of 18 items: the verified matches, Priya Shah at the official 1.0% rate, Sara Lee's union dues, Raj Patel's missing Teays Valley tax, and Mike Brown's school tax (not owed in Columbus City Schools).</span></li>
-      <li>${mark('info')}<span><a href="#expert">Expert queue</a>: only two lines are left. Mark Kevin O'Neil's garnishment as not a tax, and map Tom Reed's "Local Tax" to Lancaster CSD once his address is known.</span></li>
-      <li>${mark('info')}<span>Automation accepts both decisions, goes live and reconciles. Check <a href="#golive">Go live</a> for the W-2 boxes and the <a href="#audit">Decision log</a> for every automatic step and its rule.</span></li>
+    <ol class="guide-steps">
+      <li><span>Click <strong>Run automatic migration</strong> above. The employer's rules settle 16 of 18 items: the matches the addresses support, Priya Shah at the official 1.0% rate, Sara Lee's union dues, Raj Patel's missing Teays Valley tax, and Mike Brown's school tax (not owed in Columbus City Schools).</span></li>
+      <li><span><a href="#expert">Expert queue</a>: only two lines are left. Mark Kevin O'Neil's garnishment as not a tax, and map Tom Reed's "Local Tax" to Lancaster CSD once his address is known.</span></li>
+      <li><span>Automation accepts both decisions, goes live and reconciles. Check <a href="#golive">Go live</a> for the W-2 boxes and the <a href="#audit">Decision log</a> for every automatic step and its rule.</span></li>
     </ol>
   </section>`;
 }
@@ -459,12 +476,13 @@ const REASON_TONE = {
   no_address: 'warn', address_unresolved: 'warn', weak_signal: 'warn', ambiguous: 'warn', shadow: 'info', employer_sent: 'blue',
 };
 const FILTERS = {
-  review: [['todo', 'Needs decision'], ['verified', 'Verified'], ['expert', 'With expert', 'warn'], ['done', 'Done'], ['all', 'All']],
+  review: [['todo', 'Needs decision'], ['verified', 'Ready to confirm'], ['expert', 'With expert', 'warn'], ['done', 'Done'], ['all', 'All']],
   expert: [['open', 'Open', 'warn'], ['decided', 'Decided'], ['all', 'All']],
 };
 const badge = (text, tone = '') => `<span class="badge ${tone}">${esc(text)}</span>`;
 const rateFmt = (r) => `${Number(r).toFixed(2)}%`;
 const taxCode = (t) => (t.type === 'school_district' ? `SD ${t.code}` : t.place);
+const deskRate = (item) => (item.calc.kind === 'percent' ? rateFmt(item.calc.rate) : rateText(item));
 const shortTax = (t) => (t.type === 'school_district' ? `${t.place} schools` : `${t.place} city`);
 const isOff = (c) => c.route === 'local_tax' && c.proposal.some((p) => p.rate.status === 'over' || p.rate.status === 'under');
 const siteOf = (e, a) => a.company.worksites.find((w) => w.site_id === e.site_id);
@@ -485,7 +503,7 @@ function caseBadge(c) {
     if (c.decision.expert) return ['Expert decided', 'blue'];
     if (c.route === 'not_a_tax') return ['Not a tax', 'info'];
     if (c.route === 'local_tax') {
-      if (c.verified) return ['Verified', 'good'];
+      if (c.verified) return ['Ready to confirm', 'good'];
       if (c.unowed?.amount) return ['Correction', 'warn'];
       if (isOff(c)) return ['Rate differs', 'warn'];
       if (c.flags.includes('label_place_mismatch')) return ['Check place', 'warn'];
@@ -496,7 +514,7 @@ function caseBadge(c) {
   }
   const auto = c.decision.employer?.auto && (!c.decision.expert || c.decision.expert.auto);
   return (auto
-    ? { confirmed: ['Auto-confirmed', 'done'], moved_to_deduction: ['Auto: deduction', 'done'], employer_managed: ['Auto: employer-managed', 'done'], stopped: ['Auto: stopped', 'done-bad'] }
+    ? { confirmed: ['Auto: confirmed', 'done'], moved_to_deduction: ['Auto: deduction', 'done'], employer_managed: ['Auto: employer-managed', 'done'], stopped: ['Auto: stopped', 'done-bad'] }
     : { confirmed: ['Confirmed', 'done'], moved_to_deduction: ['Deduction', 'done'], employer_managed: ['Employer-managed', 'done'], stopped: ['Stopped', 'done-bad'] })[c.stage] ?? [c.stage, 'info'];
 }
 
@@ -587,14 +605,21 @@ function workspace(view, s) {
     const n = all.filter((r) => r.groups.has(id)).length;
     return `<button type="button" class="fchip${tone && n && filter !== id ? ` ${tone}` : ''}" data-action="queue-filter" data-view="${view}" data-value="${id}" aria-pressed="${filter === id}">${text}<span>${n}</span></button>`;
   }).join('');
-  const items = list.map((r) => {
-    return `<li data-text="${esc(r.text)}"><button type="button" class="record" data-action="select" data-key="${esc(r.key)}"${sel?.key === r.key ? ' aria-current="true"' : ''}>
-      <span class="rec-top"><strong>${esc(r.name)}</strong>${badge(r.badge, r.tone)}</span>
-      <span class="rec-map"><span class="from">${esc(r.from)}</span>${icon('arrow')}<span class="to ${r.toTone}">${esc(r.to)}</span></span>
-    </button></li>`;
+  // One group per employee, so the name is read once and each row is just the line and where it goes.
+  const groups = [];
+  for (const r of list) {
+    if (groups.at(-1)?.id !== r.employee_id) groups.push({ id: r.employee_id, name: r.name, rows: [] });
+    groups.at(-1).rows.push(r);
+  }
+  const items = groups.map((g) => {
+    const gid = `grp-${view}-${g.id}`;
+    return `<li class="rec-group"><p class="rec-emp" id="${esc(gid)}">${esc(g.name)}</p><ul class="rec-items" aria-labelledby="${esc(gid)}">${g.rows.map((r) => `<li data-text="${esc(r.text)}"><button type="button" class="record" data-action="select" data-key="${esc(r.key)}"${sel?.key === r.key ? ' aria-current="true"' : ''}>
+      <span class="rec-top"><span class="from"><span class="sr-only">${esc(r.name)}: </span>${esc(r.from)}</span>${badge(r.badge, r.tone)}</span>
+      <span class="rec-map">${icon('arrow')}<span class="to ${r.toTone}">${esc(r.to)}</span></span>
+    </button></li>`).join('')}</ul></li>`;
   }).join('');
   const emptyText = {
-    todo: 'Nothing is waiting for the employer.', verified: 'No verified matches are waiting.', expert: 'No lines are with an expert.',
+    todo: 'Nothing is waiting for the employer.', verified: 'No lines are ready to confirm.', expert: 'No lines are with an expert.',
     done: 'No decisions yet.', all: 'No records.', open: 'The expert queue is empty.', decided: 'No expert decisions yet.',
   }[filter];
   const title = view === 'review' ? 'Employer review' : 'Expert queue';
@@ -634,7 +659,7 @@ function viewExpert(s) { return workspace('expert', s); }
 function recordHeader({ name, id, meta, badgeHtml, flow, why, stage, next }) {
   return `<div class="rec-header">
     <div class="rec-title">
-      <div><h2>${esc(name)}</h2><p class="sub"><span class="idchip">${esc(id)}</span>${meta}</p></div>
+      <div><h2 id="detail-title" tabindex="-1">${esc(name)}</h2><p class="sub"><span class="idchip">${esc(id)}</span>${meta}</p></div>
       ${badgeHtml}
     </div>
     ${flow}
@@ -647,19 +672,28 @@ function recordHeader({ name, id, meta, badgeHtml, flow, why, stage, next }) {
 const flowSide = (side, label, title, meta, tone = '') => `<div class="flow-side ${side} ${tone}"><span class="flow-label">${label}</span><strong>${title}</strong>${meta ? `<span class="flow-meta">${meta}</span>` : ''}</div>`;
 const flow = (from, to) => `<div class="flow">${from}<span class="flow-arrow" aria-hidden="true">${icon('arrow')}</span>${to}</div>`;
 
+// Until someone confirms it, the Online side is a proposal, never a decision.
+function targetLabel(c) {
+  if (c.stage === 'awaiting_employer') return 'Proposed for Online payroll';
+  if (c.stage === 'with_expert') return 'Online payroll';
+  const e = c.decision.employer;
+  return e?.auto ? 'Confirmed by rule' : 'Confirmed by the employer';
+}
+
 function caseFlow(c) {
   const item = c.item;
-  const from = flowSide('from', 'Desktop payroll', esc(labelOf(item.label)), esc(`Law ID ${item.law_id} · ${item.origin === 'custom' ? 'custom item' : 'system item'} · ${rateText(item)}`));
+  const from = flowSide('from', 'Desktop payroll', esc(labelOf(item.label)), esc(`Law ID ${item.law_id} · ${item.origin === 'custom' ? 'custom item' : 'system item'} · ${deskRate(item)}`));
+  const label = targetLabel(c);
   let to;
   if (c.route === 'local_tax') {
     const title = c.proposal.map((p) => `${esc(p.tax.name)}${c.proposal.length > 1 ? ` <span class="flow-when">${esc(monthSpan(p.months))}</span>` : ''}`).join('<br>');
     const p = c.proposal[0];
     const meta = c.proposal.length > 1 ? 'Split by the move' : `${p.tax.type === 'school_district' ? `SD ${p.tax.code} · ` : ''}${rateFmt(p.tax.rate)} · ${basisText(p.basis)}`;
-    to = flowSide('to', 'Online payroll', title, esc(meta), c.verified || c.stage === 'confirmed' ? 'good' : 'warn');
-  } else if (c.route === 'not_a_tax') to = flowSide('to', 'Online payroll', 'Non-tax deduction', 'Moves to deductions; never filed as a tax', 'neutral');
-  else if (c.route === 'custom_entry') to = flowSide('to', 'Online payroll', esc(c.entry.name), esc(`Custom entry · employer-managed · ${c.entry.flat ? `${money(c.entry.flat)} a year` : `${c.entry.rate}%`}`), 'blue');
-  else if (c.route === 'stop') to = flowSide('to', 'Online payroll', 'Stop withholding', esc(c.ytd ? `${money(c.ytd)} to correct with the agency` : 'Nothing was withheld'), 'bad');
-  else to = flowSide('to', 'Online payroll', 'Waiting for an expert', esc(REASON_SHORT[c.reason] ?? 'Needs an expert'), REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn');
+    to = flowSide('to', label, title, esc(meta), c.verified || c.stage === 'confirmed' ? 'good' : 'warn');
+  } else if (c.route === 'not_a_tax') to = flowSide('to', label, 'Non-tax deduction', 'Moves to deductions; never filed as a tax', 'neutral');
+  else if (c.route === 'custom_entry') to = flowSide('to', label, esc(c.entry.name), esc(`Custom entry · employer-managed · ${c.entry.flat ? `${money(c.entry.flat)} a year` : `${c.entry.rate}%`}`), 'blue');
+  else if (c.route === 'stop') to = flowSide('to', label, 'Stop withholding', esc(c.ytd ? `${money(c.ytd)} to correct with the agency` : 'Nothing was withheld'), 'bad');
+  else to = flowSide('to', label, 'Waiting for an expert', esc(REASON_SHORT[c.reason] ?? 'Needs an expert'), REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn');
   return flow(from, to);
 }
 
@@ -702,13 +736,14 @@ function nextStep(c, view, live) {
 }
 
 function checksBanner(c) {
-  const meta = `<span class="meta">${esc(stateName(c.state))} · ${c.model ? (c.model.shown ? 'model shown' : 'model logged only') : 'rules only'}</span>`;
+  const meta = `<span class="meta">${esc(stateName(c.state))} · ${c.model ? (c.model.shown ? 'model suggestion shown' : 'model suggestion hidden') : 'Intuit-defined item'}</span>`;
   if (c.decision.expert) return `<div class="banner info">${icon('user', 'lg')}<div><strong>Expert decision:</strong> ${esc(expertText(c))}. The system's original findings are under "How the system decided".</div>${meta}</div>`;
   const issues = c.evidence.filter((x) => x.tone === 'fail' || x.tone === 'warn').map((x) => x.text);
   if (c.decision.sentToExpert) issues.push('The employer sent this line to an expert.');
   if (!issues.length) {
-    const why = c.route === 'local_tax' ? 'On the expected list, the rate matches, no conflicts.' : c.route === 'not_a_tax' ? 'Desktop and the label agree this is not a tax.' : 'No blocking conflicts.';
-    return `<div class="banner good">${icon('check', 'lg')}<div><strong>All checks passed.</strong> ${why}</div>${meta}</div>`;
+    const why = c.route === 'local_tax' ? 'The tax is on the expected list and the rate matches.' : c.route === 'not_a_tax' ? 'Desktop and the label agree this is not a tax.' : 'No blocking conflicts.';
+    const still = c.stage === 'awaiting_employer' ? ' It still needs confirming.' : '';
+    return `<div class="banner good">${icon('check', 'lg')}<div><strong>Rule checks passed.</strong> ${why}${still}</div>${meta}</div>`;
   }
   const tone = c.stage === 'with_expert' && REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn';
   return `<div class="banner ${tone}">${icon('alert', 'lg')}<div><strong>${plural(issues.length, 'thing', 'things')} to check</strong><ul>${issues.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>${meta}</div>`;
@@ -739,11 +774,11 @@ function caseMapping(c, s) {
     const target = (fn, cls = () => '') => stack(c.proposal.map((p) => tgt(fn(p), cls(p))));
     const fromExpert = c.proposal.some((p) => p.fromExpert);
     rows.push(['Tax item', srcItem, target((p) => `${p.tax.name}${p.tax.type === 'school_district' ? ` · SD ${p.tax.code}` : ''}${c.proposal.length > 1 ? ` · ${monthSpan(p.months)}` : ''}`),
-      fromExpert ? note('blue', 'user', 'Mapped by an expert') : custom ? note('good', 'check', `Clustered as ${c.model?.entry_label ?? 'a defined tax'}`) : note('good', 'check', 'Intuit-defined item')]);
+      fromExpert ? note('blue', 'user', 'Mapped by an expert') : custom ? note('good', 'check', `Model suggested: ${(c.model?.entry_label ?? 'a defined tax').toLowerCase()}`) : note('good', 'check', 'Intuit-defined item')]);
     rows.push(['Jurisdiction', custom ? none('Not recorded in Desktop') : src(s.a.idx.taxes.get(item.system_tax_id)?.name ?? item.system_tax_id), target((p) => `${p.tax.place} · ${basisText(p.basis)}`), note('good', 'pin', 'From the address lookup')]);
     const sameAgency = c.proposal.every((p) => String(p.tax.agency).toLowerCase() === String(item.agency ?? '').toLowerCase());
     rows.push(['Agency', item.agency ? src(item.agency) : none('None on file'), target((p) => p.tax.agency), sameAgency ? note('good', 'check', 'Same agency') : note('', 'info', 'Replaced by the official agency')]);
-    rows.push(['Rate', src(rateText(item)), target((p) => `${rateFmt(p.tax.rate)}${p.tax.base ? ` ${p.tax.base.toLowerCase()}` : ''}`, (p) => (p.rate.status === 'over' || p.rate.status === 'under' ? 'warn' : '')), stack(c.proposal.map((p) => {
+    rows.push(['Rate', src(deskRate(item)), target((p) => `${rateFmt(p.tax.rate)}${p.tax.base ? ` ${p.tax.base.toLowerCase()}` : ''}`, (p) => (p.rate.status === 'over' || p.rate.status === 'under' ? 'warn' : '')), stack(c.proposal.map((p) => {
       const r = p.rate;
       if (r.status === 'match') return note('good', 'check', 'No difference');
       if (r.status === 'over' || r.status === 'under') return note('warn', 'alert', `${r.status === 'over' ? 'Over' : 'Under'}-withheld ${money(Math.abs(r.difference))} (${monthSpan(r.months)})`);
@@ -783,7 +818,7 @@ function caseMapping(c, s) {
   rows.push(['Tax item', srcItem, none('No target yet'), note(REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn', 'alert', REASON_SHORT[c.reason] ?? 'Needs an expert')]);
   if (other) rows.push(['Already withheld by', none('This line'), tgt(`"${labelOf(other.item.label)}"`, 'warn'), note('bad', 'alert', 'Keeping both would withhold twice')]);
   rows.push(['Desktop setting', src(`${item.item_type}, ${item.tracking_type}`), none('An expert decides'), note('', 'info', `Law ID ${item.law_id}${custom ? ', custom item' : ''}`)]);
-  if (c.model) rows.push(['Model suggestion', none('Label only'), c.model.entry_label ? tgt(c.model.entry_label, 'blue') : none('No defined entry'), note(c.model.shown ? 'blue' : '', 'spark', `${c.model.confidence} confidence, silhouette ${c.model.item_silhouette.toFixed(2)}${c.model.shown ? '' : ' (logged, hidden)'}`)]);
+  if (c.model) rows.push(['Model suggestion', none('Label only'), c.model.entry_label ? tgt(c.model.entry_label, 'blue') : none('No defined entry'), note(c.model.shown ? 'blue' : '', 'spark', `A suggestion only, ${c.model.confidence} confidence${c.model.shown ? '' : ' (hidden from the employer)'}`)]);
   rows.push(['Rate', src(rateText(item)), none('After the decision'), note('', 'info', 'Checked once a tax is chosen')]);
   rows.push(ytdRow(['<span class="none">Not migrated yet</span>', note('warn', 'alert', 'Stays off until decided')]));
   return mappingTable(rows);
@@ -882,10 +917,10 @@ function gapDetail(g, s) {
   const sd = g.tax.type === 'school_district' ? ` (SD ${g.tax.code})` : '';
   const by = stage === 'covered' ? gapCoveredBy(g, s.d, s.a) : null;
   const back = g.pastMonths.length ? `Nothing was withheld in ${monthSpan(g.pastMonths)}; estimated back tax ${money(g.backTaxEstimate)}.` : 'No Desktop months were missed, so there is no back tax.';
-  const [b, tone] = { awaiting_employer: ['Not withheld', 'bad'], added: ['Added', 'done'], covered: ['Covered', 'done'] }[stage];
+  const [b, tone] = { awaiting_employer: ['Not withheld', 'bad'], added: [s.d.gaps[g.gap_id]?.auto ? 'Auto: added' : 'Added', 'done'], covered: ['Covered', 'done'] }[stage];
   const gapFlow = flow(
     flowSide('from', 'Desktop payroll', 'No item', esc(g.pastMonths.length ? `Nothing withheld ${monthSpan(g.pastMonths)}` : 'Nothing to withhold yet'), ''),
-    flowSide('to', 'Online payroll', esc(g.tax.name), esc(`${g.tax.type === 'school_district' ? `SD ${g.tax.code} · ` : ''}${rateFmt(g.tax.rate)} · ${basisText(g.basis)}`), stage === 'awaiting_employer' ? 'bad' : stage === 'added' ? 'good' : 'neutral'));
+    flowSide('to', stage === 'awaiting_employer' ? 'Proposed for Online payroll' : stage === 'added' ? (s.d.gaps[g.gap_id]?.auto ? 'Added by rule' : 'Added by the employer') : 'Covered by an expert mapping', esc(g.tax.name), esc(`${g.tax.type === 'school_district' ? `SD ${g.tax.code} · ` : ''}${rateFmt(g.tax.rate)} · ${basisText(g.basis)}`), stage === 'awaiting_employer' ? 'bad' : stage === 'added' ? 'good' : 'neutral'));
   const why = stage === 'covered'
     ? `An expert mapped "${by?.item.label ?? ''}" to this tax, so it is not added twice.`
     : `Expected from the ${basisText(g.basis)} ${[g.address.line1, g.address.city].filter(Boolean).join(', ')}, ${monthSpan(g.months)}, but no Desktop item withholds it.`;
@@ -951,18 +986,19 @@ function expertTools(c, s) {
   const typeGuess = { earned_income: 'Local earned income tax', local_services: 'Local services tax', municipal: 'Municipal income tax', school_district: 'School-district income tax' }[suggestType] ?? 'Other local tax';
   const basisGuess = suggestType === 'local_services' ? 'work' : suggestType === 'earned_income' ? 'higher' : suggestType === 'municipal' ? 'work' : 'home';
   const flat = c.item.calc.kind === 'flat_annual';
+  // The action the hint recommends gets the primary style; a conflict has no default answer.
+  const recommended = { not_expected: 'stop', duplicate: 'stop', state_conflict: 'stop', weak_signal: 'map', no_address: 'map', address_unresolved: 'map', ambiguous: 'map', employer_sent: 'map' }[c.reason] ?? null;
   const sel = (name, values, current) => `<select id="${name}-${id}" name="${name}">${values.map(([v, t]) => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
   return `<section class="card" aria-label="Expert decision">
     <div class="card-head"><span class="card-title">${icon('user')}Expert decision</span><span class="meta">Goes back to the employer to confirm</span></div>
     <div class="card-body tools">
-      ${EXPERT_HINT[c.reason] ? `<p class="hint-line">${esc(EXPERT_HINT[c.reason])}</p>` : ''}
       <div class="map-row">
         <label class="field" for="map-${id}">Map to a defined tax${stateTaxes.length ? `<select id="map-${id}"><option value="">Choose a tax</option>${options}</select>` : `<select id="map-${id}" disabled><option>No ${esc(stateName(c.state))} taxes in the catalogue yet</option></select>`}</label>
-        <button class="btn primary" type="button" data-action="expert-map" data-id="${esc(c.case_id)}" data-select="map-${id}"${stateTaxes.length ? '' : ' disabled'}>Map</button>
+        <button class="btn${recommended === 'map' ? ' primary' : ''}" type="button" data-action="expert-map" data-id="${esc(c.case_id)}" data-select="map-${id}"${stateTaxes.length ? '' : ' disabled'}>Map</button>
       </div>
       <div class="row">
         <button class="btn" type="button" data-action="expert-nontax" data-id="${esc(c.case_id)}">Mark as not a tax</button>
-        <button class="btn danger" type="button" data-action="expert-stop" data-id="${esc(c.case_id)}">Not owed: stop withholding</button>
+        <button class="btn${recommended === 'stop' ? ' primary' : ' danger'}" type="button" data-action="expert-stop" data-id="${esc(c.case_id)}">Not owed: stop withholding</button>
       </div>
       <details${c.reason === 'shadow' ? ' open' : ''}>
         <summary>Create a structured custom entry</summary>
@@ -1008,7 +1044,7 @@ function viewGoLive(s) {
         <h2 id="checks-h">Checks before the first cloud payroll</h2>
         <ul class="checks">${r.checks.map((c) => `<li>${mark(c.pass ? 'pass' : 'fail')}<div><strong>${esc(c.label)}</strong><span>${esc(c.detail)}</span></div></li>`).join('')}</ul>
         ${r.expert.length ? `<p class="small muted">${plural(r.expert.length, 'line')} still with an expert will stay off: ${r.expert.map((c) => `${esc(c.employee_name)} "${esc(labelOf(c.item.label))}"`).join(', ')}.</p>` : ''}
-        ${live ? '' : `<div><button class="btn primary" type="button" data-action="go-live"${r.ready ? '' : ' disabled'}>Go live with confirmed taxes</button></div>`}
+        ${live ? '' : `<div class="row"><button class="btn primary" type="button" data-action="go-live"${r.ready ? '' : ' disabled aria-describedby="golive-why"'}>Go live with confirmed taxes</button>${r.ready ? '' : `<span class="small muted" id="golive-why">Available once all ${r.checks.length} checks pass.</span>`}</div>`}
       </section>
       <section class="panel section" aria-labelledby="tie-h">
         <h2 id="tie-h">Where every Desktop dollar goes</h2>
@@ -1021,9 +1057,21 @@ function viewGoLive(s) {
       <div class="section-head"><h2 id="acct-h">Agency accounts</h2><p>QuickBooks needs the account number and deposit frequency to pay and file. Filled from Desktop where the item had them.</p></div>
       ${r.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>Agency</th><th>Account number</th><th>Deposit frequency</th><th>Source</th></tr></thead><tbody>${accounts}</tbody></table></div>` : '<div class="empty"><span>No taxes are confirmed yet, so no agency accounts are needed.</span></div>'}
     </section>
-    <section class="section" aria-labelledby="w2-h">
-      <div class="section-head"><h2 id="w2-h">W-2 local boxes</h2><p>Projected for 2026: Desktop withholding relabelled for January to September, plus Online payroll from October.</p></div>
-      <div class="w2-grid">${w2.map(w2Card).join('')}</div>
+    ${w2Section(s, w2)}`;
+}
+
+function w2Section(s, w2) {
+  const dm = desktopMonths(s.a.company);
+  const cm = cloudMonths(s.a.company);
+  const span = dm.length ? `Desktop withholding relabelled for ${monthSpan(dm)}, plus Online payroll from ${monthSpan([cm[0]])}.` : 'The company moves in January, so every month comes from Online payroll.';
+  const shown = w2.filter((w) => w.lines.length);
+  const waiting = w2.length - shown.length;
+  const body = shown.length
+    ? `<div class="w2-grid">${shown.map(w2Card).join('')}</div>${waiting ? `<p class="small muted">${plural(waiting, 'employee has', 'employees have')} no confirmed local tax yet, so no local boxes are shown for them.</p>` : ''}`
+    : `<div class="empty"><strong>No local boxes yet.</strong><span>The W-2 local boxes appear here once taxes are confirmed in <a href="#review">Review</a> or by the automatic migration.</span></div>`;
+  return `<section class="section" aria-labelledby="w2-h">
+      <div class="section-head"><h2 id="w2-h">W-2 local boxes</h2><p>Projected for 2026: ${esc(span)}</p></div>
+      ${body}
     </section>`;
 }
 
@@ -1043,15 +1091,18 @@ function w2Card(w) {
 // ---------- 5 reconcile ----------
 
 function viewReconcile(s) {
+  const cm = cloudMonths(s.a.company);
+  const first = monthSpan([cm[0]]);
+  const period = cm.length <= 3 ? 'first quarter' : 'Online months';
   const head = `<div class="page-head"><h1>Reconcile</h1><p class="lede">After the first cloud payroll and again after the first quarter, withholding is compared with what each employee's addresses say they owe, and every mismatch is flagged.</p></div>`;
   if (!s.d.live) return `${head}<div class="empty"><strong>Go live first.</strong><span>Reconciliation runs on real cloud paychecks, so it starts after the confirmed taxes are switched on.</span><a class="btn" href="#golive">Open go-live checks</a></div>`;
-  if (!s.d.reconciled) return `${head}<div class="empty"><strong>Ready to run.</strong><span>The demo simulates October's first payroll and the October to December quarter at the official rates.</span><button class="btn primary" type="button" data-action="run-reconcile">Run first payroll and first quarter</button></div>`;
+  if (!s.d.reconciled) return `${head}<div class="empty"><strong>Ready to run.</strong><span>The demo simulates the first cloud payroll (${first}) and ${monthSpan(cm)} at the official rates.</span><button class="btn primary" type="button" data-action="run-reconcile">Run first payroll and first quarter</button></div>`;
   const r = reconcile(s.a, s.d);
   const rows = r.rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="small muted">${esc(x.agency)}</div></td><td>${x.employees.map(esc).join(', ')}</td><td class="num">${money(x.firstPayroll)}</td><td class="num">${money(x.quarter)}</td><td>${pill(x.payer, x.qb ? 'good' : 'info')}</td></tr>`).join('');
   const fails = r.flags.filter((f) => f.tone === 'fail').length;
   return `${head}
-    <div class="row">${pill(`${plural(r.rows.length, 'tax', 'taxes')} withheld`, 'accent')}${pill(`${money(r.totals.quarter)} this quarter`, 'info')}${pill(fails ? `${plural(fails, 'expected tax', 'expected taxes')} missing` : 'No expected tax missing', fails ? 'bad' : 'good')}</div>
-    <div class="table-wrap"><table><thead><tr><th>Tax</th><th>Employees</th><th class="num">First payroll (Oct)</th><th class="num">First quarter</th><th>Who pays and files</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="row">${pill(`${plural(r.rows.length, 'tax', 'taxes')} withheld`, 'accent')}${pill(`${money(r.totals.quarter)} in ${monthSpan(cm)}`, 'info')}${pill(fails ? `${plural(fails, 'expected tax', 'expected taxes')} missing` : 'No expected tax missing', fails ? 'bad' : 'good')}</div>
+    <div class="table-wrap"><table><thead><tr><th>Tax</th><th>Employees</th><th class="num">First payroll (${first})</th><th class="num">${period === 'first quarter' ? 'First quarter' : 'Online months'} (${monthSpan(cm)})</th><th>Who pays and files</th></tr></thead><tbody>${rows}</tbody></table></div>
     <section class="section" aria-labelledby="flags-h"><div class="section-head"><h2 id="flags-h">Flags</h2><p>${s.a.company.plan === 'Core' ? 'This company is on the Core plan, so it pays and files local taxes itself.' : 'Taxes QuickBooks supports are paid and filed automatically on this plan.'}</p></div>
       ${r.flags.length ? `<ul class="marks panel">${r.flags.map((f) => `<li>${mark(f.tone)}<span>${esc(f.text)}</span></li>`).join('')}</ul>` : '<div class="empty"><span>No mismatches.</span></div>'}
     </section>`;
@@ -1194,7 +1245,7 @@ function bulkConfirm(companyId) {
     log('Employer (bulk)', 'Confirmed', `${c.employee_name}: ${c.item.label}`, c.proposal.map((p) => p.tax.name).join(' and '));
   }
   state.companyId = prev;
-  toast(`Confirmed ${plural(list.length, 'verified match', 'verified matches')} for ${companyById(companyId).name}`);
+  toast(`Confirmed ${plural(list.length, 'line')} that ${list.length === 1 ? 'was' : 'were'} ready to confirm for ${companyById(companyId).name}`);
 }
 
 function setExpert(id, expert, verb, detail) {
@@ -1237,11 +1288,28 @@ function handle(action, el) {
       state.detailOpen = false;
       toast(`Opened ${companyById().name}`);
       break;
-    case 'reset':
+    case 'reset': {
+      // Two steps: the first click arms the button for a few seconds; nothing is cleared yet.
+      if (!resetArmed) {
+        resetArmed = true;
+        el.classList.add('armed');
+        el.querySelector('span').textContent = 'Click again to reset';
+        toast('This clears every decision for every client. Click Reset again to confirm.');
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          resetArmed = false;
+          const b = document.querySelector('[data-action="reset"]');
+          if (b) { b.classList.remove('armed'); b.querySelector('span').textContent = 'Reset'; }
+        }, 5000);
+        return;
+      }
+      resetArmed = false;
+      clearTimeout(resetTimer);
       state = freshState();
       cache.clear();
       toast('Demo reset to its starting data');
       break;
+    }
     case 'open-client':
       state.companyId = id;
       save();
@@ -1317,7 +1385,7 @@ function handle(action, el) {
       if (window.innerWidth <= 900 && !state.detailOpen) listY = window.scrollY;
       state.sel[view] = el.dataset.key;
       state.detailOpen = true;
-      afterRender = scrollToDetail;
+      afterRender = byKeyboard ? () => { scrollToDetail(); document.getElementById('detail-title')?.focus({ preventScroll: true }); } : scrollToDetail;
       break;
     }
     case 'back':
@@ -1495,11 +1563,13 @@ app.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-action]');
   if (!el || ['SELECT', 'INPUT', 'FORM', 'TEXTAREA'].includes(el.tagName)) return;
   if (el.disabled) return;
+  byKeyboard = ev.detail === 0; // Enter or Space on a button reports no mouse clicks
+  if (el.dataset.action === 'skip') { document.getElementById('main')?.focus(); return; }
   handle(el.dataset.action, el);
 });
 app.addEventListener('change', (ev) => {
   const el = ev.target.closest('[data-action]');
-  if (el && ['company', 'account', 'force-shadow', 'threshold'].includes(el.dataset.action)) handle(el.dataset.action, el);
+  if (el && ['company', 'account', 'force-shadow', 'threshold', 'auto-rule'].includes(el.dataset.action)) handle(el.dataset.action, el);
 });
 app.addEventListener('submit', (ev) => {
   const form = ev.target.closest('form[data-action]');
@@ -1542,7 +1612,7 @@ function scrollToDetail() {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=abe177840a`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=297b02517a`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };

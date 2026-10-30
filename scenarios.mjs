@@ -1,9 +1,9 @@
 // Every scenario the BRD v3 design has to handle, with a live check against the demo data.
 // The website's Scenario coverage page and the automated tests both run this list.
-import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=abe177840a';
-import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=abe177840a';
-import { monthSpan, rateCheck } from './engine/util.mjs?v=abe177840a';
-import { buildReport, casesCSV } from './report.mjs?v=abe177840a';
+import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=297b02517a';
+import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=297b02517a';
+import { monthSpan, rateCheck } from './engine/util.mjs?v=297b02517a';
+import { buildReport, casesCSV } from './report.mjs?v=297b02517a';
 
 export const GROUPS = [
   { id: 'data', title: 'Before step 1: check the Desktop file' },
@@ -241,7 +241,7 @@ export const SCENARIOS = [
   {
     id: 'expected-move-at-migration', group: 'expected', title: 'A move in the migration month',
     where: { company: 'C-HHF', employee: 'E03', view: 'review' },
-    expect: 'Noah Diaz: Desktop history stays with Lancaster; Online starts Pickerington in October. Still verified.',
+    expect: 'Noah Diaz: Desktop history stays with Lancaster; Online starts Pickerington in October. Still ready to confirm.',
     check: (x) => {
       const c = x.eff('C-HHF', 'Noah Diaz', 'School Tax');
       const [old, now] = c.proposal;
@@ -362,7 +362,7 @@ export const SCENARIOS = [
   {
     id: 'route-verified', group: 'route', title: 'Exact match at the right rate',
     where: { company: 'C-FHS', employee: 'E01', view: 'review' },
-    expect: 'On the expected list, rate equal: verified and safe to confirm in bulk.',
+    expect: 'On the expected list, rate equal: ready to confirm, and safe to confirm in bulk.',
     check: (x) => { const c = x.eff('C-FHS', 'John Carter', 'School Tax'); return ok(c.route === 'local_tax' && c.verified, `${c.proposal[0].tax.name}, ${RATE_WORD[c.proposal[0].rate.status]}, verified`); },
   },
   {
@@ -511,7 +511,7 @@ export const SCENARIOS = [
   {
     id: 'people-send-to-expert', group: 'people', title: 'The employer disagrees with a suggestion',
     where: { company: 'C-FHS', employee: 'E01', view: 'review' },
-    expect: '"Send to expert" moves even a verified match to the expert queue; the expert\'s answer comes back to the employer.',
+    expect: '"Send to expert" moves even a line that is ready to confirm to the expert queue; the expert\'s answer comes back to the employer.',
     check: (x) => {
       const a = x.analyse('C-FHS');
       const d = x.decide(a, emptyDecisions(), [['John Carter', 'School Tax', { sentToExpert: { note: 'Moved last month' } }]]);
@@ -740,12 +740,12 @@ export const SCENARIOS = [
   {
     id: 'auto-rule-off', group: 'auto', title: 'A rule switched off leaves its lines to the employer',
     where: { company: 'C-FHS', view: 'analysis' },
-    expect: 'With "Confirm matches the address supports" off, verified matches are not confirmed automatically.',
+    expect: 'With "Confirm matches the address supports" off, lines that are ready to confirm are not confirmed automatically.',
     check: (x) => {
       const a = x.analyse('C-FHS');
       const res = automate(a, emptyDecisions(), { ...DEFAULT_POLICY, confirm_matches: false });
       const waiting = effectiveAll(a, res.decisions).filter((c) => c.stage === 'awaiting_employer' && c.verified).length;
-      return ok(waiting === 11 && !res.decisions.live, `${waiting} verified matches left for the employer`);
+      return ok(waiting === 11 && !res.decisions.live, `${waiting} lines ready to confirm left for the employer`);
     },
   },
   {
