@@ -1,6 +1,6 @@
 // Decisions by employers and experts, the go-live checks, W-2 history and reconciliation.
 // Nothing here goes live without an employer decision (BRD: never activate without confirmation).
-import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs?v=7fe5918665';
+import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs?v=abe177840a';
 
 const usd = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
@@ -291,4 +291,126 @@ export function reconcile(analysis, decisions) {
     flags,
     totals: { firstPayroll: sum([...rows.values()].map((r) => r.firstPayroll)), quarter: sum([...rows.values()].map((r) => r.quarter)) },
   };
+}
+
+// ---------- Automation: rules the employer approves once ----------
+// The BRD says the model suggests and a person decides. Here the person (the employer) decides the
+// rules once; the system then applies them to every line they cover and leaves only the exceptions.
+// Lines the BRD reserves for people are never decided automatically: a weak or missing label signal,
+// conflicting evidence, a missing or unplaceable address, a label naming another state, a state in
+// shadow mode, more than one possible tax, or a line someone sent to an expert.
+
+export const AUTOMATION_RULES = [
+  { id: 'confirm_matches', label: 'Confirm matches the address supports', help: 'The tax is on the employee\'s expected list. The address decides when the label names another place.' },
+  { id: 'official_rate', label: 'Use the official rate when Desktop\'s rate is wrong', help: 'Over- or under-withholding and months withheld after a move are flagged for a correction.' },
+  { id: 'deductions', label: 'Move after-tax deductions', help: 'Desktop already treats the line as after-tax, or it is a known non-tax item.' },
+  { id: 'add_gaps', label: 'Add expected taxes nobody withheld', help: 'From the first cloud payroll; any back tax is flagged for the agency.' },
+  { id: 'stop_not_owed', label: 'Stop taxes the address says are not owed', help: 'Duplicates, and taxes not on the expected list for an address found in the lookup.' },
+  { id: 'accept_expert', label: 'Accept expert decisions', help: 'An expert\'s answer takes effect without a second click.' },
+  { id: 'go_live', label: 'Go live and reconcile when everything is settled', help: 'Only when no line is left for a person and every go-live check passes.' },
+];
+export const DEFAULT_POLICY = Object.freeze(Object.fromEntries(AUTOMATION_RULES.map((r) => [r.id, true])));
+export const PERSON_REASONS = new Set(['weak_signal', 'conflict', 'no_address', 'address_unresolved', 'state_conflict', 'shadow', 'ambiguous', 'employer_sent']);
+
+const ROUTE_VERB = { local_tax: 'Confirmed', not_a_tax: 'Moved to deductions', custom_entry: 'Accepted as employer-managed', stop: 'Stopped withholding' };
+
+/**
+ * Apply the automation rules. The input decisions are not changed: a new copy is returned with the
+ * actions taken and the exceptions left for a person. Anything a person undid is on hold and skipped.
+ */
+export function automate(analysis, decisions, policy = DEFAULT_POLICY, at = new Date().toISOString()) {
+  const d = structuredClone(decisions);
+  const on = (rule) => policy[rule] !== false;
+  const actions = [];
+  const stamp = (rule) => ({ auto: true, rule, at });
+  if (!d.live) {
+    // 1. Not owed at this address (or withheld twice): stop, and flag the Desktop amount for a correction.
+    for (const c of effectiveAll(analysis, d)) {
+      const rec = d.cases[c.case_id] ?? {};
+      if (rec.hold || c.stage !== 'with_expert' || rec.sentToExpert || !on('stop_not_owed')) continue;
+      if (c.reason !== 'not_expected' && c.reason !== 'duplicate') continue;
+      if (c.employee.expected.unresolvedMonths.length || !c.employee.expected.periods.length) continue;
+      const note = c.reason === 'duplicate' ? 'Duplicate: another line already withholds this tax.' : 'No tax of this kind applies at the employee\'s address.';
+      d.cases[c.case_id] = { ...rec, expert: { action: 'stop', note, ...stamp('stop_not_owed') } };
+      actions.push({ rule: 'stop_not_owed', target: `${c.employee_name}: ${c.item.label}`, action: 'Marked as not owed', detail: note });
+    }
+    // 2. Employer confirmations covered by a rule.
+    for (const c of effectiveAll(analysis, d)) {
+      const rec = d.cases[c.case_id] ?? {};
+      if (rec.hold || c.stage !== 'awaiting_employer') continue;
+      let rule = null;
+      if (c.decision.expert) rule = c.decision.expert.auto ? c.decision.expert.rule : 'accept_expert';
+      else if (c.route === 'not_a_tax') rule = 'deductions';
+      else if (c.route === 'local_tax') {
+        const off = c.proposal.some((p) => p.rate.status === 'over' || p.rate.status === 'under') || Boolean(c.unowed?.amount);
+        if (!on('confirm_matches')) rule = null;
+        else rule = off ? 'official_rate' : 'confirm_matches';
+      }
+      if (!rule || !on(rule)) continue;
+      d.cases[c.case_id] = { ...rec, employer: { action: c.route, ...stamp(rule) } };
+      const detail = c.route === 'local_tax' ? `${c.proposal.map((p) => p.tax.name).join(' and ')}${rule === 'official_rate' ? ', at the official rate; the difference is flagged for a correction' : ''}` : '';
+      actions.push({ rule, target: `${c.employee_name}: ${c.item.label}`, action: ROUTE_VERB[c.route], detail });
+    }
+    // 3. Expected taxes nobody withheld.
+    if (on('add_gaps')) {
+      const cases = effectiveAll(analysis, d);
+      for (const g of analysis.gaps) {
+        if (d.gaps[g.gap_id] || gapStage(g, d, cases) !== 'awaiting_employer') continue;
+        d.gaps[g.gap_id] = { action: 'add', ...stamp('add_gaps') };
+        actions.push({ rule: 'add_gaps', target: `${g.employee_name}: ${g.tax.name}`, action: g.cloudMonths.length ? 'Added expected tax' : 'Recorded back tax', detail: `Back tax estimate ${usd(g.backTaxEstimate)}` });
+      }
+    }
+    // 4. Go live and reconcile, only when nothing is left for a person.
+    const left = exceptions(analysis, d);
+    if (on('go_live') && !d.liveHold && !left.length && readiness(analysis, d).ready) {
+      d.live = true;
+      d.liveAt = at;
+      d.reconciled = true;
+      d.liveAuto = true;
+      const n = liveTaxes(analysis, d).length;
+      actions.push({ rule: 'go_live', target: analysis.company.name, action: 'Went live', detail: `${n} employee tax${n === 1 ? '' : 'es'} switched on` });
+      actions.push({ rule: 'go_live', target: analysis.company.name, action: 'Reconciled first payroll and quarter', detail: `${reconcile(analysis, d).flags.length} flags` });
+    }
+  }
+  return { decisions: d, actions, exceptions: exceptions(analysis, d) };
+}
+
+/** What is left for a person: lines with an expert, lines and gaps the rules do not cover, missing accounts. */
+export function exceptions(analysis, decisions) {
+  const out = [];
+  const cases = effectiveAll(analysis, decisions);
+  for (const c of cases) {
+    if (c.stage === 'with_expert') out.push({ kind: 'case', case_id: c.case_id, employee_id: c.employee_id, employee: c.employee_name, item: c.item.label, reason: c.reason, owner: 'expert' });
+    else if (c.stage === 'awaiting_employer') out.push({ kind: 'case', case_id: c.case_id, employee_id: c.employee_id, employee: c.employee_name, item: c.item.label, reason: decisions.cases[c.case_id]?.hold ? 'held' : 'rule_off', owner: 'employer' });
+  }
+  for (const g of analysis.gaps) {
+    if (gapStage(g, decisions, cases) === 'awaiting_employer') out.push({ kind: 'gap', gap_id: g.gap_id, employee_id: g.employee_id, employee: g.employee_name, item: g.tax.name, reason: decisions.gaps[g.gap_id] ? 'held' : 'rule_off', owner: 'employer' });
+  }
+  if (!out.length && !decisions.live) {
+    for (const a of agencyAccounts(analysis, decisions)) if (!a.complete) out.push({ kind: 'account', agency: a.agency, item: a.agency, reason: 'account_missing', owner: 'employer' });
+  }
+  return out;
+}
+
+/** How each line and expected tax was settled: automatically, by a person, or not yet. */
+export function automationStats(analysis, decisions) {
+  const cases = effectiveAll(analysis, decisions);
+  let auto = 0;
+  let manual = 0;
+  let open = 0;
+  for (const c of cases) {
+    if (c.stage === 'awaiting_employer' || c.stage === 'with_expert') { open += 1; continue; }
+    const e = c.decision.employer;
+    const x = c.decision.expert;
+    if (e?.auto && (!x || x.auto)) auto += 1;
+    else manual += 1;
+  }
+  for (const g of analysis.gaps) {
+    const st = gapStage(g, decisions, cases);
+    if (st === 'awaiting_employer') open += 1;
+    else if (st === 'added' && decisions.gaps[g.gap_id]?.auto) auto += 1;
+    else manual += 1;
+  }
+  const total = cases.length + analysis.gaps.length;
+  return { total, auto, manual, open, share: total ? auto / total : 0 };
 }

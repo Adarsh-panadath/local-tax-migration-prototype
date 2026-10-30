@@ -1,9 +1,9 @@
 // Every scenario the BRD v3 design has to handle, with a live check against the demo data.
 // The website's Scenario coverage page and the automated tests both run this list.
-import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=7fe5918665';
-import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL } from './engine/workflow.mjs?v=7fe5918665';
-import { monthSpan, rateCheck } from './engine/util.mjs?v=7fe5918665';
-import { buildReport, casesCSV } from './report.mjs?v=7fe5918665';
+import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=abe177840a';
+import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=abe177840a';
+import { monthSpan, rateCheck } from './engine/util.mjs?v=abe177840a';
+import { buildReport, casesCSV } from './report.mjs?v=abe177840a';
 
 export const GROUPS = [
   { id: 'data', title: 'Before step 1: check the Desktop file' },
@@ -17,6 +17,7 @@ export const GROUPS = [
   { id: 'history', title: 'W-2 history' },
   { id: 'reconcile', title: 'Reconcile' },
   { id: 'timing', title: 'Joiners, leavers and the migration month' },
+  { id: 'auto', title: 'Automation: rules the employer approved' },
 ];
 
 const usd = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -660,6 +661,102 @@ export const SCENARIOS = [
       const c = x.eff('C-LVB', 'Sofia Reyes', 'School Tax');
       const g = x.gap('C-LVB', 'Daniel Cho', 'OH-SD-2307');
       return ok(c.ytd === 0 && c.proposal[0].rate.status === 'no_history' && c.verified && g?.backTaxEstimate === 0 && g.cloudMonths.length === 12, `Sofia Reyes: ${RATE_WORD[c.proposal[0].rate.status]}; Daniel Cho's gap: back tax ${usd(g?.backTaxEstimate ?? 0)}`);
+    },
+  },
+
+  // ---------- Automation ----------
+  {
+    id: 'auto-share', group: 'auto', title: 'One click settles most of the work',
+    where: { company: 'C-FHS', view: 'analysis' },
+    expect: '16 of 18 items settle by rule; only Tom Reed\'s vague "Local Tax" and Kevin O\'Neil\'s garnishment conflict are left for a person.',
+    check: (x) => {
+      const a = x.analyse('C-FHS');
+      const res = automate(a, emptyDecisions());
+      const st = automationStats(a, res.decisions);
+      const left = res.exceptions.map((e) => `${e.employee} (${e.reason.replace('_', ' ')})`);
+      return ok(st.auto === 16 && st.total === 18 && same(res.exceptions.map((e) => e.reason).sort(), ['conflict', 'weak_signal']), `${st.auto} of ${st.total} automatic; left: ${left.join(', ')}`);
+    },
+  },
+  {
+    id: 'auto-person-only', group: 'auto', title: 'Automation never guesses where the BRD wants a person',
+    where: { company: 'C-HHF', view: 'expert' },
+    expect: 'Across every client, what is left is only a weak or missing signal, a conflict, a bad address, a wrong state, shadow mode, or a missing account number.',
+    check: (x) => {
+      const reasons = new Set();
+      let decidedWrongly = 0;
+      for (const co of x.data.companies) {
+        const a = x.analyse(co.company_id);
+        const res = automate(a, emptyDecisions());
+        for (const e of res.exceptions) reasons.add(e.reason);
+        for (const c of effectiveAll(a, res.decisions)) if (PERSON_REASONS.has(a.cases.find((y) => y.case_id === c.case_id).reason) && c.stage !== 'with_expert') decidedWrongly += 1;
+      }
+      const allowed = [...reasons].every((r) => PERSON_REASONS.has(r) || r === 'account_missing');
+      return ok(allowed && decidedWrongly === 0, `Left for a person: ${[...reasons].sort().join(', ')}`);
+    },
+  },
+  {
+    id: 'auto-finish', group: 'auto', title: 'After the experts decide, it goes live by itself',
+    where: { company: 'C-FHS', view: 'golive' },
+    expect: 'Once Kevin O\'Neil and Tom Reed are decided, automation accepts both, passes every go-live check, goes live and reconciles.',
+    check: (x) => {
+      const a = x.analyse('C-FHS');
+      let d = automate(a, emptyDecisions()).decisions;
+      d = x.decide(a, d, [["Kevin O'Neil", 'Wage Garnishment', { expert: { action: 'not_a_tax' } }], ['Tom Reed', 'Local Tax', { expert: { action: 'map', tax_id: 'OH-SD-2305' } }]]);
+      const res = automate(a, d);
+      const r = reconcile(a, res.decisions);
+      return ok(res.decisions.live && res.decisions.reconciled && !res.exceptions.length && readiness(a, res.decisions).ready && !r.flags.some((f) => f.tone === 'fail'), `Live: ${res.decisions.live ? 'yes' : 'no'}; reconciled: ${res.decisions.reconciled ? 'yes' : 'no'}; ${r.rows.length} taxes, ${usd(r.totals.quarter)} this quarter`);
+    },
+  },
+  {
+    id: 'auto-account', group: 'auto', title: 'A missing account number stops the automatic go-live',
+    where: { company: 'C-HVD', view: 'golive' },
+    expect: 'Every line settles, but Hocking Valley Dental waits for the Lancaster account number before going live.',
+    check: (x) => {
+      const a = x.analyse('C-HVD');
+      const res = automate(a, emptyDecisions());
+      const st = automationStats(a, res.decisions);
+      const acct = res.exceptions.find((e) => e.reason === 'account_missing');
+      const d = structuredClone(res.decisions);
+      d.accounts['City of Lancaster Income Tax Department'] = { account: 'LAN-778812', frequency: 'Quarterly' };
+      const after = automate(a, d);
+      return ok(st.auto === st.total && !res.decisions.live && acct && after.decisions.live, `${st.auto} of ${st.total} settled; waiting for: ${acct?.item ?? 'nothing'}; after adding it, live: ${after.decisions.live ? 'yes' : 'no'}`);
+    },
+  },
+  {
+    id: 'auto-hold', group: 'auto', title: 'An undone automatic decision stays with a person',
+    where: { company: 'C-FHS', view: 'review' },
+    expect: 'If the employer undoes an automatic confirmation, running automation again leaves that line alone.',
+    check: (x) => {
+      const a = x.analyse('C-FHS');
+      const d = automate(a, emptyDecisions()).decisions;
+      const c = a.cases.find((y) => y.employee_name === 'John Carter' && y.item.label === 'School Tax');
+      delete d.cases[c.case_id].employer;
+      d.cases[c.case_id].hold = true;
+      const again = automate(a, d);
+      const now = effectiveAll(a, again.decisions).find((y) => y.case_id === c.case_id);
+      return ok(now.stage === 'awaiting_employer' && again.exceptions.some((e) => e.case_id === c.case_id && e.reason === 'held'), `John Carter's school tax: ${stage(now.stage)}`);
+    },
+  },
+  {
+    id: 'auto-rule-off', group: 'auto', title: 'A rule switched off leaves its lines to the employer',
+    where: { company: 'C-FHS', view: 'analysis' },
+    expect: 'With "Confirm matches the address supports" off, verified matches are not confirmed automatically.',
+    check: (x) => {
+      const a = x.analyse('C-FHS');
+      const res = automate(a, emptyDecisions(), { ...DEFAULT_POLICY, confirm_matches: false });
+      const waiting = effectiveAll(a, res.decisions).filter((c) => c.stage === 'awaiting_employer' && c.verified).length;
+      return ok(waiting === 11 && !res.decisions.live, `${waiting} verified matches left for the employer`);
+    },
+  },
+  {
+    id: 'auto-shadow', group: 'auto', title: 'Shadow mode is never automated',
+    where: { company: 'C-KSF', view: 'expert' },
+    expect: 'Keystone Freight\'s Pennsylvania lines stay with an expert; the Ohio lines settle.',
+    check: (x) => {
+      const a = x.analyse('C-KSF');
+      const res = automate(a, emptyDecisions());
+      const pa = effectiveAll(a, res.decisions).filter((c) => c.state === 'PA');
+      return ok(pa.length === 2 && pa.every((c) => c.stage === 'with_expert' && c.reason === 'shadow') && automationStats(a, res.decisions).auto === 2, `Pennsylvania: ${pa.map((c) => `"${c.item.label}" ${stage(c.stage)}`).join(', ')}`);
     },
   },
 ];
