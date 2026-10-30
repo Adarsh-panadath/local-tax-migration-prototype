@@ -1,10 +1,10 @@
 // Browser app for the BRD v3 local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=297b02517a';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=297b02517a';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY } from './engine/workflow.mjs?v=297b02517a';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=297b02517a';
-import { buildReport, casesCSV } from './report.mjs?v=297b02517a';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=297b02517a';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=7c4b6e170b';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=7c4b6e170b';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY } from './engine/workflow.mjs?v=7c4b6e170b';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=7c4b6e170b';
+import { buildReport, casesCSV } from './report.mjs?v=7c4b6e170b';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=7c4b6e170b';
 
 const STORE = 'local-tax-migration:brd-v3';
 const VIEWS = ['clients', 'analysis', 'review', 'expert', 'golive', 'reconcile', 'scenarios', 'model', 'audit'];
@@ -74,6 +74,8 @@ const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' 
 const money = (n) => usd.format(n);
 const pct = (x, digits = 1) => `${(x * 100).toFixed(digits)}%`;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const initials = (name) => String(name).split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+const avatar = (name, size = '') => `<span class="avatar${size ? ` ${size}` : ''}" aria-hidden="true">${esc(initials(name))}</span>`;
 const MARK = { pass: '✓', fail: '×', warn: '!', info: 'i' };
 // Line icons (24px grid, stroke drawn in the current text colour).
 const ICONS = {
@@ -83,6 +85,7 @@ const ICONS = {
   pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   check: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  tick: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   x: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
@@ -242,9 +245,12 @@ const OVERSIGHT = [['scenarios', 'Scenarios', 'list'], ['model', 'Governance', '
 function appbar(view, s) {
   const co = s.a.company;
   const options = data.companies.map((c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  // A step shows a check once nothing is left in it, so the tabs double as a progress tracker.
+  const finished = { analysis: true, review: s.awaiting === 0, expert: s.expert === 0, golive: Boolean(s.d.live), reconcile: Boolean(s.d.reconciled) };
   const tab = ([id, text], i) => {
     const n = id === 'review' ? s.awaiting : id === 'expert' ? s.expert : 0;
-    return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}><span class="step">${i + 1}</span>${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}</a>`;
+    const done = finished[id];
+    return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}${done ? ' class="done"' : ''}><span class="step">${done ? `${icon('tick')}<span class="sr-only">Done:</span>` : i + 1}</span>${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}</a>`;
   };
   const total = s.cases.length;
   const lines = s.cases.filter((c) => c.stage === 'awaiting_employer').length;
@@ -268,7 +274,7 @@ function appbar(view, s) {
     <div class="batchbar">
       <span class="status ${statusTone}"><span class="dot"></span>${esc(s.status)}</span>
       <span class="batch-progress"><span class="progress" role="img" aria-label="${items - action} of ${items} items settled"><span style="width:${(items ? ((items - action) / items) * 100 : 0).toFixed(1)}%"></span></span><span><b>${items - action}</b> of ${items} items settled</span></span>
-      ${action ? `${lines + gaps ? `<span class="batch-need"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.expert ? `<span class="batch-need"><b>${s.expert}</b> with an expert</span>` : ''}` : '<span class="batch-need done">Nothing waiting</span>'}
+      ${action ? `${lines + gaps ? `<span class="batch-need warn"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.expert ? `<span class="batch-need blue"><b>${s.expert}</b> with an expert</span>` : ''}` : `<span class="batch-need done">${icon('tick')}Nothing waiting</span>`}
       ${s.d.autoRun ? `<span class="batch-auto">${icon('spark')}<b>${pct(automationStats(s.a, s.d).share, 0)}</b> automated</span>` : ''}
       ${modeText}
       <nav class="batch-links" aria-label="Oversight">${links}</nav>
@@ -340,8 +346,8 @@ function automationCard(s) {
       ${d.live ? '' : `<button class="btn ${ran ? '' : 'primary lg'}" type="button" data-action="run-auto">${icon('spark')}${ran ? 'Run again' : 'Run automatic migration'}</button>`}
     </div>
     <div class="auto-score">
-      <span class="auto-big">${share}</span>
-      <div><p class="auto-line">${headline}</p><div class="progress wide" role="img" aria-label="${share} settled automatically"><span style="width:${(st.share * 100).toFixed(1)}%"></span></div>${sub ? `<p class="auto-sub">${esc(sub)}</p>` : ''}</div>
+      <span class="ring" role="img" aria-label="${share} ${ran ? 'settled' : 'can be settled'} automatically" style="--p:${(st.share * 100).toFixed(1)}"><span>${share}</span></span>
+      <div><p class="auto-line">${headline}</p>${sub ? `<p class="auto-sub">${esc(sub)}</p>` : ''}</div>
     </div>
     ${leftList}
     <details class="fold auto-rules"><summary>${icon('list')}Rules the employer approved (${AUTOMATION_RULES.filter((r) => policy[r.id]).length} of ${AUTOMATION_RULES.length} on)${icon('chevron', 'chev')}</summary><div class="fold-body">${rules}</div></details>
@@ -372,7 +378,7 @@ function viewClients() {
   }).join('');
   return `<div class="page-head"><h1>Clients moving to Online payroll</h1>
     <p class="lede">Run the automatic migration for every client at once. The rules settle what they can; each client keeps only its true exceptions for a person.</p></div>
-    <div class="auto-strip">${totals.ran ? `<span class="auto-big">${pct(totals.total ? totals.auto / totals.total : 0, 0)}</span>` : ''}<span><b>${totals.auto}</b> of ${totals.total} lines and expected taxes settled automatically${totals.ran ? `; ${plural(totals.left, 'item')} left for a person` : ''}.${totals.ran < data.companies.length ? ` Not run yet for ${plural(data.companies.length - totals.ran, 'client')}.` : ''}</span><button class="btn primary" type="button" data-action="run-auto-all">${icon('spark')}Run automation for every client</button></div>
+    <div class="auto-strip">${totals.ran ? `<span class="ring sm" role="img" aria-label="${pct(totals.total ? totals.auto / totals.total : 0, 0)} settled automatically" style="--p:${(totals.total ? (totals.auto / totals.total) * 100 : 0).toFixed(1)}"><span>${pct(totals.total ? totals.auto / totals.total : 0, 0)}</span></span>` : ''}<span><b>${totals.auto}</b> of ${totals.total} lines and expected taxes settled automatically${totals.ran ? `; ${plural(totals.left, 'item')} left for a person` : ''}.${totals.ran < data.companies.length ? ` Not run yet for ${plural(data.companies.length - totals.ran, 'client')}.` : ''}</span><button class="btn primary" type="button" data-action="run-auto-all">${icon('spark')}Run automation for every client</button></div>
     <div class="table-wrap"><table class="clients-table">
       <thead><tr><th>Client</th><th>Plan</th><th class="num">Employees</th><th class="num">Desktop lines</th><th class="num">Automated</th><th class="num">Left for a person</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
@@ -613,7 +619,7 @@ function workspace(view, s) {
   }
   const items = groups.map((g) => {
     const gid = `grp-${view}-${g.id}`;
-    return `<li class="rec-group"><p class="rec-emp" id="${esc(gid)}">${esc(g.name)}</p><ul class="rec-items" aria-labelledby="${esc(gid)}">${g.rows.map((r) => `<li data-text="${esc(r.text)}"><button type="button" class="record" data-action="select" data-key="${esc(r.key)}"${sel?.key === r.key ? ' aria-current="true"' : ''}>
+    return `<li class="rec-group"><p class="rec-emp" id="${esc(gid)}">${avatar(g.name)}${esc(g.name)}</p><ul class="rec-items" aria-labelledby="${esc(gid)}">${g.rows.map((r) => `<li data-text="${esc(r.text)}"><button type="button" class="record" data-action="select" data-key="${esc(r.key)}"${sel?.key === r.key ? ' aria-current="true"' : ''}>
       <span class="rec-top"><span class="from"><span class="sr-only">${esc(r.name)}: </span>${esc(r.from)}</span>${badge(r.badge, r.tone)}</span>
       <span class="rec-map">${icon('arrow')}<span class="to ${r.toTone}">${esc(r.to)}</span></span>
     </button></li>`).join('')}</ul></li>`;
@@ -659,7 +665,7 @@ function viewExpert(s) { return workspace('expert', s); }
 function recordHeader({ name, id, meta, badgeHtml, flow, why, stage, next }) {
   return `<div class="rec-header">
     <div class="rec-title">
-      <div><h2 id="detail-title" tabindex="-1">${esc(name)}</h2><p class="sub"><span class="idchip">${esc(id)}</span>${meta}</p></div>
+      <div class="rec-who">${avatar(name, 'lg')}<div><h2 id="detail-title" tabindex="-1">${esc(name)}</h2><p class="sub"><span class="idchip">${esc(id)}</span>${meta}</p></div></div>
       ${badgeHtml}
     </div>
     ${flow}
@@ -1612,7 +1618,7 @@ function scrollToDetail() {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=297b02517a`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=7c4b6e170b`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };
