@@ -1,7 +1,7 @@
 /* Review-workspace look, modelled on the team's Google Stitch mockup: slate neutrals, an emerald
    brand, white cards on a light slate ground, monospace for codes, rates and amounts. A top bar carries
    the client and the migration steps; Review and Expert queue are list-and-detail workspaces. The W-2
-   preview keeps the red "Copy A" ink of the printed form. */
+   preview keeps the red "Copy A" ink of the printed form. Light only, like the mockup. */
 :root {
   --bg: #f1f5f9;
   --surface: #ffffff;
@@ -46,36 +46,8 @@
   --gutter-l: max(16px, env(safe-area-inset-left, 0px));
   --gutter-r: max(16px, env(safe-area-inset-right, 0px));
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0b1120; --surface: #111827; --subtle: #0f172a; --sunken: #1e293b;
-    --ink: #e2e8f0; --ink-2: #cbd5e1; --muted: #94a3b8; --faint: #64748b; --line: #1f2a3b; --line-2: #334155;
-    --brand: #10b981; --brand-hover: #34d399; --brand-ink: #022c22; --brand-soft: #052e25; --brand-line: #065f46; --brand-text: #6ee7b7;
-    --good: #6ee7b7; --good-soft: #052e25; --good-line: #065f46;
-    --warn: #fbbf24; --warn-soft: #2b1d05; --warn-line: #78350f;
-    --bad: #f87171; --bad-soft: #2c0f12; --bad-line: #7f1d1d;
-    --info: #cbd5e1; --info-soft: #1e293b; --info-line: #334155;
-    --blue: #93c5fd; --blue-soft: #0f1d3a; --blue-line: #1e3a8a;
-    --form: #f08a7a; --form-soft: #391d19;
-    --shadow: 0 1px 2px rgb(0 0 0 / 0.5);
-    --lift: 0 -8px 20px rgb(0 0 0 / 0.45);
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #0b1120; --surface: #111827; --subtle: #0f172a; --sunken: #1e293b;
-  --ink: #e2e8f0; --ink-2: #cbd5e1; --muted: #94a3b8; --faint: #64748b; --line: #1f2a3b; --line-2: #334155;
-  --brand: #10b981; --brand-hover: #34d399; --brand-ink: #022c22; --brand-soft: #052e25; --brand-line: #065f46; --brand-text: #6ee7b7;
-  --good: #6ee7b7; --good-soft: #052e25; --good-line: #065f46;
-  --warn: #fbbf24; --warn-soft: #2b1d05; --warn-line: #78350f;
-  --bad: #f87171; --bad-soft: #2c0f12; --bad-line: #7f1d1d;
-  --info: #cbd5e1; --info-soft: #1e293b; --info-line: #334155;
-  --blue: #93c5fd; --blue-soft: #0f1d3a; --blue-line: #1e3a8a;
-  --form: #f08a7a; --form-soft: #391d19;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.5);
-  --lift: 0 -8px 20px rgb(0 0 0 / 0.45);
-  color-scheme: dark;
-}
+/* One light look, as in the Stitch mockup, whatever the device's dark-mode setting. */
+:root { color-scheme: light; }
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
