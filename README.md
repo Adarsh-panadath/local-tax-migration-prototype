@@ -109,15 +109,16 @@ The interface follows the team's Google Stitch mockup:
   4. **Summary:** settled by rule, waiting for a person, an exception report with a link to each record, and what happens next up to the first Online payroll.
 
   In the demo the copying is simulated; the local tax checks and the rules run for real, through the same engine as every other screen.
-- **Top bar:** a deep-green band with the client picker and the six steps (Move, Analysis, Review, Expert, Go live, Reconcile). A step shows a tick once nothing is left in it, so the tabs double as a progress tracker; amber counts show what is waiting. On a phone the client picker and Reset share one row with the logo, and the current step scrolls into view.
+- **Top bar:** a floating white bar with the six steps as pill tabs (Move, Analysis, Review, Expert, Go live, Reconcile), the client picker and Reset. A step shows a tick once nothing is left in it, so the tabs double as a progress tracker; amber counts show what is waiting. Under it, the status line is a row of pills. On a phone the client picker and Reset share one row with the logo, and the current step scrolls into view.
+- **Oversight rail:** All clients, Scenarios, Governance and the Decision log sit in an icon rail on the left of a wide screen, and in a row of pills on a narrow one.
 - **Status line:** one count for the whole client: items settled out of Desktop lines plus expected taxes nobody withheld, then who holds the rest (the employer or an expert), the model mode and links to the oversight pages.
 - **Review** and **Expert** are list-and-detail workspaces:
   - On the left is a searchable record list with filter chips, grouped by employee. Each row shows the Desktop item and where it is heading.
   - On the right is the selected record. It shows the target tax and the next step, a checks banner, and a Desktop-versus-Online table. Below that come the supporting evidence (addresses and expected taxes), how the system decided, the model suggestion and the decision history. A sticky action bar sits at the bottom.
-- **All clients:** one row per client with its status, the share automated and what is left for a person; Open goes to that client's move summary.
+- **All clients:** a bar chart of the share each client settles by rule (the open client's bar is solid; before a run a bar shows what the rules would settle), a card with the total and what is left with an expert or the employer, and one row per client. Open goes to that client's move summary.
 - **On a phone:** the list opens into the record, with a back link and the action bar fixed at the bottom. The clients table becomes one block per client.
 
-Colour always means the same thing: green is settled or ready, amber is waiting for the employer, blue is with an expert, red is a gap or a tax that is not owed.
+The look is a quiet dashboard: a light grey page, white rounded cards, pill-shaped buttons, a round arrow in a card's corner that opens the detail, and big figures whose cents fade to grey. Colour always means the same thing: green is settled or ready, amber is waiting for the employer, blue is with an expert, red is a gap or a tax that is not owed.
 
 Wording is chosen so that nothing looks decided before a person decides it:
 
