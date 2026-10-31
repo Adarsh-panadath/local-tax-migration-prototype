@@ -108,6 +108,13 @@ The prototype keeps that shape and puts the local tax step inside it:
 
 The screens are our own design and carry no Intuit branding. The copy of employees, pay items and totals is simulated and says so on screen; the local tax checks are real.
 
+## 5c. One screen set per person, and a real database
+
+*Added by the prototype.*
+
+- **Roles.** The business owner sees Move, To do and Go live; the accountant adds a Clients page; the payroll tax expert sees only the queue; the admin sees the model, the engine's findings, the data, the scenarios and the log. Buttons that open another person's screen appear only for a role that can open it. The sign-in uses demo accounts without passwords, because a static site cannot keep a secret; in production the role would come from the Intuit account or the staff sign-in.
+- **Database.** The demo files are loaded into SQLite in the browser, and the engine reads its input back with SQL. A test proves the round trip is exact. Uploaded Desktop CSV files go into the same tables and through the same file checks and engine. The query box is read-only. Customer data stays fictional; the tax reference is real where it matters.
+
 ## 6. Go-live checks
 
 Four checks must pass:

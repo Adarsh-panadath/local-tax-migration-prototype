@@ -2,21 +2,34 @@
 
 A working prototype of the BRD v3 design for moving local payroll taxes from QuickBooks Desktop Payroll to QuickBooks Online Payroll. Built for SPJIMR BDA (INF501), Group Exam Case 19.
 
-**Model suggests, person decides.** The prototype finds the right local tax for every employee from their addresses, groups free-text Desktop labels with clustering, and routes every Desktop line to one of three places. Nothing is switched on until the employer confirms it.
+**Model suggests, person decides.** The prototype finds the right local tax for every employee from their addresses, groups free-text Desktop labels with clustering, and routes every Desktop line to one of three places. Rules the employer approves settle most lines; people handle only the exceptions; nothing switches on until the employer confirms it.
 
 ## Open it
 
 **Website: https://adarsh-panadath.github.io/local-tax-migration-prototype/**
 
-The site is public; no sign-in is needed. Progress is saved in your own browser only. Use **Reset** in the top bar to start again (it asks for a second click, because it clears every client's decisions).
+Sign in with a demo account (no passwords). Progress is saved in your own browser only; **Reset** (two clicks) starts again.
 
-To run it on your computer (Node.js 20 or later; no dependencies, no API keys):
+To run it on your computer (Node.js 20 or later; no install step, no API keys):
 
 ```sh
-npm test        # 116 checks, including every scenario on the website
+npm test        # 125 checks: engine, every scenario, and the database
 npm run build   # copies web/ and data/ into dist/
 npm start       # serves dist/ at http://localhost:3000
 ```
+
+## Four people, one screen set each
+
+A real migration involves four different people, and each sees only what they need:
+
+| Sign in as | Their job | Screens |
+| --- | --- | --- |
+| **Business owner** (customer) | Move their business and confirm what is theirs to confirm | **Move** (start, check, summary), **To do**, **Go live** (with reconcile and W-2) |
+| **Accountant** (customer) | Move every client they look after | **Clients**, then the owner's screens for any client |
+| **Payroll tax expert** (Intuit) | Decide the lines the rules leave | **Queue** |
+| **Admin** (Intuit) | Keep the model safe and the data right | **Model** (gates and thresholds), **Engine** (what each step found), **Data**, **Scenarios**, **Log** |
+
+The sign-in is a demo: in a real product customers would use their Intuit account and staff the company sign-in, and the role would decide the screens. A public static site cannot keep a password secret, so it does not pretend to.
 
 ## The design in one picture
 
@@ -31,12 +44,24 @@ Desktop payroll file
   │      ├─ Local tax ............. matched to an exact jurisdiction, rate checked
   │      ├─ Not a tax ............. moves to deductions
   │      └─ Not in database ....... goes to an expert: map / not a tax / custom entry / stop
-  └─ 5. Employer confirms ......... only then does the tax go live
+  └─ 5. Employer confirms ......... by approved rules, or by hand; only then does the tax go live
         │
         ├─ Past payroll relabelled for W-2s (boxes 18–20)
         ├─ Gaps flagged both ways (expected but not withheld; withheld but not owed)
         └─ Reconcile after the first payroll and the first quarter
 ```
+
+## The database
+
+The demo data lives in a **SQLite database inside the page** (sql.js, compiled to WebAssembly; no server, no account, no keys). It is rebuilt from the demo files on every visit, so every visitor has a private copy. The engine reads its input from the database with SQL, and a test checks that this equals the files exactly.
+
+- **Customer data** (fictional): companies, work sites, employees, their addresses and Desktop payroll items.
+- **Tax reference** (real and public where it matters): states, Ohio school-district and city taxes, defined entries, the demo address lookup and the expert-labelled label pool.
+- **Outcomes**: where every Desktop line ended up (route, stage, Online tax, decided by which rule or person) and the decision log.
+
+The admin's **Data** page shows every table with its row count, runs read-only SQL queries (with examples), and accepts a **Desktop file as CSV**: download the template, upload it, and the new company goes through the same file checks and engine as the demo clients. A file with missing columns or an unknown work site is refused with the reason; a home address the lookup has never seen goes to an expert. Uploads stay in your browser. See [the data contract](docs/data-contract.md) for the columns.
+
+Customer payroll data stays fictional on purpose: real payroll files hold social security numbers and wages. Real companies demo the same way: invented people, real tax rules.
 
 ## Six demo clients
 
@@ -51,7 +76,7 @@ Desktop payroll file
 
 ## Automatic migration
 
-Most of the work runs by itself. The employer approves seven rules once (this is the "person decides" part of the BRD), and one click applies them to every line they cover:
+The employer approves seven rules once, on the Move page's check step:
 
 | Rule | What it settles |
 | --- | --- |
@@ -63,7 +88,7 @@ Most of the work runs by itself. The employer approves seven rules once (this is
 | Accept expert decisions | An expert's answer takes effect without a second click |
 | Go live and reconcile when everything is settled | Only when nothing is left for a person and every check passes |
 
-Only the cases the BRD reserves for people are left: a weak or missing label signal, conflicting evidence, a missing or unplaceable address, a label naming another state, a state in shadow mode, or a missing agency account number. After a person decides one, automation re-runs and finishes the rest.
+Only the cases the BRD reserves for people are left: a weak or missing label signal, conflicting evidence, a missing or unplaceable address, a label naming another state, a state in shadow mode, or a missing agency account number. After a person decides one, the rules run again and finish the rest.
 
 | Client | Settled automatically | Left for a person |
 | --- | --- | --- |
@@ -75,78 +100,27 @@ Only the cases the BRD reserves for people are left: a weak or missing label sig
 | Ridgeview Print Shop | 9 of 11 | A blank item name, an unknown address |
 | **All clients** | **67 of 78 (86%)** | **12** |
 
-Every automatic step is in the decision log with its rule, and anything can be undone. An undone decision stays with a person.
+## Demo script (about five minutes)
+
+1. **Sign in as the business owner** of Fairfield Hardware Supply. **Move**: Get started, then the check says 16 of 18 items settle by rule and names the two that stay for an expert. Click **Move to Online payroll**; the summary shows the exception report.
+2. **Sign out, sign in as the payroll tax expert.** The queue has two lines: mark Kevin O'Neil's garnishment as not a tax, and map Tom Reed's "Local Tax" to Lancaster CSD.
+3. The rules accept both, pass the four go-live checks ($12,063.60 tie-out), go live and reconcile. **Sign in as the owner again**: the summary says live; **Go live** shows 4 taxes, $3,428.70 for October to December, and the W-2 boxes.
+4. **Sign in as the accountant**: **Run automation for every client** settles 86% across the six clients; the chart shows each client's share.
+5. **Sign in as the admin**:
+   - **Model**: Ohio passes every gate (silhouette 0.53, precision 100%, 53 labels); Pennsylvania stays in shadow mode. Set the silhouette threshold to 0.53 and Ohio drops to shadow mode (its score is 0.528).
+   - **Data**: run "Who decided", download the template and upload it as a new client.
+   - **Scenarios**: 76 of 76 pass; each row opens the case.
 
 ## Scenario coverage
 
-The **Scenario coverage** page lists 76 scenarios, grouped by BRD step, and runs a live check for each one when it opens. Every row links to the client and employee it concerns. The same checks run in `npm test`.
-
-| Group | Scenarios |
-| --- | --- |
-| Before step 1: check the Desktop file | 8 |
-| Step 1: find the state | 5 |
-| Step 2: list the expected taxes | 9 |
-| Step 3: cluster custom labels, and the gates | 11 |
-| Step 4: route every line | 15 |
-| Gaps | 4 |
-| Step 5: employer and expert decisions | 4 |
-| Go-live checks | 4 |
-| W-2 history | 3 |
-| Reconcile | 3 |
-| Joiners, leavers and the migration month | 3 |
-| Automation | 7 |
-
-Boundary values are tested exactly: a gate value equal to its threshold passes (silhouette 0.50, precision 98%, sample 40, label confidence 0.25), and a rate of 1.4999% against 1.5% counts as under-withheld. **Model governance → Try the gates** lets you change the thresholds and watch a state switch to shadow mode.
+The admin's **Scenarios** page lists 76 scenarios, grouped by BRD step, and runs a live check for each one. The same checks run in `npm test`, together with exact boundaries: a gate value equal to its threshold passes (silhouette 0.50, precision 98%, sample 40, label confidence 0.25), and a rate of 1.4999% against 1.5% counts as under-withheld.
 
 ## The screens
 
-The interface follows the team's Google Stitch mockup:
-
-- **Move** (the start page): the way a customer begins, modelled on the shape of Intuit's own Desktop-to-Online move (a short wizard, then a summary with an exception report). The screens are our own design, not a copy of Intuit's.
-  1. **Start:** what moves. Employees, pay items and year-to-date totals are copied as they are. Local taxes are checked line by line. A panel shows the client's loose Desktop labels next to the exact taxes its addresses call for.
-  2. **Check:** before anything moves, how many items the rules will settle, which stay for a person and why, and the seven rules to approve. Desktop file problems are listed here too.
-  3. **Move:** a short sequence that shows each step with its real result (employees, expected taxes, routes, items settled). It is skipped for people who prefer reduced motion.
-  4. **Summary:** settled by rule, waiting for a person, an exception report with a link to each record, and what happens next up to the first Online payroll.
-
-  In the demo the copying is simulated; the local tax checks and the rules run for real, through the same engine as every other screen.
-- **Top bar:** a floating white bar with the six steps as pill tabs (Move, Analysis, Review, Expert, Go live, Reconcile), the client picker and Reset. A step shows a tick once nothing is left in it, so the tabs double as a progress tracker; amber counts show what is waiting. Under it, the status line is a row of pills. On a phone the client picker and Reset share one row with the logo, and the current step scrolls into view.
-- **Oversight rail:** All clients, Scenarios, Governance and the Decision log sit in an icon rail on the left of a wide screen, and in a row of pills on a narrow one.
-- **Status line:** one count for the whole client: items settled out of Desktop lines plus expected taxes nobody withheld, then who holds the rest (the employer or an expert), the model mode and links to the oversight pages.
-- **Review** and **Expert** are list-and-detail workspaces:
-  - On the left is a searchable record list with filter chips, grouped by employee. Each row shows the Desktop item and where it is heading.
-  - On the right is the selected record. It shows the target tax and the next step, a checks banner, and a Desktop-versus-Online table. Below that come the supporting evidence (addresses and expected taxes), how the system decided, the model suggestion and the decision history. A sticky action bar sits at the bottom.
-- **All clients:** a bar chart of the share each client settles by rule (the open client's bar is solid; before a run a bar shows what the rules would settle), a card with the total and what is left with an expert or the employer, and one row per client. Open goes to that client's move summary.
-- **On a phone:** the list opens into the record, with a back link and the action bar fixed at the bottom. The clients table becomes one block per client.
-
-The look is a quiet dashboard: a light grey page, white rounded cards, pill-shaped buttons, a round arrow in a card's corner that opens the detail, and big figures whose cents fade to grey. Colour always means the same thing: green is settled or ready, amber is waiting for the employer, blue is with an expert, red is a gap or a tax that is not owed.
-
-Wording is chosen so that nothing looks decided before a person decides it:
-
-| On screen | Meaning |
-| --- | --- |
-| Ready to confirm | The rule checks passed (on the expected list, rate equal). Still waiting for the employer. |
-| Proposed for Online payroll | The system's proposal. Nothing is switched on. |
-| Confirmed by rule / by the employer | Decided; the record says which. |
-| Model suggestion | Shown only when the state passes its gates, and never more than a suggestion. |
-| Needs an expert | The BRD's "not in database" route. |
-
-Keyboard: a skip link leads to the main content, focus moves to the record you open, and after each action focus returns to the same control or to the next record's heading.
-
-## Demo script (about five minutes)
-
-The demo opens on the **Move** page for **Fairfield Hardware Supply** (Premium plan, 8 employees, 17 Desktop lines).
-
-1. **Move**: click **Get started**. The check says 16 of 18 items can be settled by rule and names the two that stay for an expert. Click **Move to Online payroll**; the summary shows the exception report. (The same run is available as **Run automatic migration** on the Analysis page.)
-   - Settled: the 11 lines that were ready to confirm (on the expected list, rate equal), Priya Shah at the official 1.0% rate (Desktop over-withheld $207), Sara Lee's union dues, Raj Patel's missing Teays Valley tax ($648 back tax flagged), and Mike Brown's school tax (not owed in Columbus City Schools).
-   - Left for a person: Tom Reed and Kevin O'Neil.
-2. **Expert**: mark Kevin O'Neil's "Wage Garnishment" as not a tax (Desktop calls it a tax, the label says garnishment), and map Tom Reed's "Local Tax" to Lancaster CSD once his address is known.
-3. Automation accepts both, passes the four go-live checks ($12,063.60 tie-out), goes live and reconciles: 4 taxes, $3,428.70 for the quarter, no expected tax missing.
-4. **Go live** shows the W-2 boxes; **Decision log** shows each automatic step with its rule.
-5. **All clients**: **Run automation for every client** settles 86% across the six clients and leaves 10 exceptions (Fairfield's two were decided in step 2). **Open** on any client shows its move summary.
-6. To show the manual path instead, open **Review** before moving: every record has its own Confirm button.
-7. **Model governance**: Ohio passes every gate (silhouette 0.53, precision 100%, 53 labels). Pennsylvania stays in shadow mode. In **Try the gates**, set the silhouette threshold to 0.53 and Ohio drops to shadow mode (its score is 0.528); set it to 0.52 and suggestions come back.
-8. **Scenario coverage**: 76 of 76 pass. Open any row to see the case in the app.
-9. **Decision log**: every action, with the JSON and CSV export.
+- Light grey page, white rounded cards, pill buttons and one emerald green. Colour has one meaning each: green is settled or ready, amber is waiting for the employer, blue is with an expert, red is a gap or a tax that is not owed.
+- Wording never implies a decision nobody made: "Ready to confirm" (rule checks passed, still waiting), "Proposed for Online payroll", then "Confirmed by rule" or "Confirmed by the employer". Model output is labelled a suggestion.
+- Records show the Desktop item and its Online destination, the next step, anything that needs checking, a Desktop-versus-Online table and the evidence. Explanations sit in folds ("How the system decided", "Model suggestion", "Decision history").
+- Keyboard: a skip link, focus moves to what opens, and back to the next record after each action. On a phone, lists open into the record with the action bar at the bottom.
 
 ## What is real and what is not
 
@@ -154,11 +128,14 @@ The demo opens on the **Move** page for **Fairfield Hardware Supply** (Premium p
 | --- | --- |
 | Ohio school-district codes, names, rates and tax bases | Real, from the Ohio Department of Taxation 2026 list (a small subset) |
 | Lancaster 2.3% and Columbus 2.5% city rates | Real, from the city websites |
-| Clustering, silhouette, precision gates | Implemented and tested; precision is measured on a 53-label expert-labelled pool written for this demo |
-| Address lookup | A hand-made table of fictional addresses mapped to real districts. In production this is Intuit's tax applicability API |
+| Clustering, silhouette, precision gates | Implemented and tested; precision is measured on a 53-label pool written for this demo |
+| Address lookup | A hand-made table of fictional addresses mapped to real districts. In production this is Intuit's tax applicability service |
+| Database | Real SQLite, in the browser; rebuilt from the demo files on each visit |
+| Sign-in | Demo accounts without passwords |
 | Companies, employees, wages, account numbers | Fictional |
+| Copying employees, pay items and totals in the Move step | Simulated; the local tax checks are real |
 | Which taxes QuickBooks pays and files | A demo assumption, not an Intuit statement |
-| Connection to QuickBooks | None. The export is a review record, not an import file |
+| Connection to QuickBooks | None |
 
 This prototype is not affiliated with Intuit and is not tax advice. A 53-label pool is far too small to prove production accuracy; the gates show how the BRD's rule works, not that the model is ready.
 
@@ -169,13 +146,13 @@ This prototype is not affiliated with Intuit and is not tax advice. A 53-label p
 | `web/engine/text.mjs` | Label clean-up (abbreviations, place names) and TF-IDF vectors |
 | `web/engine/cluster.mjs` | Average-linkage clustering, silhouette, naming clusters, scoring a new label |
 | `web/engine/analysis.mjs` | File checks, expected taxes, rollout gates, routing, rate checks, gaps |
-| `web/engine/workflow.mjs` | Decisions, expert actions, go-live checks, dollar tie-out, W-2, reconciliation |
+| `web/engine/workflow.mjs` | Decisions, automation rules, go-live checks, dollar tie-out, W-2, reconciliation |
+| `web/db.mjs` | The database: schema, loading, reading the engine's input with SQL, queries, CSV import |
+| `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |
 | `web/scenarios.mjs` | The 76 scenarios and their live checks |
 | `web/report.mjs` | JSON report and CSV export |
 | `web/app.mjs`, `web/styles.css` | The app |
 | `data/` | Catalog, address lookup, six companies, expert-labelled label pool |
-| `tests/` | `engine.test.mjs` (engine and workflow) and `scenarios.test.mjs` (every scenario plus exact boundaries) |
+| `tests/` | Engine and workflow, every scenario plus exact boundaries, and the database |
 | `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |
-
-See [design decisions](docs/design-decisions.md) and the [data contract](docs/data-contract.md).

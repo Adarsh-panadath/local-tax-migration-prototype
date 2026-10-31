@@ -58,3 +58,31 @@ A suggestion is **high confidence** when its cluster has a name and the label's 
 **Download lines (CSV)** has one row per Desktop line. A cell that starts with `=`, `+`, `-` or `@` gets a leading apostrophe, so a spreadsheet will not run it as a formula.
 
 The report is a review record. It is not a QuickBooks import file and not permission to run payroll.
+
+## The database
+
+When the page opens, the files above are loaded into a SQLite database in the browser (sql.js, `web/vendor/`), and the engine's input is read back from it with SQL (`web/db.mjs`). A test (`tests/db.test.mjs`) checks that what comes back equals the files exactly and that the engine gives the same answers either way. If a viewer blocks WebAssembly, the app reads the files directly and the Data page says so.
+
+| Group | Tables |
+| --- | --- |
+| Customer data | `companies`, `worksites`, `employees`, `employee_addresses`, `employee_items`, `desktop_items`, `customer_addresses` (uploaded addresses the lookup has never seen) |
+| Tax reference | `states`, `taxes`, `no_tax_districts`, `state_place_names`, `defined_entries`, `defined_entry_states`, `address_lookup`, `label_pool` |
+| Outcomes | `line_outcomes` (every Desktop line: route, stage, Online tax, decided by, rule), `decision_log` |
+
+The Data page runs one read-only `SELECT` at a time.
+
+## Uploading a Desktop file (CSV)
+
+One file is one company, with one row per employee per payroll item (an employee with no local items has one row with the item columns blank). The Data page has a template: a small fictional company whose addresses are all in the demo lookup.
+
+| Column | Required | Notes |
+| --- | --- | --- |
+| `company_name`, `plan`, `migration_month` | Yes | Same on every row |
+| `employee_id`, `employee_name`, `monthly_wages` | Yes | |
+| `home_address`, `home_city`, `home_state`, `home_zip` | No | Blank means no address on file |
+| `work_site`, `work_address`, `work_state`, `work_zip` | Yes | `work_city` optional |
+| `remote` | No | `yes` if the employee works from home |
+| `item_label`, `law_id`, `item_type`, `tracking_type`, `rate_percent`, `agency` | No | `law_id` defaults to 177 (custom) |
+| `agency_account`, `deposit_frequency` | No | |
+
+Addresses are matched to `geocoder.json` on street line and ZIP. A home address it has never seen is kept as customer data and its lines go to an expert ("address not placed"); a work address it has never seen stops the file. Rows with the same label, type, tracking, rate and agency become one Desktop item. After the format checks, the engine's own file checks run exactly as for the demo companies. Moves within the year cannot be expressed in the CSV yet.

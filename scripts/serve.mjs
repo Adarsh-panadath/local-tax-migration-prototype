@@ -5,7 +5,7 @@ import { resolve, extname } from 'node:path';
 const root = resolve('dist');
 const types = {
   '.html': 'text/html', '.css': 'text/css', '.mjs': 'text/javascript', '.js': 'text/javascript',
-  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
+  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.wasm': 'application/wasm', '.txt': 'text/plain',
 };
 
 http.createServer(async (req, res) => {
@@ -14,7 +14,8 @@ http.createServer(async (req, res) => {
     const path = resolve(root, '.' + decodeURIComponent(pathname));
     if (!path.startsWith(root + '/')) throw new Error('Invalid path');
     const body = await readFile(path);
-    res.writeHead(200, { 'Content-Type': (types[extname(path)] || 'application/octet-stream') + '; charset=utf-8', 'Cache-Control': 'no-store' });
+    const type = types[extname(path)] || 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': type.startsWith('text/') || type === 'application/json' ? `${type}; charset=utf-8` : type, 'Cache-Control': 'no-store' });
     res.end(body);
   } catch {
     res.writeHead(404);
