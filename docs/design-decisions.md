@@ -112,8 +112,33 @@ The screens are our own design and carry no Intuit branding. The copy of employe
 
 *Added by the prototype.*
 
-- **Roles.** The business owner sees Move, To do and Go live; the accountant adds a Clients page; the payroll tax expert sees only the queue; the admin sees the model, the engine's findings, the data, the scenarios and the log. Buttons that open another person's screen appear only for a role that can open it. The sign-in uses demo accounts without passwords, because a static site cannot keep a secret; in production the role would come from the Intuit account or the staff sign-in.
+- **Roles.** The business owner moves one business: Move, To do and Go live. The payroll tax expert sees only the queue. The admin sees every business (Portfolio), the model, the ML Lab, the engine's findings, the data, the scenarios and the log. Buttons that open another person's screen appear only for a role that can open it. The sign-in uses demo accounts without passwords, because a static site cannot keep a secret; in production the role would come from the Intuit account or the staff sign-in.
+- **No bulk run across customers.** An earlier version had an accountant who could run automation for every client at once. It was removed: each business approves its own rules when it moves, so nobody runs another company's move. The all-businesses view is Intuit's, read-only, on the admin's Portfolio.
 - **Database.** The demo files are loaded into SQLite in the browser, and the engine reads its input back with SQL. A test proves the round trip is exact. Uploaded Desktop CSV files go into the same tables and through the same file checks and engine. The query box is read-only. Customer data stays fictional; the tax reference is real where it matters.
+
+## 5d. Missing information goes to the person who has it
+
+*Added by the prototype.* A missing or unplaceable home address is not a judgement call; it is a fact only the employer has. So those lines are the employer's (`needs: "address"` in `exceptions`), not an expert's:
+
+1. The move summary lists them with **Add address**; the owner's To do shows them under **Missing information**.
+2. The owner types the address (or, in the demo, fills one the lookup knows).
+3. It is saved to the database, the engine checks that employee's lines again, and the rules settle what they can.
+4. An address the lookup has never seen is kept, and the line stays with an expert, who can still map it.
+
+The same card lists missing agency account numbers, which also only the employer can give.
+
+## 5e. One decision per label, not per line
+
+*Added by the prototype.* A Desktop item is usually on many employees: one unclear label at a 150-person business is 150 lines. The expert can decide what the label means once (school-district tax, city tax, or not a tax), and each employee's own address picks the exact tax. This is the BRD's split, label for the kind and address for the jurisdiction, applied to the expert's work. Lines with no tax of that kind at the employee's address stay open. Lines waiting for an address, or sent back by the employer, are left out.
+
+## 5f. Scale, and proof that the clustering works
+
+*Added by the prototype.*
+
+- **60 generated businesses** with 100 to 280 employees each (about 11,000 people and 20,000 Desktop lines), from a fixed seed. They are synthetic, but built on real towns, ZIP codes, districts and rates, and each has its own mix of messy data. They run through the same engine and database as the six story clients.
+- **Portfolio.** The admin sees what the rules settle across every business, what is left by reason and owner, and which businesses have the most work left. The first pass analyses every business a few at a time behind a progress bar, so the page does not freeze.
+- **ML Lab.** The 53-label demo pool shows how the gates work but proves little. The lab builds a 1,200-label set, fits clusters on 80% with the engine's own code, and grades the other 20%, against simple word matching too. It reports what it finds, including when the gate would keep the state in shadow mode. With seed 2026: precision 98.4% on held-back labels at 78.8% coverage; word matching 98.2% at 90.8%; silhouette 0.462, below the 0.5 gate. Across other seeds neither method wins every time, which is why the screen states numbers, not a winner. Clustering's value is in grouping hundreds of label spellings into a few dozen families an expert names once, and in a confidence that decides when to defer.
+- The demo pool's k range stays 2 to 12; the lab uses 2 to 30, because a set seven times larger needs room for more clusters.
 
 ## 6. Go-live checks
 

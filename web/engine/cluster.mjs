@@ -88,10 +88,12 @@ export function clusterLabels(labels, entries, placeNames, options = {}) {
   const d = distanceMatrix(vectors);
   const byK = agglomerate(d);
   let best = null;
+  const curve = []; // the silhouette for every k tried, so the choice of k can be shown
   const upper = Math.min(maxK, labels.length - 1);
   for (let k = Math.max(2, minK); k <= upper; k++) {
     const clusters = byK.get(k);
     const { scores, mean } = silhouette(d, clusters);
+    curve.push({ k, silhouette: mean });
     if (!best || mean > best.mean) best = { k, clusters, scores, mean };
   }
 
@@ -124,6 +126,7 @@ export function clusterLabels(labels, entries, placeNames, options = {}) {
     itemScores: best.scores,
     silhouette: best.mean,
     k: best.k,
+    curve,
     vectors,
     vectorize,
     placeNames,

@@ -1,22 +1,24 @@
 // Browser app for the BRD v3 local-tax migration prototype. No framework, no build step.
 import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs';
 import { MODEL_VERSION } from './engine/cluster.mjs';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY } from './engine/workflow.mjs';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_ADDRESS } from './engine/workflow.mjs';
 import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs';
 import { buildReport, casesCSV } from './report.mjs';
 import { GROUPS, runScenarios } from './scenarios.mjs';
-import { loadSqlJs, createDatabase, readData, insertCompany, writeOutcomes, tableSummary, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS } from './db.mjs';
+import { loadSqlJs, createDatabase, readData, readCompanies, writeOutcomes, tableSummary, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs';
+import { generateBusinesses, SEED } from './generate.mjs';
+import { runLab, KEY_NAMES } from './mllab.mjs';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
-const VIEWS = ['move', 'clients', 'analysis', 'review', 'expert', 'golive', 'scenarios', 'model', 'audit', 'data'];
+const VIEWS = ['move', 'review', 'expert', 'golive', 'portfolio', 'model', 'lab', 'analysis', 'data', 'scenarios', 'audit'];
 
 // Demo sign-in: each role sees only its own screens. Admin can also open any record from a scenario.
+// The owner moves one business. Intuit staff see every business: the expert by queue, the admin as a portfolio.
 const ROLES = {
   owner: { icon: 'building', label: 'Business owner', side: 'Customer', blurb: 'Moves their own business to Online payroll', tabs: [['move', 'Move'], ['review', 'To do'], ['golive', 'Go live']] },
-  accountant: { icon: 'grid', label: 'Accountant', side: 'Customer', blurb: 'Moves every client they look after', tabs: [['clients', 'Clients'], ['move', 'Move'], ['review', 'To do'], ['golive', 'Go live']] },
   expert: { icon: 'user', label: 'Payroll tax expert', side: 'Intuit staff', blurb: 'Decides the lines the rules leave', tabs: [['expert', 'Queue']] },
-  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'Model gates, tax reference and the data', tabs: [['model', 'Model'], ['analysis', 'Engine'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
+  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'Every business, the model and the data', tabs: [['portfolio', 'Portfolio'], ['model', 'Model'], ['lab', 'ML Lab'], ['analysis', 'Engine'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
 };
 const roleOf = () => ROLES[state.role];
 const canOpen = (view) => state.role === 'admin' || Boolean(roleOf()?.tabs.some(([id]) => id === view));
@@ -45,11 +47,18 @@ let dbError = null;
 let uploads = loadUploads(); // Desktop files uploaded on the Data page: [{ company, addresses }]
 let uploadMsg = null;       // the last upload's result: { tone, title, items }
 let query = { sql: 'SELECT route, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY route\nORDER BY lines DESC', result: null, error: null };
+let generated = null;       // the synthetic businesses (100+ employees each), made from a fixed seed on every visit
+let lookupIdx = null;       // address lookup by street and ZIP, for addresses the employer adds
+const previews = new Map(); // one row per business for the portfolio: what the rules settle and what is left
+let warming = null;         // the portfolio's first pass over every business, a few at a time: { done, total, timer }
+let outcomesKey = null;     // the state the outcome tables were last written for
+let lab = { seed: SEED, total: 1200, result: null, running: false, error: null };
+const more = {};            // "Show all" toggles for long lists
 
 // ---------- state ----------
 
 function freshState() {
-  return { role: null, companyId: 'C-FHS', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filters: { review: 'todo', expert: 'open' }, sel: {}, selIndex: {}, query: {}, moveStep: {}, detailOpen: false };
+  return { role: null, companyId: 'G-001', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filters: { review: 'todo', expert: 'open' }, sel: {}, selIndex: {}, query: {}, moveStep: {}, detailOpen: false, corrections: [] };
 }
 function loadUploads() {
   try { return JSON.parse(localStorage.getItem(UPLOADS) ?? '[]'); } catch { return []; }
@@ -63,7 +72,7 @@ function loadState() {
     if (raw) {
       const saved = JSON.parse(raw);
       const fresh = freshState();
-      return { ...fresh, ...saved, settings: { ...fresh.settings, ...(saved.settings ?? {}) }, filters: { ...fresh.filters, ...(saved.filters ?? {}) }, sel: saved.sel ?? {}, selIndex: saved.selIndex ?? {}, query: saved.query ?? {}, moveStep: saved.moveStep ?? {} };
+      return { ...fresh, ...saved, role: ROLES[saved.role] ? saved.role : null, settings: { ...fresh.settings, ...(saved.settings ?? {}) }, filters: { ...fresh.filters, ...(saved.filters ?? {}) }, sel: saved.sel ?? {}, selIndex: saved.selIndex ?? {}, query: saved.query ?? {}, moveStep: saved.moveStep ?? {}, corrections: saved.corrections ?? [] };
     }
   } catch { /* storage unavailable: start fresh */ }
   return freshState();
@@ -79,11 +88,27 @@ const currentView = () => {
 };
 const companyById = (id = state.companyId) => data.companies.find((c) => c.company_id === id);
 const decisionsFor = (id = state.companyId) => (state.decisions[id] ??= emptyDecisions());
+const peekDecisions = (id) => state.decisions[id] ?? emptyDecisions(); // read without adding an entry
+const settingsKey = () => JSON.stringify(state.settings);
+// The engine's analysis of one business, kept until its data or the settings change.
+// A Desktop file the engine stops on is kept too, so it is not analysed again on every screen.
 function analysisFor(id = state.companyId) {
-  const key = `${id}|${JSON.stringify(state.settings)}`;
-  if (!cache.has(key)) cache.set(key, analyseCompany(companyById(id), data, state.settings));
-  return cache.get(key);
+  const key = `${id}|${settingsKey()}`;
+  if (!cache.has(key)) {
+    try { cache.set(key, analyseCompany(companyById(id), data, state.settings)); } catch (err) {
+      if (err.name !== 'DataError') throw err;
+      cache.set(key, err);
+    }
+  }
+  const v = cache.get(key);
+  if (v instanceof Error) throw v;
+  return v;
 }
+function forgetCompany(id) {
+  for (const m of [cache, previews]) for (const k of [...m.keys()]) if (k.startsWith(`${id}|`)) m.delete(k);
+  outcomesKey = null;
+}
+const sourceOf = (id) => (id.startsWith('G-') ? 'generated' : id.startsWith('U-') ? 'upload' : 'story');
 // The analysis index also holds placeholders for addresses the lookup does not know.
 const addressById = (id) => analysisFor().idx.addresses.get(id) ?? data.geocoder.addresses.find((a) => a.address_id === id);
 const stateName = (st) => data.catalog.states[st]?.name ?? st ?? 'Unknown state';
@@ -182,6 +207,7 @@ function summary(id = state.companyId) {
     a, d, cases, routes,
     awaiting: cases.filter((c) => c.stage === 'awaiting_employer').length + openGaps,
     expert: cases.filter((c) => c.stage === 'with_expert').length,
+    info: cases.filter((c) => c.stage === 'with_expert' && NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert).length, // waiting for an address from the employer
     verified: cases.filter((c) => c.stage === 'awaiting_employer' && c.verified).length,
     status: d.reconciled ? 'Reconciled' : d.live ? 'Live' : touched ? 'In review' : 'Not started',
   };
@@ -224,7 +250,7 @@ function render() {
   }
   const wide = view === 'review' || view === 'expert';
   const listScroll = lastView === view ? document.querySelector('.records')?.scrollTop : null;
-  const body = { move: viewMove, clients: viewClients, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
+  const body = { move: viewMove, portfolio: viewPortfolio, lab: viewLab, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
   app.innerHTML = `<button class="skip" type="button" data-action="skip">Skip to main content</button>${appbar(view, s)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
   lastView = view;
   if (wide) {
@@ -277,43 +303,54 @@ function applySearch(view) {
   }
 }
 
+// The scenarios check the six story clients exactly as shipped: no uploads, no added addresses.
 function scenarios() {
-  scenarioResults ??= runScenarios(data);
+  scenarioResults ??= runScenarios(fromFiles(files, [], null));
   return scenarioResults;
 }
 
-// Screens that are about one client show its status line; the rest are about every client or the model.
+// Screens that are about one business show its status line; the rest are about every business or the model.
 const COMPANY_VIEWS = new Set(['move', 'review', 'expert', 'golive', 'analysis']);
+const GLOBAL_VIEWS = new Set(['portfolio', 'lab', 'data', 'scenarios']);
+
+// Businesses in groups: the generated ones (100+ employees) first, then the small story clients, then uploads.
+function companyOptions() {
+  const opt = (c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}${sourceOf(c.company_id) === 'generated' ? ` (${c.employees.length})` : ''}</option>`;
+  const group = (label, list) => (list.length ? `<optgroup label="${esc(label)}">${list.map(opt).join('')}</optgroup>` : '');
+  const by = (src) => data.companies.filter((c) => sourceOf(c.company_id) === src);
+  return group('Generated businesses, employees in brackets', by('generated')) + group('Story clients, one case each', by('story')) + group('Uploaded', by('upload'));
+}
 
 function appbar(view, s) {
   const co = s.a.company;
   const role = roleOf();
-  const options = data.companies.map((c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
   // A step shows a tick once nothing is left in it, so the customer's tabs double as a progress tracker.
   const moved = Boolean(s.d.autoRun || s.d.live);
-  const finished = { move: moved, review: moved && s.awaiting === 0, golive: Boolean(s.d.reconciled), expert: s.expert === 0 };
-  const steps = state.role === 'owner' || state.role === 'accountant';
+  const finished = { move: moved, review: moved && s.awaiting === 0 && s.info === 0, golive: Boolean(s.d.reconciled), expert: s.expert === 0 };
+  const steps = state.role === 'owner';
   const tab = ([id, text], i) => {
-    const n = id === 'review' ? s.awaiting : id === 'expert' ? s.expert : 0;
+    const n = id === 'review' ? s.awaiting + s.info : id === 'expert' ? s.expert : 0;
     const done = steps && finished[id];
-    const mark = steps && id !== 'clients' ? `<span class="step">${done ? `${icon('tick')}<span class="sr-only">Done:</span>` : i + (state.role === 'accountant' ? 0 : 1)}</span>` : '';
+    const mark = steps ? `<span class="step">${done ? `${icon('tick')}<span class="sr-only">Done:</span>` : i + 1}</span>` : '';
     return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}${done ? ' class="done"' : ''}>${mark}${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}${id === 'scenarios' ? `<span class="count ok">${scenarioCount()}</span>` : ''}</a>`;
   };
   const company = state.role === 'owner'
     ? `<span class="company-box static">${icon('building')}<span class="co-name">${esc(co.name)}</span><span class="plan">${esc(co.plan)}</span></span>`
-    : `<label class="company-box"><span class="sr-only">Client</span>${icon('building')}<select id="company" data-action="company">${options}</select><span class="plan">${esc(co.plan)}</span></label>`;
+    : GLOBAL_VIEWS.has(view) ? ''
+      : `<label class="company-box"><span class="sr-only">Business</span>${icon('building')}<select id="company" data-action="company">${companyOptions()}</select><span class="plan">${esc(co.plan)}</span></label>`;
   const user = `<span class="user-chip"><span class="avatar role-ic">${icon(role.icon)}</span><span class="user-text"><strong>${esc(role.label)}</strong><small>${esc(role.side)}</small></span></span>
     <button class="btn quiet signout" type="button" data-action="sign-out">Sign out</button>`;
   const total = s.cases.length;
   const lines = s.cases.filter((c) => c.stage === 'awaiting_employer').length;
   const gaps = s.awaiting - lines;
   const action = lines + gaps + s.expert;
+  const expertOnly = s.expert - s.info;
   const items = total + s.a.gaps.length; // Desktop lines plus expected taxes nobody withheld
   const statusTone = { 'Not started': 'info', 'In review': 'accent', Live: 'good', Reconciled: 'good' }[s.status];
   const status = COMPANY_VIEWS.has(view) ? `<div class="batchbar">
       <span class="status ${statusTone}"><span class="dot"></span>${esc(s.status)}</span>
       <span class="batch-progress"><span class="progress" role="img" aria-label="${items - action} of ${items} items settled"><span style="width:${(items ? ((items - action) / items) * 100 : 0).toFixed(1)}%"></span></span><span><b>${items - action}</b> of ${items} settled</span></span>
-      ${action ? `${lines + gaps ? `<span class="batch-need warn"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.expert ? `<span class="batch-need blue"><b>${s.expert}</b> with an expert</span>` : ''}` : `<span class="batch-need done">${icon('tick')}Nothing waiting</span>`}
+      ${action ? `${lines + gaps ? `<span class="batch-need warn"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.info ? `<span class="batch-need warn"><b>${s.info}</b> waiting for an address</span>` : ''}${expertOnly ? `<span class="batch-need blue"><b>${expertOnly}</b> with an expert</span>` : ''}` : `<span class="batch-need done">${icon('tick')}Nothing waiting</span>`}
       ${s.d.autoRun ? `<span class="batch-auto">${icon('spark')}<b>${pct(automationStats(s.a, s.d).share, 0)}</b> automated</span>` : ''}
     </div>` : '';
   return `<header class="appbar">
@@ -333,12 +370,11 @@ function appbar(view, s) {
 // ---------- sign in (demo accounts, no passwords) ----------
 
 function signIn() {
-  const options = data.companies.map((c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
   const account = (id, extra = '') => {
     const r = ROLES[id];
     return `<div class="acct"><span class="avatar lg role-ic">${icon(r.icon)}</span><div class="acct-text"><strong>${esc(r.label)}</strong><span>${esc(r.blurb)}</span>${extra}</div><button class="btn primary" type="button" data-action="sign-in" data-role="${id}">Sign in</button></div>`;
   };
-  const pick = `<label class="acct-pick"><span class="sr-only">Business</span><select id="signin-company">${options}</select></label>`;
+  const pick = `<label class="acct-pick"><span class="sr-only">Business</span><select id="signin-company">${companyOptions()}</select></label>`;
   return `<main class="signin" id="main" tabindex="-1">
     <section class="signin-brand">
       <span class="logo-tile">${icon('landmark')}</span>
@@ -352,7 +388,7 @@ function signIn() {
     </section>
     <section class="signin-panel" aria-labelledby="signin-h">
       <div><h2 id="signin-h">Sign in</h2><p class="card-sub">Demo accounts, no passwords.</p></div>
-      <div class="signin-group"><h3>Customer</h3>${account('owner', pick)}${account('accountant')}</div>
+      <div class="signin-group"><h3>Customer</h3>${account('owner', pick)}</div>
       <div class="signin-group"><h3>Intuit staff</h3>${account('expert')}${account('admin')}</div>
       <p class="small muted">In a real product, customers would use their Intuit account and staff the company sign-in.</p>
     </section>
@@ -366,7 +402,7 @@ function scenarioCount() {
 }
 
 function footnote() {
-  return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. Companies, people and wages are fictional; Ohio school-district and city tax rates are real (2026). Not affiliated with Intuit.</p>`;
+  return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. Businesses, people and wages are fictional (60 are generated from a fixed seed); Ohio school-district and city tax rates are real (2026). Not affiliated with Intuit.</p>`;
 }
 
 // ---------- automation ----------
@@ -600,17 +636,25 @@ function moveSummary(s) {
   const waitSub = left.length ? [expert.length ? `${expert.length} with an expert` : '', employer.length ? `${employer.length} with the employer` : ''].filter(Boolean).join(', ') : 'Nothing waiting';
   // A customer cannot open the expert queue: their row says who has it instead.
   const open = (x) => (x.kind === 'account' ? '<a class="btn" href="#golive">Add it</a>'
-    : x.owner === 'expert' && !canOpen('expert') ? ''
-      : `<button class="btn" type="button" data-action="goto" data-view="${x.owner === 'expert' ? 'expert' : 'review'}" data-key="${esc(x.kind === 'gap' ? `g|${x.gap_id}` : `c|${x.case_id}`)}">Open</button>`);
+    : x.needs === 'address' ? `<button class="btn" type="button" data-action="focus-missing" data-employee="${esc(x.employee_id)}">Add address</button>`
+      : x.owner === 'expert' && !canOpen('expert') ? ''
+        : `<button class="btn" type="button" data-action="goto" data-view="${x.owner === 'expert' ? 'expert' : 'review'}" data-key="${esc(x.kind === 'gap' ? `g|${x.gap_id}` : `c|${x.case_id}`)}">Open</button>`);
   const waitHref = employer.length ? (employer.every((x) => x.kind === 'account') ? '#golive' : '#review') : expert.length && canOpen('expert') ? '#expert' : null;
   const rules = AUTOMATION_RULES.map((r) => `<label class="rule"><input type="checkbox" data-action="auto-rule" data-rule="${r.id}"${policy[r.id] ? ' checked' : ''}${d.live ? ' disabled' : ''}><span><strong>${esc(r.label)}</strong><span>${esc(r.help)}</span></span></label>`).join('');
   const report = left.length
     ? `<ul class="exc-list">${left.map((x) => `<li>${x.employee ? avatar(x.employee) : `<span class="avatar">${icon('landmark')}</span>`}<span class="who"><strong>${esc(x.employee ?? x.item)}</strong>${x.employee ? `<span>"${esc(labelOf(x.item))}"</span>` : '<span>Agency account</span>'}</span><span class="exc-tags">${badge(exceptionText(x), x.owner === 'expert' ? 'blue' : 'warn')}<span class="owner ${x.owner === 'expert' ? 'blue' : 'warn'}">${x.owner === 'expert' ? 'Expert' : 'Employer'}</span></span>${open(x)}</li>`).join('')}</ul>`
     : `<p class="auto-done flat">${icon('check')}No exceptions. Nothing needs a person.</p>`;
   const accounts = employer.filter((x) => x.kind === 'account').length;
+  const addresses = new Set(employer.filter((x) => x.needs === 'address').map((x) => x.employee_id)).size;
+  const decides = employer.length - accounts - employer.filter((x) => x.needs === 'address').length;
+  const employerText = [
+    addresses ? `adds ${plural(addresses, 'home address', 'home addresses')}` : '',
+    accounts ? `adds ${plural(accounts, 'agency account number')}` : '',
+    decides ? `decides ${plural(decides, 'item')}` : '',
+  ].filter(Boolean).join(' and ');
   const next = [
     { done: !expert.length, text: expert.length ? `An expert decides ${plural(expert.length, 'line')}` : 'No line needs an expert' },
-    { done: !employer.length, text: employer.length ? (accounts === employer.length ? `The employer adds ${plural(accounts, 'agency account number')}` : `The employer decides ${plural(employer.length, 'item')}`) : 'Nothing waits for the employer' },
+    { done: !employer.length, text: employer.length ? `The employer ${employerText}` : 'Nothing waits for the employer' },
     { done: Boolean(d.live), text: `The go-live checks pass and confirmed taxes switch on${policy.go_live ? ', by rule once nothing is waiting' : ''}` },
     { done: Boolean(d.reconciled), text: `First Online payroll in ${f.first}, then reconcile after it and after the first quarter` },
   ];
@@ -640,75 +684,331 @@ function moveSummary(s) {
     </div>`;
 }
 
-// ---------- clients (accountant) ----------
+// ---------- portfolio (admin): every business at once ----------
+// Each business goes through the whole engine and its rules: what the rules settled, or, for a business
+// that has not moved yet, what they would settle. The first pass takes a few seconds, so it runs a few
+// businesses at a time behind a progress bar; after that each row is kept until that business changes.
 
-// Share of each client's items settled by rule, as hatched bars; the open client is the solid one.
-// Before a client has run, its bar shows what the rules would settle.
-function clientChart() {
-  const bars = data.companies.map((c) => {
-    const s = summary(c.company_id);
-    const ran = Boolean(s.d.autoRun);
-    const st = ran ? automationStats(s.a, s.d) : automationPreview(s).stats;
-    return { id: c.company_id, name: c.name, short: c.name.split(/\s+/).slice(0, 2).join(' '), share: st.share, ran };
-  });
-  const anyRan = bars.some((b) => b.ran);
-  const allRan = bars.every((b) => b.ran);
-  const sub = allRan ? 'Share of items settled automatically' : anyRan ? 'Settled where automation ran; elsewhere what the rules would settle' : 'What the rules would settle for each client';
-  const axis = [100, 75, 50, 25, 0].map((v) => `<span style="--y:${v}">${v}%</span>`).join('');
-  const cols = bars.map((b) => `<li class="${b.id === state.companyId ? 'hi' : ''}${b.ran ? '' : ' preview'}">
-      <span class="bar-wrap"><span class="bar" style="--h:${(b.share * 100).toFixed(1)}"><span class="bar-val">${pct(b.share, 0)}</span></span></span>
-      <span class="bar-lbl">${esc(b.short)}<span class="sr-only">: ${pct(b.share, 0)} ${b.ran ? 'settled' : 'would be settled'} by rule</span></span>
-    </li>`).join('');
-  return `<section class="card chart-card" aria-labelledby="chart-h">
-    <div class="card-head"><div><h2 id="chart-h">Settled by rule, per client</h2><p class="card-sub">${esc(sub)}</p></div>${arrowLink('#move', 'Open the current client\'s move')}</div>
-    <div class="chart"><div class="axis" aria-hidden="true">${axis}</div><ol class="bars">${cols}</ol></div>
+const count = new Intl.NumberFormat('en-US');
+const num = (n) => count.format(n);
+const SOURCE_TEXT = { generated: 'Generated', story: 'Story client', upload: 'Uploaded' };
+const rowKey = (id) => `${id}|${settingsKey()}|${JSON.stringify(peekDecisions(id))}`;
+
+function portfolioRow(id) {
+  const key = rowKey(id);
+  if (previews.has(key)) return previews.get(key);
+  const c = companyById(id);
+  const d = peekDecisions(id);
+  const base = { id, name: c.name, source: sourceOf(id), plan: c.plan, employees: c.employees.length };
+  let row;
+  try {
+    const a = analysisFor(id);
+    const ran = Boolean(d.autoRun || d.live);
+    const after = ran ? d : automate(a, d, policyOf(d)).decisions;
+    const st = automationStats(a, after);
+    const left = openExceptions(a, after);
+    const expert = left.filter((x) => x.owner === 'expert').length;
+    row = { ...base, lines: a.cases.length, st, left, expert, employer: left.length - expert, ran, status: d.reconciled ? 'Reconciled' : d.live ? 'Live' : ran ? 'Moved' : 'Not moved' };
+  } catch (err) {
+    if (err.name !== 'DataError') throw err;
+    row = { ...base, broken: err.issues.length };
+  }
+  previews.set(key, row);
+  return row;
+}
+const unchecked = () => data.companies.filter((c) => !previews.has(rowKey(c.company_id))).map((c) => c.company_id);
+
+function warmUp() {
+  if (warming) return;
+  const todo = unchecked();
+  if (!todo.length) return;
+  const total = data.companies.length;
+  warming = { done: total - todo.length, total, timer: null };
+  const step = () => {
+    const t0 = performance.now();
+    while (todo.length && performance.now() - t0 < 40) { portfolioRow(todo.shift()); warming.done += 1; }
+    const bar = document.getElementById('warm-bar');
+    if (bar) { bar.setAttribute('aria-valuenow', String(warming.done)); bar.firstElementChild.style.width = `${((warming.done / total) * 100).toFixed(1)}%`; }
+    const text = document.getElementById('warm-n');
+    if (text) text.textContent = `${warming.done} of ${total}`;
+    if (todo.length) { warming.timer = setTimeout(step, 0); return; }
+    warming = null;
+    if (state.role && ['portfolio', 'data'].includes(currentView())) render();
+  };
+  warming.timer = setTimeout(step, 30);
+}
+
+function warmPanel() {
+  const total = data.companies.length;
+  const done = warming?.done ?? total - unchecked().length;
+  return `<section class="panel warm" aria-labelledby="warm-h">
+    <h2 id="warm-h">Checking every business</h2>
+    <div class="progress wide" id="warm-bar" role="progressbar" aria-label="Businesses checked" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done}"><span style="width:${((done / total) * 100).toFixed(1)}%"></span></div>
+    <p class="small muted"><b id="warm-n">${done} of ${total}</b>. Each one goes through the whole engine: addresses, label clusters, routes and the rules.</p>
   </section>`;
 }
 
-function viewClients() {
-  const totals = { auto: 0, total: 0, left: 0, ran: 0, live: 0, expert: 0, employer: 0 };
-  const rows = data.companies.map((c) => {
-    const s = summary(c.company_id);
-    const tone = { 'Not started': '', 'In review': 'blue', Live: 'good', Reconciled: 'good' }[s.status]; // same colours as the status in the top bar
-    const st = automationStats(s.a, s.d);
-    const ran = Boolean(s.d.autoRun);
-    const open = openExceptions(s.a, s.d);
-    const left = open.length;
-    totals.auto += st.auto; totals.total += st.total; totals.left += ran ? left : 0; totals.ran += ran ? 1 : 0;
-    totals.live += s.d.live ? 1 : 0;
-    if (ran) { const ex = open.filter((x) => x.owner === 'expert').length; totals.expert += ex; totals.employer += left - ex; }
-    return `<tr>
-      <td><div class="client-cell"><span class="co-tile ${tone || 'idle'}" aria-hidden="true">${esc(initials(c.name))}</span><div><strong>${esc(c.name)}</strong><div class="small muted">${[...statesInUse(s.a)].map((x) => esc(stateName(x))).join(', ')}. Moves in ${MONTH_NAMES[c.migration_month - 1]}.</div>${c.description ? `<div class="small">${esc(c.description)}</div>` : ''}</div></div></td>
-      <td data-l="Plan">${esc(c.plan)}</td>
-      <td class="num" data-l="Employees">${c.employees.length}</td>
-      <td class="num" data-l="Desktop lines">${s.a.cases.length}</td>
-      <td class="num" data-l="Automated">${ran ? `<span class="auto-cell"><b>${pct(st.share, 0)}</b><span class="progress xs" aria-hidden="true"><span style="width:${(st.share * 100).toFixed(1)}%"></span></span></span>` : '<span class="muted">Not run</span>'}</td>
-      <td class="num" data-l="Left for a person">${ran ? left : '<span class="muted" aria-label="Not run yet">–</span>'}</td>
-      <td data-l="Status">${pill(s.status, tone)}</td>
-      <td><div class="row nowrap"><button class="btn" type="button" data-action="open-client" data-id="${esc(c.company_id)}">Open</button>${s.d.live ? '' : `<button class="btn quiet" type="button" data-action="run-auto" data-company="${esc(c.company_id)}">${s.d.autoRun ? 'Run again' : 'Run automation'}</button>`}</div></td>
-    </tr>`;
-  }).join('');
-  const share = totals.total ? totals.auto / totals.total : 0;
-  return `<div class="page-head"><h1>Clients <span class="soft">moving to Online payroll</span></h1></div>
-    <div class="dash-grid">
-      ${clientChart()}
-      <section class="card stat-card" aria-labelledby="all-h">
-        <div class="card-head"><div><h2 id="all-h">Across every client</h2><p class="card-sub">Lines and expected taxes settled by rule</p></div>${arrowLink('#audit', 'Open the decision log')}</div>
-        <div class="card-body">
-          <p class="big">${bigOf(totals.auto, totals.total)}${totals.ran ? `<span class="delta">${pct(share, 0)}</span>` : ''}</p>
-          <ul class="stat-rows">
-            <li><span class="dot good"></span>Clients live<b>${totals.live} of ${data.companies.length}</b></li>
-            <li><span class="dot blue"></span>Left with an expert<b>${totals.ran ? totals.expert : '–'}</b></li>
-            <li><span class="dot warn"></span>Left with the employer<b>${totals.ran ? totals.employer : '–'}</b></li>
-          </ul>
-          ${totals.ran < data.companies.length ? `<p class="small muted">${totals.ran ? `Not run yet for ${plural(data.companies.length - totals.ran, 'client')}.` : 'Nothing has run yet.'}</p>` : ''}
-          <button class="btn primary lg" type="button" data-action="run-auto-all">${icon('spark')}Run automation for every client</button>
-        </div>
+const BINS = [[0, 0.9, 'Under 90%'], [0.9, 0.95, '90–95%'], [0.95, 0.98, '95–98%'], [0.98, 0.99, '98–99%'], [0.99, 1, '99–100%'], [1, 2, '100%']];
+const niceMax = (n) => { const step = n <= 8 ? 2 : n <= 20 ? 5 : n <= 40 ? 10 : 20; return Math.max(step * 4, Math.ceil(n / step) * step); };
+
+function viewPortfolio() {
+  const head = `<div class="page-head"><h1>Portfolio <span class="soft">every business moving to Online payroll</span></h1></div>`;
+  if (unchecked().length) { warmUp(); return head + warmPanel(); }
+  const rows = data.companies.map((c) => portfolioRow(c.company_id));
+  const ok = rows.filter((r) => !r.broken);
+  const sum = (f) => ok.reduce((n, r) => n + f(r), 0);
+  const employees = rows.reduce((n, r) => n + r.employees, 0);
+  const auto = sum((r) => r.st.auto);
+  const total = sum((r) => r.st.total);
+  const left = sum((r) => r.left.length);
+  const expert = sum((r) => r.expert);
+  const notMoved = ok.filter((r) => !r.ran).length;
+  const of = (src) => rows.filter((r) => r.source === src).length;
+  const mix = [of('generated') ? `${of('generated')} generated, 100+ employees each` : '', of('story') ? `${of('story')} story clients` : '', of('upload') ? `${of('upload')} uploaded` : ''].filter(Boolean).join('; ');
+
+  // How many businesses fall in each band of "share settled by rule".
+  const bins = BINS.map(([lo, hi, label]) => ({ label, n: ok.filter((r) => r.st.share >= lo && r.st.share < hi).length }));
+  const top = niceMax(Math.max(...bins.map((b) => b.n)));
+  const axis = [1, 0.75, 0.5, 0.25, 0].map((f) => `<span style="--y:${f * 100}">${Math.round(top * f)}</span>`).join('');
+  const cols = bins.map((b) => `<li><span class="bar-wrap"><span class="bar" style="--h:${((b.n / top) * 100).toFixed(1)}"><span class="bar-val">${b.n}</span></span></span><span class="bar-lbl">${esc(b.label)}<span class="sr-only">: ${plural(b.n, 'business', 'businesses')}</span></span></li>`).join('');
+
+  // What is left for a person, by reason. Blue is with an expert, amber with the employer.
+  const reasons = new Map();
+  for (const r of ok) {
+    for (const x of r.left) {
+      const v = reasons.get(x.reason) ?? { reason: x.reason, owner: x.owner, n: 0 };
+      v.n += 1;
+      reasons.set(x.reason, v);
+    }
+  }
+  const list = [...reasons.values()].sort((a, b) => b.n - a.n);
+  const rmax = Math.max(1, ...list.map((x) => x.n));
+  const hbars = list.length
+    ? `<ul class="hbars">${list.map((x) => `<li><span class="hb-lbl">${esc(exceptionText(x))}<span class="owner ${x.owner === 'expert' ? 'blue' : 'warn'}">${x.owner === 'expert' ? 'Expert' : 'Employer'}</span></span><span class="hb-track"><span class="hb-bar ${x.owner === 'expert' ? 'blue' : 'warn'}" style="width:${((x.n / rmax) * 100).toFixed(1)}%"></span><b>${num(x.n)}</b></span></li>`).join('')}</ul>`
+    : `<p class="auto-done flat">${icon('check')}Nothing is left for a person anywhere.</p>`;
+
+  const tone = { 'Not moved': '', Moved: 'blue', Live: 'good', Reconciled: 'good' };
+  const sorted = [...rows].sort((a, b) => (b.broken ? 1e9 : b.left.length) - (a.broken ? 1e9 : a.left.length) || b.employees - a.employees);
+  const shown = more.portfolio ? sorted : sorted.slice(0, 12);
+  const cell = (r) => `<td><div class="client-cell"><span class="co-tile ${tone[r.status] || 'idle'}" aria-hidden="true">${esc(initials(r.name))}</span><div><strong>${esc(r.name)}</strong><div class="small muted">${SOURCE_TEXT[r.source]}, ${esc(r.plan)} plan</div></div></div></td>`;
+  const open = (r) => `<td><button class="btn quiet" type="button" data-action="company-switch" data-id="${esc(r.id)}" data-view="analysis">Open</button></td>`;
+  const body = shown.map((r) => (r.broken
+    ? `<tr>${cell({ ...r, status: '' })}<td class="num" data-l="Employees">${r.employees}</td><td colspan="5" data-l="Status"><span class="bad-text">The engine stops on this file: ${plural(r.broken, 'problem')}</span></td>${open(r)}</tr>`
+    : `<tr>${cell(r)}
+      <td class="num" data-l="Employees">${num(r.employees)}</td>
+      <td class="num" data-l="Desktop lines">${num(r.lines)}</td>
+      <td class="num" data-l="Settled by rule"><span class="auto-cell"><b>${pct(r.st.share)}</b><span class="progress xs" aria-hidden="true"><span style="width:${(r.st.share * 100).toFixed(1)}%"></span></span></span></td>
+      <td class="num" data-l="With an expert">${r.expert || '<span class="muted">0</span>'}</td>
+      <td class="num" data-l="With the employer">${r.employer || '<span class="muted">0</span>'}</td>
+      <td data-l="Status">${pill(r.status, tone[r.status])}</td>
+      ${open(r)}
+    </tr>`)).join('');
+
+  return `${head}
+    <div class="wl-tiles four">
+      <div class="wl-tile"><div class="tile-head"><span class="t">${icon('building')}Businesses</span></div><span class="n">${rows.length}</span><p>${esc(mix)}</p></div>
+      <div class="wl-tile"><div class="tile-head"><span class="t">${icon('users')}Employees</span></div><span class="n">${num(employees)}</span><p>${num(sum((r) => r.lines))} Desktop local tax lines</p></div>
+      <div class="wl-tile good"><div class="tile-head"><span class="t">${icon('spark')}Settled by rule</span></div><span class="n">${pct(total ? auto / total : 0)}</span><p>${num(auto)} of ${num(total)} items</p></div>
+      <div class="wl-tile ${left ? 'warn' : 'good'}"><div class="tile-head"><span class="t">${icon('user')}Waiting for a person</span></div><span class="n">${num(left)}</span><p>${num(expert)} with an expert, ${num(left - expert)} with employers</p></div>
+    </div>
+    <div class="dash-grid even">
+      <section class="card chart-card" aria-labelledby="hist-h">
+        <div class="card-head"><div><h2 id="hist-h">Businesses by share settled by rule</h2><p class="card-sub">${notMoved ? `${notMoved === ok.length ? 'None has moved yet: what' : `${plural(notMoved, 'business has', 'businesses have')} not moved yet: for them, what`} the rules would settle` : 'After each move'}</p></div></div>
+        <div class="chart"><div class="axis" aria-hidden="true">${axis}</div><ol class="bars">${cols}</ol></div>
+      </section>
+      <section class="card" aria-labelledby="left-h">
+        <div class="card-head"><div><h2 id="left-h">What is left for a person</h2><p class="card-sub">By reason, across every business</p></div></div>
+        <div class="card-body">${hbars}</div>
       </section>
     </div>
-    <div class="table-wrap"><table class="clients-table">
-      <thead><tr><th>Client</th><th>Plan</th><th class="num">Employees</th><th class="num">Desktop lines</th><th class="num">Automated</th><th class="num">Left for a person</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+    <section class="card" aria-labelledby="biz-h">
+      <div class="card-head"><div><h2 id="biz-h">Businesses</h2><p class="card-sub">Most work left first. Open one to see how the engine read it.</p></div></div>
+      <div class="table-wrap"><table class="biz-table">
+        <thead><tr><th>Business</th><th class="num">Employees</th><th class="num">Desktop lines</th><th class="num">Settled by rule</th><th class="num">With an expert</th><th class="num">With the employer</th><th>Status</th><th><span class="sr-only">Open</span></th></tr></thead>
+        <tbody>${body}</tbody></table></div>
+      ${sorted.length > 12 ? `<div class="card-foot"><button class="btn quiet" type="button" data-action="show-more" data-key="portfolio">${more.portfolio ? 'Show the first 12' : `Show all ${sorted.length}`}</button></div>` : ''}
+    </section>
+    <p class="small muted">Generated businesses are synthetic: names, people, addresses and Desktop labels come from a fixed seed (${SEED}), so every visit sees the same data. The tax rates and districts are real.</p>`;
+}
+
+// ---------- ML Lab (admin): proof that the label clustering works, on far more labels ----------
+// It runs the engine's own clustering code on a labelled set (web/mllab.mjs), holds part back, and grades
+// every suggestion against the known answer. Every number on this screen is computed when it runs.
+
+const LAB_SIZES = [[600, '600 labels'], [1200, '1,200 labels'], [2400, '2,400 labels (a few seconds)']];
+const mapGroup = (key) => (key === 'school_district' ? 1 : key === 'municipal' ? 2 : key === 'ambiguous' ? 0 : 3);
+const MAP_GROUPS = [[1, 'School district'], [2, 'City tax'], [3, 'Not a tax (5 kinds)'], [0, 'Ambiguous']];
+const keyName = (k) => KEY_NAMES[k] ?? k;
+
+function scheduleLab() {
+  lab.running = true;
+  lab.error = null;
+  setTimeout(() => {
+    try { lab.result = runLab(files.catalog, { seed: lab.seed, total: lab.total }); } catch (err) { lab.error = err.message; }
+    lab.running = false;
+    if (state.role && currentView() === 'lab') render();
+  }, 60);
+}
+
+// Silhouette for every k tried, with the BRD gate. One series, so no legend: the title names it.
+function silhouetteChart(r, floor) {
+  const W = 520; const H = 230; const L = 38; const R = 18; const T = 18; const B = 32;
+  const ks = r.curve.map((p) => p.k);
+  const vals = r.curve.map((p) => p.silhouette);
+  const k0 = ks[0]; const k1 = ks.at(-1);
+  const yMax = Math.max(0.6, Math.ceil((Math.max(...vals) + 0.05) * 10) / 10);
+  const yMin = Math.min(0, Math.floor(Math.min(...vals) * 10) / 10);
+  const x = (k) => L + ((k - k0) / Math.max(1, k1 - k0)) * (W - L - R);
+  const y = (v) => T + (1 - (v - yMin) / (yMax - yMin)) * (H - T - B);
+  const grid = [];
+  for (let v = yMin; v <= yMax + 1e-9; v += 0.1) grid.push(Number(v.toFixed(1)));
+  const xt = [k0, ...[5, 10, 15, 20, 25, 30, 40].filter((k) => k > k0 + 1 && k < k1 - 1), k1];
+  const path = r.curve.map((p, i) => `${i ? 'L' : 'M'}${x(p.k).toFixed(1)} ${y(p.silhouette).toFixed(1)}`).join(' ');
+  const gy = y(floor);
+  return `<svg class="viz" viewBox="0 0 ${W} ${H}" role="img" aria-label="Silhouette for k from ${k0} to ${k1}. Best ${r.silhouette.toFixed(3)} at k ${r.k}. Gate ${floor.toFixed(2)}.">
+    ${grid.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="tick" x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`).join('')}
+    ${xt.map((k) => `<text class="tick" x="${x(k)}" y="${H - B + 18}" text-anchor="middle">${k}</text>`).join('')}
+    <text class="tick" x="${W - R}" y="${H - 2}" text-anchor="end">clusters (k)</text>
+    <line class="gate" x1="${L}" x2="${W - R}" y1="${gy}" y2="${gy}"/><text class="gate-t" x="${L + 6}" y="${gy - 6}">Gate ${floor.toFixed(2)}</text>
+    <path class="line" d="${path}"/>
+    <circle class="pick" cx="${x(r.k)}" cy="${y(r.silhouette)}" r="5.5"/>
+    <text class="pick-t" x="${x(r.k) > W - 90 ? x(r.k) + 6 : x(r.k)}" y="${y(r.silhouette) + (Math.abs(y(r.silhouette) - gy) < 26 && y(r.silhouette) >= gy ? 22 : -12)}" text-anchor="${x(r.k) > W - 90 ? 'end' : 'middle'}">k ${r.k}: ${r.silhouette.toFixed(3)}</text>
+    ${r.curve.map((p) => `<circle class="hit" cx="${x(p.k)}" cy="${y(p.silhouette)}" r="9" data-tip="k ${p.k}: silhouette ${p.silhouette.toFixed(3)}"/>`).join('')}
+  </svg>`;
+}
+
+// Every label as a point: kernel PCA of the cosine similarity the clustering uses.
+function labMap(r) {
+  const W = 520; const H = 360; const P = 14;
+  const pts = [
+    ...r.projection.train.map((p, i) => ({ p, key: r.trainTruth[i], label: r.trainLabels[i], test: false })),
+    ...r.projection.extra.map((p, i) => ({ p, key: r.results[i].truth, label: r.results[i].label, test: true, res: r.results[i] })),
+  ];
+  const xs = pts.map((q) => q.p[0]);
+  const ys = pts.map((q) => q.p[1]);
+  const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
+  const [y0, y1] = [Math.min(...ys), Math.max(...ys)];
+  const sx = (v) => P + ((v - x0) / (x1 - x0 || 1)) * (W - 2 * P);
+  const sy = (v) => P + (1 - (v - y0) / (y1 - y0 || 1)) * (H - 2 * P);
+  const order = [...pts].sort((a, b) => (a.test - b.test) || (mapGroup(a.key) === 0 ? -1 : 0) - (mapGroup(b.key) === 0 ? -1 : 0));
+  const tipOf = (q) => `"${q.label}": ${keyName(q.key)}. ${q.test ? `Held back; model: ${q.res.model === 'expert' ? 'to an expert' : keyName(q.res.model)}` : 'Used to fit'}`;
+  const dots = order.map((q) => {
+    const cx = sx(q.p[0]).toFixed(1);
+    const cy = sy(q.p[1]).toFixed(1);
+    const wrong = q.test && q.res.model !== 'expert' && q.res.model !== q.res.truth;
+    const mark = wrong ? `<path class="pt-x" d="M${cx - 5} ${cy - 5}L${+cx + 5} ${+cy + 5}M${cx - 5} ${+cy + 5}L${+cx + 5} ${cy - 5}"/>` : '';
+    return `<circle class="pt g${mapGroup(q.key)}${q.test ? ' hollow' : ''}" cx="${cx}" cy="${cy}" r="4" data-tip="${esc(tipOf(q))}"/>${mark}`;
+  }).join('');
+  return `<svg class="viz map" viewBox="0 0 ${W} ${H}" role="img" aria-label="Map of ${pts.length} labels. Labels with similar words sit close together.">${dots}</svg>`;
+}
+
+function viewLab() {
+  const head = `<div class="page-head"><h1>ML Lab</h1>
+    <p class="lede">Does the label clustering work beyond the 53-label demo pool? Here it fits on Desktop-style labels, never sees a held-back part, and is graded on it.</p></div>`;
+  const form = `<form class="lab-form panel" data-action="run-lab">
+      <label class="field" for="lab-seed">Seed<input type="number" id="lab-seed" name="seed" min="1" max="99999" step="1" value="${lab.seed}"></label>
+      <label class="field" for="lab-size">Labelled set<select id="lab-size" name="total">${LAB_SIZES.map(([n, t]) => `<option value="${n}"${n === lab.total ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+      <button class="btn primary" type="submit"${lab.running ? ' disabled' : ''}>${icon('spark')}${lab.running ? 'Running' : 'Run'}</button>
+      <p class="small muted">Same seed, same labels, same result.</p>
+    </form>`;
+  if (lab.error) return `${head}${form}<div class="banner bad">${icon('alert', 'lg')}<div><strong>The lab stopped.</strong> ${esc(lab.error)}</div></div>`;
+  if (!lab.result || lab.running) {
+    if (!lab.running) scheduleLab();
+    const fit = Math.round(lab.total * 0.8);
+    return `${head}${form}<section class="panel warm" aria-live="polite"><div class="row"><span class="spin" aria-hidden="true"></span><div><h2>Running</h2><p class="small muted">Fitting clusters on ${num(fit)} labels, then scoring the ${num(lab.total - fit)} held back.</p></div></div></section>`;
+  }
+  const r = lab.result;
+  const floor = DEFAULT_THRESHOLDS.silhouetteFloor;
+  const target = DEFAULT_THRESHOLDS.precisionTarget;
+  const gates = [
+    ['Silhouette', `${r.silhouette.toFixed(3)} (at least ${floor.toFixed(2)})`, r.silhouette >= floor],
+    ['Precision', `${pct(r.model.precision)} (at least ${pct(target, 0)})`, r.model.precision >= target],
+    ['Sample', `${num(r.trainSize)} labels (at least ${DEFAULT_THRESHOLDS.minSample})`, r.trainSize >= DEFAULT_THRESHOLDS.minSample],
+  ];
+  const passes = gates.every((g) => g[2]);
+  const right = r.model.suggested - r.model.wrong;
+  const cmp = [
+    ['Clustering model', 'Suggests only when the label sits well inside a named cluster', r.model, r.modelUnseen],
+    ['Clustering, each cluster named once by an expert', `${r.clustersNamedByExpert} of ${r.k} clusters named; no label-by-label work`, r.named, r.namedUnseen],
+    ['Word matching (baseline)', 'Same clean-up, then the catalogue entry with the most shared words', r.keyword, r.keywordUnseen],
+  ];
+  const cmpRows = cmp.map(([name, how, a, u]) => `<tr><td><strong>${esc(name)}</strong><div class="small muted">${esc(how)}</div></td><td class="num">${pct(a.coverage)}</td><td class="num"><b>${pct(a.precision)}</b></td><td class="num">${a.wrong}</td><td class="num">${pct(u.precision)}<div class="small muted">${u.wrong} wrong</div></td></tr>`).join('');
+  const more1 = r.keyword.coverage > r.model.coverage ? 'more' : r.keyword.coverage < r.model.coverage ? 'fewer' : 'as many';
+  const facts = [
+    `Of ${num(r.testSize)} held-back labels, the model suggested an answer for ${num(r.model.suggested)} (${pct(r.model.coverage)}); ${num(right)} were right (${pct(r.model.precision)}). The other ${num(r.testSize - r.model.suggested)} went to an expert, as designed.`,
+    `On the ${num(r.unseen)} labels it never saw while fitting: ${pct(r.modelUnseen.precision)} right with ${plural(r.modelUnseen.wrong, 'wrong answer')}; word matching ${pct(r.keywordUnseen.precision)} with ${plural(r.keywordUnseen.wrong, 'wrong answer')}.`,
+    `Word matching made ${more1} suggestions (${pct(r.keyword.coverage)} against ${pct(r.model.coverage)}), ${r.keyword.precision >= r.model.precision ? 'at' : 'with lower'} precision (${pct(r.keyword.precision)}).`,
+    `The silhouette, ${r.silhouette.toFixed(3)}, ${r.silhouette >= floor ? 'passes' : 'is below'} the ${floor.toFixed(2)} gate${r.silhouette >= floor ? '' : ': on a set this messy the state would stay in shadow mode, so suggestions are logged and people decide'}.`,
+    `What clustering adds: ${num(r.distinctTrain)} different labels become ${r.k} groups an expert can check once, and every label gets a confidence that decides when to defer.`,
+  ];
+  const conf = `<table class="confusion"><thead><tr><th>Real answer</th>${r.cols.map((c) => `<th class="num">${esc(keyName(c))}</th>`).join('')}</tr></thead><tbody>${r.confusion.map((row) => {
+    const n = row.cells.reduce((s, v) => s + v, 0) || 1;
+    return `<tr><th>${esc(keyName(row.truth))}</th>${row.cells.map((v, j) => {
+      const col = r.cols[j];
+      const good = col === row.truth || (col === 'expert' && row.truth === 'ambiguous');
+      const kind = good ? 'ok' : col === 'expert' ? 'defer' : v ? 'bad' : '';
+      return `<td class="num ${kind}" style="--a:${(v / n).toFixed(3)}">${v || ''}${kind === 'bad' ? '<span class="sr-only"> wrong</span>' : ''}</td>`;
+    }).join('')}</tr>`;
+  }).join('')}</tbody></table>`;
+  const clusters = [...r.clusters].sort((a, b) => b.size - a.size);
+  const shownClusters = more.clusters ? clusters : clusters.slice(0, 10);
+  const clusterRows = shownClusters.map((c) => `<tr><td><strong>${esc(c.key ? c.name : 'Unnamed')}</strong></td><td class="num">${c.size}</td><td class="num">${pct(c.purity, 0)}</td><td class="num">${c.meanSilhouette.toFixed(2)}</td><td>${esc(keyName(c.majority))}</td><td><div class="label-chips">${c.examples.slice(0, 5).map((l) => `<span class="label-chip">${esc(l)}</span>`).join('')}</div></td></tr>`).join('');
+  const why = (x) => (x.modelGuess ? `confidence ${x.silhouette.toFixed(2)}${x.model === 'expert' ? `, below ${r.itemFloor.toFixed(2)}` : ''}` : 'its cluster matched no catalogue entry');
+  const errRow = (x, guess) => `<li><span class="label-chip">${esc(labelOf(x.label))}</span><span class="small">Really ${esc(keyName(x.truth))}${guess ? `; model said ${esc(keyName(x.model))}` : ''}</span><span class="small muted">${esc(why(x))}</span></li>`;
+  const legend = MAP_GROUPS.map(([g, t]) => `<li><span class="sw g${g}"></span>${esc(t)}</li>`).join('');
+  return `${head}${form}
+    <div class="wl-tiles four">
+      <div class="wl-tile"><div class="tile-head"><span class="t">${icon('layers')}Labels</span></div><span class="n">${num(r.total)}</span><p>${num(r.trainSize)} to fit, ${num(r.testSize)} held back; ${num(r.unseen)} of those never seen</p></div>
+      <div class="wl-tile"><div class="tile-head"><span class="t">${icon('grid')}Clusters</span></div><span class="n">${r.k}</span><p>from ${num(r.distinctTrain)} different labels; k picked by silhouette</p></div>
+      <div class="wl-tile good"><div class="tile-head"><span class="t">${icon('target')}Precision</span></div><span class="n">${pct(r.model.precision)}</span><p>${num(right)} of ${num(r.model.suggested)} suggestions right</p></div>
+      <div class="wl-tile blue"><div class="tile-head"><span class="t">${icon('user')}To an expert</span></div><span class="n">${pct(1 - r.model.coverage)}</span><p>${num(r.testSize - r.model.suggested)} held-back labels not confident enough</p></div>
+    </div>
+    <section class="panel lab-gates" aria-labelledby="lg-h">
+      <h2 id="lg-h">The BRD gates on this set</h2>
+      <ul class="gate-chips">${gates.map(([g, v, ok]) => `<li class="${ok ? 'pass' : 'fail'}">${mark(ok ? 'pass' : 'fail')}<span><strong>${g}</strong>${esc(v)}</span></li>`).join('')}</ul>
+      ${pill(passes ? 'Suggestions would be shown' : 'Shadow mode: logged, people decide', passes ? 'good' : 'warn')}
+    </section>
+    <div class="dash-grid even">
+      <section class="card" aria-labelledby="sil-h">
+        <div class="card-head"><div><h2 id="sil-h">Silhouette by number of clusters</h2><p class="card-sub">How well the labels separate into k groups. The best k is used.</p></div></div>
+        <div class="viz-wrap">${silhouetteChart(r, floor)}</div>
+      </section>
+      <section class="card" aria-labelledby="map-h">
+        <div class="card-head"><div><h2 id="map-h">Every label on a map</h2><p class="card-sub">Similar words sit close. Hover a point to read it.</p></div></div>
+        <div class="viz-wrap">${labMap(r)}</div>
+        <ul class="viz-legend">${legend}<li><span class="sw solid"></span>Used to fit</li><li><span class="sw ring"></span>Held back</li><li><span class="sw x" aria-hidden="true">×</span>Wrong suggestion</li></ul>
+      </section>
+    </div>
+    <section class="card" aria-labelledby="cmp-h">
+      <div class="card-head"><div><h2 id="cmp-h">Against simple word matching</h2><p class="card-sub">The same ${num(r.testSize)} held-back labels</p></div></div>
+      <div class="table-wrap"><table class="cmp-table"><thead><tr><th>Method</th><th class="num">Suggested</th><th class="num">Right when it suggests</th><th class="num">Wrong</th><th class="num">Right on unseen labels</th></tr></thead><tbody>${cmpRows}</tbody></table></div>
+      <div class="card-body"><ul class="facts">${facts.map((f) => `<li>${esc(f)}</li>`).join('')}</ul></div>
+    </section>
+    <section class="card" aria-labelledby="cm-h">
+        <div class="card-head"><div><h2 id="cm-h">Confusion matrix</h2><p class="card-sub">Rows are the real answer, columns the model's. Green is right; red is wrong.</p></div></div>
+        <div class="table-wrap">${conf}</div>
+    </section>
+    <section class="card" aria-labelledby="err-h">
+        <div class="card-head"><div><h2 id="err-h">Where it went wrong</h2><p class="card-sub">Every wrong suggestion, and labels it sent to an expert</p></div></div>
+        <div class="card-body">
+          <h3 class="mini-h">Wrong (${r.model.wrong})</h3>
+          ${r.misses.length ? `<ul class="err-list">${r.misses.map((x) => errRow(x, true)).join('')}</ul>` : '<p class="small muted">None.</p>'}
+          <h3 class="mini-h">Sent to an expert, though it had a clear answer (first ${r.deferred.length})</h3>
+          ${r.deferred.length ? `<ul class="err-list">${r.deferred.map((x) => errRow(x, false)).join('')}</ul>` : '<p class="small muted">None.</p>'}
+        </div>
+    </section>
+    <section class="card" aria-labelledby="cl-h">
+      <div class="card-head"><div><h2 id="cl-h">The ${r.k} clusters</h2><p class="card-sub">Named after the closest catalogue entry. Purity is the share of labels with the cluster's most common answer.</p></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Named</th><th class="num">Labels</th><th class="num">Purity</th><th class="num">Silhouette</th><th>Most are</th><th>Examples</th></tr></thead><tbody>${clusterRows}</tbody></table></div>
+      ${clusters.length > 10 ? `<div class="card-foot"><button class="btn quiet" type="button" data-action="show-more" data-key="clusters">${more.clusters ? 'Show the 10 largest' : `Show all ${clusters.length}`}</button></div>` : ''}
+    </section>
+    <section class="card">${fold('steps', 'How the lab works', `<ol class="how-list">
+      <li>Make ${num(r.total)} Desktop-style labels from real patterns: abbreviations, typos, place names, upper and lower case. Each has a known answer: school district, city tax, five kinds of deduction, or ambiguous (like "Local Tax").</li>
+      <li>Hold back ${pct(r.testSize / r.total, 0)}. The model never sees those while it fits.</li>
+      <li>Fit clusters on the rest with the engine's own code: words and letter triplets (TF-IDF), average linkage, k from 2 to ${r.maxK} picked by silhouette. No answers are used to fit.</li>
+      <li>Score each held-back label as the engine scores a new business's label: nearest cluster, its name, and a confidence. Below ${r.itemFloor.toFixed(2)} it goes to an expert.</li>
+      <li>Grade against the known answers, and against word matching. Code: <code class="code">web/mllab.mjs</code>; the numbers are checked in <code class="code">tests/scale.test.mjs</code>.</li>
+    </ol><p class="small muted">Fitting took ${num(Math.round(r.fitMs))} ms and scoring ${num(Math.round(r.scoreMs))} ms in this browser.</p>`)}</section>`;
 }
 
 // ---------- 1 analysis ----------
@@ -726,7 +1026,8 @@ function viewAnalysis(s) {
     const users = a.company.employees.filter((e) => e.items.includes(i.item_id)).length;
     return `<tr><td><strong>${esc(labelOf(i.label))}</strong></td><td>${i.law_id}</td><td>${i.origin === 'custom' ? 'Custom' : 'System-defined'}</td><td>${esc(i.item_type)}, ${esc(i.tracking_type)}</td><td>${esc(rateText(i))}</td><td>${esc(i.agency)}</td><td class="num">${users}</td></tr>`;
   }).join('');
-  const people = a.employees.map((e) => {
+  const PEOPLE_SHOWN = 25;
+  const people = a.employees.slice(0, more.people ? undefined : PEOPLE_SHOWN).map((e) => {
     const site = a.company.worksites.find((w) => w.site_id === e.site_id);
     const homes = e.expected.periods.length
       ? e.expected.periods.map((p) => { const ad = addressById(p.address_id); return `${esc([ad.line1, ad.city, ad.state].filter(Boolean).join(', '))} <span class="muted">(${monthSpan(p.months)})</span>`; }).join('<br>')
@@ -764,6 +1065,7 @@ function viewAnalysis(s) {
     <section class="section" aria-labelledby="people-h">
       <div class="section-head"><h2 id="people-h">Employees and their expected taxes</h2><p>From the address lookup (Intuit's tax service in production).</p></div>
       <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Home address</th><th>Works at</th><th>Expected taxes</th></tr></thead><tbody>${people}</tbody></table></div>
+      ${a.employees.length > PEOPLE_SHOWN ? `<div class="row"><button class="btn quiet" type="button" data-action="show-more" data-key="people">${more.people ? `Show the first ${PEOPLE_SHOWN}` : `Show all ${a.employees.length} employees`}</button></div>` : ''}
     </section>`;
 }
 
@@ -945,7 +1247,12 @@ function workspace(view, s) {
       : `<div class="queue-foot"><a class="btn primary" href="#move">${icon('spark')}Start the move</a><p>Rules settle ${automationPreview(s).stats.auto} of ${autoStats.total}; only exceptions stay here.</p></div>`)
     : '<div class="queue-foot"><p>The employer confirms each decision before it goes live.</p></div>';
   let detail;
-  if (!sel) detail = `${mobileBack(view)}<div class="empty"><strong>${esc(emptyText)}</strong><span>${view === 'review' ? (s.expert ? `${plural(s.expert, 'line')} still with an expert. Those stay off until an expert decides and you confirm.` : 'Every line has a decision.') : 'Every line the system could not settle has an expert decision.'}</span>${canOpen('golive') ? '<a class="btn" href="#golive">Go to go-live checks</a>' : ''}</div>`;
+  const withExpert = s.expert - s.info;
+  const reviewEmpty = [
+    s.info ? `${plural(s.info, 'line waits', 'lines wait')} for an address under Missing information.` : '',
+    withExpert ? `${plural(withExpert, 'line')} ${withExpert === 1 ? 'is' : 'are'} with an expert; ${withExpert === 1 ? 'it stays' : 'they stay'} off until an expert decides and you confirm.` : '',
+  ].filter(Boolean).join(' ') || 'Every line has a decision.';
+  if (!sel) detail = `${mobileBack(view)}<div class="empty"><strong>${esc(emptyText)}</strong><span>${view === 'review' ? esc(reviewEmpty) : 'Every line the system could not settle has an expert decision.'}</span>${canOpen('golive') ? '<a class="btn" href="#golive">Go to go-live checks</a>' : ''}</div>`;
   else if (sel.kind === 'gap') detail = gapDetail(sel.g, s);
   else detail = caseDetail(sel.c, s, view);
   return `<div class="workspace" data-open="${state.detailOpen && sel ? 'true' : 'false'}">
@@ -965,7 +1272,104 @@ function workspace(view, s) {
 
 const mobileBack = () => `<div class="mobile-back"><button class="btn quiet" type="button" data-action="back">${icon('back')}Back to the list</button></div>`;
 
-function viewReview(s) { return workspace('review', s); }
+
+// ---------- missing information (owner): what only the employer can give ----------
+// A missing or unplaceable home address leaves the school-district lines with an expert. The owner adds it
+// here: it is saved in the database, the engine checks that employee's lines again, and the rules finish them.
+
+function missingInfo(s) {
+  const people = new Map();
+  for (const c of s.cases) {
+    if (c.stage !== 'with_expert' || !NEEDS_ADDRESS.has(c.reason) || c.decision.sentToExpert) continue;
+    const p = people.get(c.employee_id) ?? { e: c.employee, reason: c.reason, lines: 0 };
+    p.lines += 1;
+    people.set(c.employee_id, p);
+  }
+  const accounts = s.d.live ? [] : readiness(s.a, s.d).accounts.filter((a) => !a.complete);
+  return { people: [...people.values()], accounts };
+}
+
+// The address on file that the lookup could not place, to correct rather than retype.
+function unplacedAddress(e) {
+  for (const p of e.addresses ?? []) {
+    const ad = addressById(p.address_id);
+    if (ad && ad.school_district === 'UNRESOLVED') return ad;
+  }
+  return null;
+}
+
+function missingCard(s) {
+  const { people, accounts } = missingInfo(s);
+  if (!people.length && !accounts.length) return '';
+  const rows = people.map(({ e, reason, lines }) => {
+    const cur = reason === 'address_unresolved' ? unplacedAddress(e) : null;
+    const id = domId(e.employee_id);
+    const st = cur?.state ?? addressById(siteOf(e, s.a).address_id)?.state ?? 'OH';
+    const why = reason === 'no_address' ? 'No home address in Desktop' : `The lookup cannot place ${[cur?.line1, cur?.city, cur?.zip].filter(Boolean).join(', ') || 'the address on file'}`;
+    return `<li class="mi-row" id="mi-${esc(id)}">
+      <div class="mi-who">${avatar(e.name)}<div><strong>${esc(e.name)}</strong><span>${esc(why)}. ${plural(lines, 'line waits', 'lines wait')} for it.</span></div></div>
+      <form class="mi-form" data-action="fix-address" data-employee="${esc(e.employee_id)}">
+        <label class="mi-street"><span class="sr-only">Street for ${esc(e.name)}</span><input type="text" name="line1" id="mi-line1-${esc(id)}" placeholder="Street" value="${esc(cur?.line1 ?? '')}" autocomplete="off"${s.d.live ? ' disabled' : ''}></label>
+        <label><span class="sr-only">City for ${esc(e.name)}</span><input type="text" name="city" placeholder="City" value="${esc(cur?.city ?? '')}" autocomplete="off"${s.d.live ? ' disabled' : ''}></label>
+        <label class="mi-st"><span class="sr-only">State for ${esc(e.name)}</span><select name="state"${s.d.live ? ' disabled' : ''}>${['OH', 'PA'].map((x) => `<option${x === st ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label class="mi-zip"><span class="sr-only">ZIP code for ${esc(e.name)}</span><input type="text" name="zip" placeholder="ZIP" value="${esc(cur?.zip ?? '')}" inputmode="numeric" maxlength="5" autocomplete="off"${s.d.live ? ' disabled' : ''}></label>
+        <button class="btn primary" type="submit"${s.d.live ? ' disabled' : ''}>Save</button>
+        <button class="btn quiet" type="button" data-action="sample-address" data-employee="${esc(e.employee_id)}"${s.d.live ? ' disabled' : ''}>Fill a demo address</button>
+      </form>
+    </li>`;
+  }).join('');
+  const acct = accounts.map((a) => `<li class="mi-row"><div class="mi-who"><span class="avatar">${icon('landmark')}</span><div><strong>${esc(a.agency)}</strong><span>${esc([a.account ? '' : 'Account number', a.frequency ? '' : 'deposit frequency'].filter(Boolean).join(' and '))} missing. Needed to pay and file.</span></div></div><a class="btn" href="#golive">Add it</a></li>`).join('');
+  return `<section class="panel missing" data-open="${state.detailOpen ? 'true' : 'false'}" aria-labelledby="mi-h">
+    <div class="section-head"><h2 id="mi-h" tabindex="-1">Missing information <span class="count">${people.length + accounts.length}</span></h2><p>Only you can give these. Add one and the engine checks those lines again; your rules settle what they can.</p></div>
+    <ul class="mi-list">${rows}${acct}</ul>
+    ${people.length ? '<p class="small muted">The demo address lookup knows a fixed list of addresses, and "Fill a demo address" picks one near the work site. In production, Intuit\'s tax service places any US address.</p>' : ''}
+  </section>`;
+}
+
+// A lookup address for the demo, the same one each time for the same person. Desktop withheld a
+// school-district tax for them, so it is in a district that has one: near the work site if possible.
+function demoAddressFor(employeeId) {
+  const a = analysisFor();
+  const e = a.employees.find((x) => x.employee_id === employeeId);
+  const site = addressById(siteOf(e, a).address_id);
+  const st = site?.state ?? 'OH';
+  const taxed = new Set((data.catalog.states[st]?.taxes ?? []).filter((t) => t.type === 'school_district').map((t) => t.code));
+  const sites = new Set(data.companies.flatMap((c) => c.worksites.map((w) => w.address_id)));
+  const ok = (x) => !sites.has(x.address_id) && taxed.has(x.school_district) && lookupIdx.has(addressKey(x.line1, x.zip));
+  let pool = data.geocoder.addresses.filter((x) => ok(x) && x.zip === site?.zip);
+  if (!pool.length) pool = data.geocoder.addresses.filter((x) => ok(x) && x.state === st);
+  const h = [...employeeId].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) >>> 0, 7);
+  return pool[h % pool.length] ?? null;
+}
+
+// Save an address the employer gave: in the database (then read that business back), or in memory without one.
+function addCorrection(corr) {
+  state.corrections = [...state.corrections.filter((x) => !(x.company_id === corr.company_id && x.employee_id === corr.employee_id)), corr];
+  let found;
+  if (db) {
+    const r = applyCorrection(db, corr, lookupIdx);
+    const [co] = readCompanies(db, corr.company_id);
+    data.companies = data.companies.map((c) => (c.company_id === co.company_id ? co : c));
+    if (!r.found) unplaced(r.addressId, corr);
+    found = r.found;
+  } else found = correctInMemory(corr);
+  forgetCompany(corr.company_id);
+  return found;
+}
+function correctInMemory(corr) {
+  const found = lookupIdx.get(addressKey(corr.line1, corr.zip));
+  const addressId = found ?? `${corr.company_id}-C-${corr.employee_id}`;
+  data.companies = data.companies.map((c) => (c.company_id !== corr.company_id ? c
+    : { ...c, employees: c.employees.map((e) => (e.employee_id === corr.employee_id ? { ...e, addresses: [{ address_id: addressId, from_month: 1 }] } : e)) }));
+  if (!found) unplaced(addressId, corr);
+  return Boolean(found);
+}
+// An address the lookup has never seen is kept, and the engine treats it as one it cannot place.
+function unplaced(addressId, corr) {
+  data.geocoder = { ...data.geocoder, addresses: [...data.geocoder.addresses.filter((a) => a.address_id !== addressId), { address_id: addressId, line1: corr.line1, city: corr.city, state: corr.state, zip: corr.zip, school_district: 'UNRESOLVED', municipality: null }] };
+}
+
+function viewReview(s) { return missingCard(s) + workspace('review', s); }
 function viewExpert(s) { return workspace('expert', s); }
 
 // ---------- record detail ----------
@@ -1017,6 +1421,7 @@ function nextStep(c, view, live) {
     if (c.stage === 'with_expert') return EXPERT_HINT[c.reason] ?? 'Decide how this line should migrate.';
     return `Decided: ${expertText(c)}. The employer ${c.stage === 'awaiting_employer' ? 'confirms it next' : 'has confirmed it'}.`;
   }
+  if (c.stage === 'with_expert' && NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert) return 'Add the home address under Missing information. The engine then checks this line again.';
   if (c.stage === 'with_expert') return c.decision.sentToExpert && !c.decision.expert ? 'You sent this to an expert. Take it back from More actions if that was a mistake.' : 'Nothing to do yet. An expert decides first, then you confirm.';
   if (c.stage === 'awaiting_employer') {
     if (c.decision.expert) return `An expert decided: ${expertText(c)}. Confirm to accept it.`;
@@ -1195,7 +1600,8 @@ function caseActions(c, s, view) {
   }
   if (c.stage === 'with_expert') {
     const items = c.decision.sentToExpert && !c.decision.expert ? [`<button class="btn" type="button" data-action="unsend-expert" data-id="${id}">Take it back from the expert</button>`] : [];
-    return `<div class="action-bar">${logNote}${moreMenu(items)}${toExpert}</div>`;
+    const addAddress = NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert ? `<button class="btn primary" type="button" data-action="focus-missing" data-employee="${esc(c.employee_id)}">Add the address</button>` : '';
+    return `<div class="action-bar">${logNote}${moreMenu(items)}${addAddress || toExpert}</div>`;
   }
   if (c.stage === 'awaiting_employer') {
     const optional = c.route === 'local_tax' && c.proposal.some((p) => p.optional);
@@ -1265,11 +1671,18 @@ const EXPERT_HINT = {
   not_expected: 'If the address is right, this tax is not owed: stop it, and the Desktop amount is flagged for a correction.',
   duplicate: 'Another line already withholds this tax. Usually: not owed, and the extra amount is corrected with the agency.',
   state_conflict: 'The employee has no address in the state the label names. Usually not owed; use a custom entry only if they really work there.',
-  no_address: 'Get the home address from the employee, then map the line to the district for that address.',
-  address_unresolved: 'Confirm the address (new builds are often missing from boundary files), then map the line to the right district.',
+  no_address: 'The employer is asked for the home address on their To do; once it is added, the engine checks this line again. If you already have it, map the line to that district.',
+  address_unresolved: 'The employer is asked to correct the address on their To do. If it is a new build missing from boundary files, map the line to the right district.',
   ambiguous: 'More than one expected tax fits. Pick the right one from the list.',
   employer_sent: 'The employer disagreed with the suggestion. Check the address and the Desktop item, then decide.',
 };
+
+const TYPE_NAME = { school_district: 'School-district tax', municipal: 'City tax', earned_income: 'Earned income tax', local_services: 'Local services tax' };
+// Open lines with the same Desktop item that an expert can decide together (not the ones waiting for an
+// address, and not one the employer sent back on purpose).
+function sameLabelOpen(c, s) {
+  return s.cases.filter((x) => x.item.item_id === c.item.item_id && x.stage === 'with_expert' && !x.decision.expert && !x.decision.sentToExpert && !NEEDS_ADDRESS.has(x.reason));
+}
 
 function expertTools(c, s) {
   const id = domId(c.case_id);
@@ -1286,9 +1699,18 @@ function expertTools(c, s) {
   // The action the hint recommends gets the primary style; a conflict has no default answer.
   const recommended = { not_expected: 'stop', duplicate: 'stop', state_conflict: 'stop', weak_signal: 'map', no_address: 'map', address_unresolved: 'map', ambiguous: 'map', employer_sent: 'map' }[c.reason] ?? null;
   const sel = (name, values, current) => `<select id="${name}-${id}" name="${name}">${values.map(([v, t]) => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+  // The same Desktop item is usually on many employees. The expert decides what the label means once,
+  // and each employee's own address picks the exact tax: the BRD's "label says which kind, address says which one".
+  const same = sameLabelOpen(c, s);
+  const types = [...new Set(stateTaxes.filter((t) => t.state === c.state).map((t) => t.type))];
+  const sameBlock = same.length > 1 ? `<div class="same-label">
+        <p><strong>"${esc(labelOf(c.item.label))}" is open on ${plural(same.length, 'line')}</strong>, one per employee. Decide what the label means once; each employee's address picks the exact tax.</p>
+        <div class="row">${types.map((t) => `<button class="btn${suggestType === t ? ' primary' : ''}" type="button" data-action="expert-label" data-item="${esc(c.item.item_id)}" data-as="${t}"${suggestType === t ? ' title="The model\'s closest entry"' : ''}>${esc(TYPE_NAME[t] ?? t)} for all ${same.length}</button>`).join('')}<button class="btn" type="button" data-action="expert-label" data-item="${esc(c.item.item_id)}" data-as="not_a_tax">Not a tax for all ${same.length}</button></div>
+      </div>` : '';
   return `<section class="card" aria-label="Expert decision">
     <div class="card-head"><span class="card-title">${icon('user')}Expert decision</span><span class="meta">Goes back to the employer to confirm</span></div>
     <div class="card-body tools">
+      ${sameBlock}
       <div class="map-row">
         <label class="field" for="map-${id}">Map to a defined tax${stateTaxes.length ? `<select id="map-${id}"><option value="">Choose a tax</option>${options}</select>` : `<select id="map-${id}" disabled><option>No ${esc(stateName(c.state))} taxes in the catalogue yet</option></select>`}</label>
         <button class="btn${recommended === 'map' ? ' primary' : ''}" type="button" data-action="expert-map" data-id="${esc(c.case_id)}" data-select="map-${id}"${stateTaxes.length ? '' : ' disabled'}>Map</button>
@@ -1364,8 +1786,9 @@ function w2Section(s, w2) {
   const span = dm.length ? `Desktop withholding relabelled for ${monthSpan(dm)}, plus Online payroll from ${monthSpan([cm[0]])}.` : 'The company moves in January, so every month comes from Online payroll.';
   const shown = w2.filter((w) => w.lines.length);
   const waiting = w2.length - shown.length;
+  const W2_SHOWN = 12;
   const body = shown.length
-    ? `<div class="w2-grid">${shown.map(w2Card).join('')}</div>${waiting ? `<p class="small muted">${plural(waiting, 'employee has', 'employees have')} no confirmed local tax yet, so no local boxes are shown for them.</p>` : ''}`
+    ? `<div class="w2-grid">${shown.slice(0, more.w2 ? undefined : W2_SHOWN).map(w2Card).join('')}</div>${shown.length > W2_SHOWN ? `<div class="row"><button class="btn quiet" type="button" data-action="show-more" data-key="w2">${more.w2 ? `Show the first ${W2_SHOWN}` : `Show all ${shown.length} employees`}</button></div>` : ''}${waiting ? `<p class="small muted">${plural(waiting, 'employee has', 'employees have')} no confirmed local tax yet, so no local boxes are shown for them.</p>` : ''}`
     : `<div class="empty"><strong>No local boxes yet.</strong><span>They appear once taxes are confirmed.</span></div>`;
   return `<section class="section" aria-labelledby="w2-h">
       <div class="section-head"><h2 id="w2-h">W-2 local boxes</h2><p>Projected for 2026: ${esc(span)}</p></div>
@@ -1396,7 +1819,8 @@ function reconcileSection(s) {
   const head = `<div class="section-head"><h2 id="rec-h">Reconcile</h2><p>After the first Online payroll and the first quarter, withholding is checked against the addresses.</p></div>`;
   if (!s.d.reconciled) return `<section class="section" aria-labelledby="rec-h">${head}<div class="empty"><span>The demo simulates the first Online payroll (${first}) and ${monthSpan(cm)} at the official rates.</span><button class="btn primary" type="button" data-action="run-reconcile">Run first payroll and quarter</button></div></section>`;
   const r = reconcile(s.a, s.d);
-  const rows = r.rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="small muted">${esc(x.agency)}</div></td><td>${x.employees.map(esc).join(', ')}</td><td class="num">${money(x.firstPayroll)}</td><td class="num">${money(x.quarter)}</td><td>${pill(x.payer, x.qb ? 'good' : 'info')}</td></tr>`).join('');
+  const names = (list) => (list.length > 4 ? `${list.slice(0, 3).map(esc).join(', ')} and ${list.length - 3} more` : list.map(esc).join(', '));
+  const rows = r.rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="small muted">${esc(x.agency)}</div></td><td>${names(x.employees)}</td><td class="num">${money(x.firstPayroll)}</td><td class="num">${money(x.quarter)}</td><td>${pill(x.payer, x.qb ? 'good' : 'info')}</td></tr>`).join('');
   const fails = r.flags.filter((f) => f.tone === 'fail').length;
   return `<section class="section" aria-labelledby="rec-h">${head}
     <div class="wl-tiles">
@@ -1521,16 +1945,20 @@ function viewAudit(s) {
 const EXAMPLES = [
   ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY route\nORDER BY lines DESC'],
   ['Who decided', 'SELECT COALESCE(decided_by, \'Nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY 1\nORDER BY lines DESC'],
-  ['Employees per client', 'SELECT c.name, COUNT(e.employee_id) AS employees\nFROM companies c LEFT JOIN employees e ON e.company_id = c.company_id\nGROUP BY c.company_id\nORDER BY c.sort'],
+  ['Biggest businesses', 'SELECT c.name, c.source, COUNT(e.employee_id) AS employees\nFROM companies c LEFT JOIN employees e ON e.company_id = c.company_id\nGROUP BY c.company_id\nORDER BY employees DESC\nLIMIT 15'],
+  ['Open lines by reason', 'SELECT reason, COUNT(*) AS lines\nFROM line_outcomes\nWHERE stage = \'with_expert\'\nGROUP BY reason\nORDER BY lines DESC'],
+  ['Added addresses', 'SELECT c.name, k.employee_id, k.value, k.found_in_lookup, k.at\nFROM corrections k JOIN companies c ON c.company_id = k.company_id\nORDER BY k.at DESC'],
   ['Ohio school taxes', 'SELECT code, name, rate, base\nFROM taxes\nWHERE type = \'school_district\'\nORDER BY code'],
   ['Custom Desktop labels', 'SELECT c.name AS client, d.label, d.calc_rate AS rate\nFROM desktop_items d JOIN companies c ON c.company_id = d.company_id\nWHERE d.origin = \'custom\'\nORDER BY c.sort, d.sort'],
 ];
 
 function viewData() {
+  const head = `<div class="page-head"><h1>Data</h1>
+    <p class="lede">A SQLite database inside this page, rebuilt on every visit from the demo files and the generated businesses. Uploads and added addresses stay in this browser.</p></div>`;
+  // The outcome tables need every business analysed first.
+  if (db && unchecked().length) { warmUp(); return head + warmPanel(); }
   syncOutcomes();
   if (db && !query.result && !query.error) runSql(query.sql);
-  const head = `<div class="page-head"><h1>Data</h1>
-    <p class="lede">A SQLite database inside this page. It is rebuilt from the demo files on every visit; uploads stay in this browser.</p></div>`;
   const groups = db ? tableSummary(db) : [];
   const cards = groups.map((g) => `<section class="card" aria-labelledby="tg-${g.id}">
       <div class="card-head"><div><h2 id="tg-${g.id}">${esc(g.title)}</h2><p class="card-sub">${esc(g.note)}</p></div></div>
@@ -1662,6 +2090,7 @@ function handle(action, el) {
       const gone = uploads.find((u) => u.company.company_id === id);
       uploads = uploads.filter((u) => u.company.company_id !== id);
       delete state.decisions[id];
+      state.corrections = state.corrections.filter((c) => c.company_id !== id);
       saveUploads();
       rebuildData();
       if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies[0].company_id;
@@ -1719,6 +2148,60 @@ function handle(action, el) {
       if (location.hash === '#move') render();
       else location.hash = '#move';
       return;
+    case 'fix-address': {
+      if (d.live) { toast('This business is live. Undo go-live to change an address.'); return; }
+      const f = new FormData(el);
+      const corr = { company_id: state.companyId, employee_id: el.dataset.employee, line1: String(f.get('line1') ?? '').trim(), city: String(f.get('city') ?? '').trim(), state: String(f.get('state') ?? 'OH'), zip: String(f.get('zip') ?? '').trim(), at: new Date().toISOString() };
+      if (!corr.line1 || !/^\d{5}$/.test(corr.zip)) {
+        toast('Enter the street and a 5-digit ZIP code.');
+        el.querySelector(corr.line1 ? '[name="zip"]' : '[name="line1"]')?.focus();
+        return;
+      }
+      const name = companyById().employees.find((x) => x.employee_id === corr.employee_id)?.name ?? corr.employee_id;
+      const found = addCorrection(corr);
+      const emp = analysisFor().employees.find((x) => x.employee_id === corr.employee_id);
+      const where = (emp?.expected.list ?? []).filter((x) => x.tax.type === 'school_district').map((x) => taxShort(x.tax)).join(' and ');
+      log('Employer', 'Added a home address', name, found ? `Placed by the address lookup${where ? `: ${where}` : ''}. The engine checked the lines again.` : 'The address lookup cannot place it, so the line stays with an expert');
+      let steps = 0;
+      if (decisionsFor().autoRun && !decisionsFor().live) steps = runAutomationFor(state.companyId).actions.length;
+      toast(found
+        ? `Saved and placed: ${where || 'no school-district tax at this address'}. ${steps ? `Your rules settled ${plural(steps, 'more item')}.` : decisionsFor().autoRun ? 'Nothing more for the rules to settle.' : 'The line is ready to confirm.'}`
+        : `Saved, but the address lookup cannot place it. An expert checks ${name}'s line.`);
+      afterRender = () => (document.querySelector('.mi-form input[name="line1"]') ?? document.getElementById('mi-h') ?? document.getElementById('main'))?.focus({ preventScroll: true });
+      break;
+    }
+    case 'sample-address': {
+      const a = demoAddressFor(el.dataset.employee);
+      const form = el.closest('form');
+      if (!a || !form) { toast('No demo address found near this work site.'); return; }
+      form.elements.line1.value = a.line1;
+      form.elements.city.value = a.city;
+      form.elements.state.value = a.state;
+      form.elements.zip.value = a.zip;
+      form.querySelector('[type="submit"]')?.focus();
+      return;
+    }
+    case 'focus-missing': {
+      const target = `mi-line1-${domId(el.dataset.employee)}`;
+      const go = () => { const input = document.getElementById(target); if (!input) return; input.closest('.mi-row')?.scrollIntoView({ block: 'center' }); input.focus({ preventScroll: true }); };
+      state.detailOpen = false;
+      save();
+      if (location.hash === '#review') { afterRender = go; break; }
+      navFocus = go;
+      location.hash = '#review';
+      return;
+    }
+    case 'show-more':
+      more[el.dataset.key] = !more[el.dataset.key];
+      break;
+    case 'run-lab': {
+      const f = new FormData(el);
+      const seed = Math.round(Number(f.get('seed')));
+      const total = Number(f.get('total'));
+      if (!Number.isFinite(seed) || seed < 1 || seed > 99999) { toast('Enter a seed from 1 to 99999.'); return; }
+      lab = { ...lab, seed, total: LAB_SIZES.some(([n]) => n === total) ? total : 1200, result: null, running: false, error: null };
+      break;
+    }
     case 'move-next':
     case 'move-back':
       if (action === 'move-next') state.moveStep[state.companyId] = 'check';
@@ -1737,24 +2220,6 @@ function handle(action, el) {
     case 'bulk':
       bulkConfirm(el.dataset.company ?? state.companyId);
       break;
-    case 'run-auto': {
-      const cid = el.dataset.company ?? state.companyId;
-      const res = runAutomationFor(cid, { explicit: true });
-      const st = automationStats(analysisFor(cid), res.decisions);
-      toast(`${st.auto} of ${st.total} settled automatically.${res.exceptions.length ? ` ${plural(res.exceptions.length, 'item')} left for a person.` : res.decisions.live ? ' The company is live.' : ''}`);
-      break;
-    }
-    case 'run-auto-all': {
-      let auto = 0; let total = 0; let left = 0;
-      for (const c of data.companies) {
-        if (decisionsFor(c.company_id).live) continue;
-        const res = runAutomationFor(c.company_id, { explicit: true });
-        const st = automationStats(analysisFor(c.company_id), res.decisions);
-        auto += st.auto; total += st.total; left += res.exceptions.length;
-      }
-      toast(`Automation settled ${auto} of ${total} items across every client; ${plural(left, 'item')} left for a person.`);
-      break;
-    }
     case 'auto-rule': {
       d.policy = { ...policyOf(d), [el.dataset.rule]: el.checked };
       log('Employer', el.checked ? 'Switched on an automation rule' : 'Switched off an automation rule', ruleLabel(el.dataset.rule));
@@ -1835,6 +2300,32 @@ function handle(action, el) {
     case 'expert-nontax':
       setExpert(id, { action: 'not_a_tax' }, 'Marked as not a tax');
       break;
+    case 'expert-label': {
+      if (d.live) break;
+      const s0 = summary();
+      const pick = s0.cases.find((x) => x.item.item_id === el.dataset.item);
+      if (!pick) break;
+      const as = el.dataset.as;
+      const at = new Date().toISOString();
+      let done = 0;
+      let none = 0;
+      for (const c of sameLabelOpen(pick, s0)) {
+        let expert = { action: 'not_a_tax', at, byLabel: true };
+        if (as !== 'not_a_tax') {
+          const x = c.employee.expected.list.find((e) => e.tax.type === as && e.required) ?? c.employee.expected.list.find((e) => e.tax.type === as);
+          if (!x) { none += 1; continue; }
+          expert = { action: 'map', tax_id: x.tax_id, at, byLabel: true };
+        }
+        const next = { ...(d.cases[c.case_id] ?? {}), expert };
+        delete next.employer;
+        d.cases[c.case_id] = next;
+        done += 1;
+      }
+      const meaning = as === 'not_a_tax' ? 'Not a tax' : TYPE_NAME[as] ?? as;
+      log('Expert', 'Decided a label for every employee', `"${labelOf(pick.item.label)}"`, `${meaning}: ${plural(done, 'line')}, each mapped by the employee's address${none ? `; ${none} left open: no such tax at that address` : ''}`);
+      toast(`${meaning}: ${plural(done, 'line')} decided${none ? `, ${none} left open (no such tax at the address)` : ''}. The employer confirms next.`);
+      break;
+    }
     case 'expert-stop': {
       const c = findCase(id);
       const notes = {
@@ -1976,7 +2467,8 @@ function handle(action, el) {
   save();
   render();
 }
-const AUTO_FOLLOW = new Set(['decide', 'unsend-expert', 'add-gap', 'expert-map', 'expert-nontax', 'expert-stop', 'expert-custom', 'account', 'auto-rule']);
+const AUTO_FOLLOW = new Set(['decide', 'unsend-expert', 'add-gap', 'expert-map', 'expert-nontax', 'expert-label', 'expert-stop', 'expert-custom', 'account', 'auto-rule']);
+let navFocus = null; // where focus goes after a link to another screen has rendered it
 
 app.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-action]');
@@ -2018,7 +2510,33 @@ window.addEventListener('hashchange', () => {
   render();
   if (state.detailOpen) scrollToDetail();
   document.getElementById('main')?.focus({ preventScroll: true });
+  if (navFocus) { const go = navFocus; navFocus = null; go(); }
 });
+
+// Chart tooltips: any mark with data-tip shows its text next to the pointer.
+const tip = document.createElement('div');
+tip.className = 'viz-tip';
+tip.hidden = true;
+tip.setAttribute('aria-hidden', 'true');
+document.body.append(tip);
+function placeTip(ev) {
+  const w = tip.offsetWidth;
+  const h = tip.offsetHeight;
+  let x = ev.clientX + 14;
+  let y = ev.clientY + 14;
+  if (x + w > window.innerWidth - 8) x = ev.clientX - w - 14;
+  if (y + h > window.innerHeight - 8) y = ev.clientY - h - 14;
+  tip.style.transform = `translate(${Math.max(8, x)}px, ${Math.max(8, y)}px)`;
+}
+app.addEventListener('pointerover', (ev) => {
+  const t = ev.target.closest?.('[data-tip]');
+  if (!t) return;
+  tip.textContent = t.getAttribute('data-tip');
+  tip.hidden = false;
+  placeTip(ev);
+});
+app.addEventListener('pointermove', (ev) => { if (!tip.hidden) placeTip(ev); });
+app.addEventListener('pointerout', (ev) => { if (ev.target.closest?.('[data-tip]')) tip.hidden = true; });
 
 // Keep the selected record's detail in view after choosing it: on a phone the list is replaced by the
 // detail, and on a wide screen the page scrolls back up if the detail's top is out of view.
@@ -2033,33 +2551,50 @@ function scrollToDetail() {
 
 let SQLlib = null;
 // Rebuild the database from the demo files plus uploads, and read the engine's input back from it.
+// Addresses the employer added are applied again on every rebuild, so they survive a reload.
 function rebuildData() {
   cache.clear();
+  previews.clear();
+  outcomesKey = null;
+  if (warming) { clearTimeout(warming.timer); warming = null; }
   scenarioResults = null;
+  lookupIdx = lookupIndex(lookupAddresses());
+  const known = new Set([...files.companies, ...(generated?.companies ?? []), ...uploads.map((u) => u.company)].map((c) => c.company_id));
+  const corrections = state.corrections.filter((c) => known.has(c.company_id));
   if (SQLlib) {
     try {
       db?.close();
-      db = createDatabase(SQLlib, files, uploads);
+      db = createDatabase(SQLlib, files, uploads, generated);
+      for (const c of corrections) applyCorrection(db, c, lookupIdx);
       data = readData(db);
       return;
     } catch (err) { dbError = err.message; db = null; }
   }
   data = fromFiles(files, uploads);
+  for (const c of corrections) correctInMemory(c);
 }
+const lookupAddresses = () => [...files.geocoder.addresses, ...(generated?.addresses ?? [])];
 // Without the database (a viewer that blocks WebAssembly), the engine reads the files directly.
-function fromFiles(f, ups) {
-  const unplaced = ups.flatMap((u) => u.addresses ?? []).map((a) => ({ ...a, school_district: 'UNRESOLVED', municipality: null }));
-  return { catalog: f.catalog, geocoder: { ...f.geocoder, addresses: [...f.geocoder.addresses, ...unplaced] }, pools: f.pools, companies: [...f.companies, ...ups.map((u) => u.company)] };
+function fromFiles(f, ups, gen = generated) {
+  const unplacedAddresses = ups.flatMap((u) => u.addresses ?? []).map((a) => ({ ...a, school_district: 'UNRESOLVED', municipality: null }));
+  return {
+    catalog: f.catalog,
+    geocoder: { ...f.geocoder, addresses: [...f.geocoder.addresses, ...(gen?.addresses ?? []), ...unplacedAddresses] },
+    pools: f.pools,
+    companies: [...f.companies, ...(gen?.companies ?? []), ...ups.map((u) => u.company)],
+  };
 }
 
 // Write where every line ended up, and the decision log, into the outcome tables.
 function syncOutcomes() {
   if (!db) return;
+  const key = JSON.stringify([settingsKey(), data.companies.length, state.decisions, state.audit.length, state.audit[0]?.at ?? '']);
+  if (key === outcomesKey) return;
   const lines = [];
   for (const c of data.companies) {
     let a;
     try { a = analysisFor(c.company_id); } catch { continue; }
-    for (const k of effectiveAll(a, decisionsFor(c.company_id))) {
+    for (const k of effectiveAll(a, peekDecisions(c.company_id))) {
       const e = k.decision.employer;
       const x = k.decision.expert;
       lines.push({
@@ -2072,6 +2607,7 @@ function syncOutcomes() {
     }
   }
   writeOutcomes(db, lines, state.audit.map((a) => ({ at: a.at, company_id: a.company_id, actor: a.actor, action: a.action, target: a.target, detail: a.detail })));
+  outcomesKey = key;
 }
 
 function runSql(sql) {
@@ -2086,7 +2622,7 @@ async function uploadFile(input) {
   if (!file) return;
   const text = await file.text();
   const id = `U-${Date.now().toString(36).toUpperCase()}`;
-  const res = companyFromCsv(text, files.geocoder, id);
+  const res = companyFromCsv(text, { ...files.geocoder, addresses: lookupAddresses() }, id);
   if (res.problems?.length) {
     uploadMsg = { tone: 'bad', title: `${file.name} was not added`, items: res.problems };
   } else {
@@ -2119,9 +2655,10 @@ async function boot() {
     };
     const [catalog, geocoder, pool, companies] = await Promise.all(['catalog.json', 'geocoder.json', 'label-pool.json', 'companies.json'].map(get));
     files = { catalog, geocoder, pools: pool.pools, poolMeta: pool.metadata, companies: companies.companies, companiesMeta: companies.metadata };
+    generated = generateBusinesses(catalog);
     try { SQLlib = await loadSqlJs(); } catch (err) { dbError = err.message || 'WebAssembly is blocked here'; }
     rebuildData();
-    if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies[0].company_id;
+    if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies.find((c) => c.company_id === 'G-001')?.company_id ?? data.companies[0].company_id;
     render();
   } catch (err) {
     app.innerHTML = `<p class="boot">The demo data did not load (${esc(err.message)}). Run <code>npm run build</code> and <code>npm start</code>, then open http://localhost:3000.</p>`;

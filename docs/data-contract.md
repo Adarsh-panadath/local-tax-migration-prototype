@@ -65,11 +65,42 @@ When the page opens, the files above are loaded into a SQLite database in the br
 
 | Group | Tables |
 | --- | --- |
-| Customer data | `companies`, `worksites`, `employees`, `employee_addresses`, `employee_items`, `desktop_items`, `customer_addresses` (uploaded addresses the lookup has never seen) |
+| Customer data | `companies` (`source`: `demo`, `generated` or `upload`), `worksites`, `employees`, `employee_addresses`, `employee_items`, `desktop_items`, `customer_addresses` (addresses the lookup has never seen), `corrections` (home addresses the employer added) |
 | Tax reference | `states`, `taxes`, `no_tax_districts`, `state_place_names`, `defined_entries`, `defined_entry_states`, `address_lookup`, `label_pool` |
 | Outcomes | `line_outcomes` (every Desktop line: route, stage, Online tax, decided by, rule), `decision_log` |
 
 The Data page runs one read-only `SELECT` at a time.
+
+## Generated businesses
+
+`web/generate.mjs` makes 60 more businesses from a fixed seed (2026) on every visit, so every visitor sees the same data. They are synthetic: names, people, street addresses, wages and Desktop labels are made up. Each has 100 to 280 employees; the first, **Buckeye Supply Co.** (`G-001`), has 152 and is the default business.
+
+- Towns are real Ohio places (Lancaster, Pickerington, Columbus, Carroll, Bremen, Baltimore, Millersport, Ashville) with their real ZIP codes, school districts and city taxes. People live where commuters to each work site plausibly live.
+- Desktop labels are written the way people type them: abbreviations, typos, place names, upper and lower case.
+- Each business has its own mix of problems: missing home addresses, addresses the lookup cannot place, people who moved, wrong rates, Columbus residents with a school tax withheld, items nobody set up, ambiguous labels, union dues, garnishments, joiners and leavers.
+- Their addresses join the demo lookup (`address_lookup`, `G-A00001` onward).
+
+A test (`tests/scale.test.mjs`) checks that the generator gives the same businesses every time, that each has at least 100 employees, that every one goes through the engine, and that they round-trip through the database exactly.
+
+## Addresses the employer adds
+
+A line that needs a home address (`no_address`, or `address_unresolved` when the lookup cannot place it) waits for the employer: the owner's **To do** lists it under **Missing information**. Saving an address:
+
+1. Looks it up by street and ZIP in the address lookup.
+2. Writes it to the database: `employee_addresses` (for the whole year), `customer_addresses` if the lookup has never seen it, and a row in `corrections` (`company_id`, `employee_id`, `value`, `address_id`, `found_in_lookup`, `at`).
+3. Reads that business back from the database, and the engine checks its lines again. If the business has moved, the employer's rules run and settle what they can.
+
+An address the lookup knows settles the line by rule; one it has never seen is kept, and the line stays with an expert as `address_unresolved`. Added addresses are kept in the browser and applied again whenever the database is rebuilt.
+
+## ML Lab
+
+`web/mllab.mjs` grades the label clustering on a larger labelled set (`labelSet` in `web/generate.mjs`: 1,200 labels by default, 600 or 2,400 on request).
+
+- 80% of the labels fit the clusters with the engine's own `clusterLabels` (k from 2 to 30, picked by silhouette). No answers are used to fit.
+- The other 20% are scored with the engine's own `assignLabel`, exactly as a new business's labels are: nearest cluster, its name, and the label's silhouette. Below 0.25 the label goes to an expert.
+- **Precision** = right suggestions ÷ suggestions. **Coverage** = suggestions ÷ held-back labels. An ambiguous label sent to an expert counts as right.
+- The baseline uses the same clean-up and then picks the catalogue entry that shares the most words; a tie or no shared word goes to an expert.
+- The map is kernel PCA on the same cosine similarity.
 
 ## Uploading a Desktop file (CSV)
 

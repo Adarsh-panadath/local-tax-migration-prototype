@@ -13,21 +13,20 @@ Sign in with a demo account (no passwords). Progress is saved in your own browse
 To run it on your computer (Node.js 20 or later; no install step, no API keys):
 
 ```sh
-npm test        # 125 checks: engine, every scenario, and the database
+npm test        # 131 checks: engine, every scenario, the database, scale and the ML Lab
 npm run build   # copies web/ and data/ into dist/
 npm start       # serves dist/ at http://localhost:3000
 ```
 
-## Four people, one screen set each
-
-A real migration involves four different people, and each sees only what they need:
+## Three people, one screen set each
 
 | Sign in as | Their job | Screens |
 | --- | --- | --- |
-| **Business owner** (customer) | Move their business and confirm what is theirs to confirm | **Move** (start, check, summary), **To do**, **Go live** (with reconcile and W-2) |
-| **Accountant** (customer) | Move every client they look after | **Clients**, then the owner's screens for any client |
-| **Payroll tax expert** (Intuit) | Decide the lines the rules leave | **Queue** |
-| **Admin** (Intuit) | Keep the model safe and the data right | **Model** (gates and thresholds), **Engine** (what each step found), **Data**, **Scenarios**, **Log** |
+| **Business owner** (customer) | Move their own business, give the information only they have, confirm what is theirs | **Move** (start, check, summary), **To do** (with **Missing information**), **Go live** (with reconcile and W-2) |
+| **Payroll tax expert** (Intuit) | Decide the lines the rules leave, one label at a time | **Queue** |
+| **Admin** (Intuit) | Watch every business, keep the model safe and the data right | **Portfolio**, **Model** (gates and thresholds), **ML Lab**, **Engine**, **Data**, **Scenarios**, **Log** |
+
+Each business runs its own move with the rules it approved; nobody runs automation for other people's businesses. Intuit's view across all of them is the admin's Portfolio, which only reads.
 
 The sign-in is a demo: in a real product customers would use their Intuit account and staff the company sign-in, and the role would decide the screens. A public static site cannot keep a password secret, so it does not pretend to.
 
@@ -55,7 +54,7 @@ Desktop payroll file
 
 The demo data lives in a **SQLite database inside the page** (sql.js, compiled to WebAssembly; no server, no account, no keys). It is rebuilt from the demo files on every visit, so every visitor has a private copy. The engine reads its input from the database with SQL, and a test checks that this equals the files exactly.
 
-- **Customer data** (fictional): companies, work sites, employees, their addresses and Desktop payroll items.
+- **Customer data** (fictional): businesses, work sites, employees, their addresses, Desktop payroll items, and home addresses the employer added.
 - **Tax reference** (real and public where it matters): states, Ohio school-district and city taxes, defined entries, the demo address lookup and the expert-labelled label pool.
 - **Outcomes**: where every Desktop line ended up (route, stage, Online tax, decided by which rule or person) and the decision log.
 
@@ -63,7 +62,12 @@ The admin's **Data** page shows every table with its row count, runs read-only S
 
 Customer payroll data stays fictional on purpose: real payroll files hold social security numbers and wages. Real companies demo the same way: invented people, real tax rules.
 
-## Six demo clients
+## The demo data
+
+**66 businesses, 11,330 employees, 20,269 Desktop local tax lines.**
+
+- **60 generated businesses**, 100 to 280 employees each, made from a fixed seed so every visit sees the same data. Names, people and labels are synthetic; the towns, ZIP codes, school districts and rates are real. Each has its own mix of messy data: missing or unplaceable home addresses, moves, wrong rates, items nobody set up, ambiguous labels. **Buckeye Supply Co.** (152 employees) is the default.
+- **6 story clients**, small and hand-made, one BRD case each:
 
 | Client | What it shows |
 | --- | --- |
@@ -98,18 +102,40 @@ Only the cases the BRD reserves for people are left: a weak or missing label sig
 | Hocking Hills Fabrication | 30 of 35 | 5 exceptions |
 | Lakeview Bakery | 4 of 4 | Nothing: live and reconciled |
 | Ridgeview Print Shop | 9 of 11 | A blank item name, an unknown address |
-| **All clients** | **67 of 78 (86%)** | **12** |
+| **Six story clients** | **67 of 78 (86%)** | **12** |
+| Buckeye Supply Co. (152 employees) | 313 of 318 (98%) | 3 home addresses (employer), 2 "Other Tax" lines (expert) |
+| **All 66 businesses** | **20,413 of 21,125 (96.6%)** | **714**: 609 with an expert, 105 with employers |
 
-## Demo script (about five minutes)
+Most of what is left at scale is one kind: an unclear label on a Desktop item that many employees share. The expert decides what such a label means once, and each employee's address picks the exact tax (see the demo script).
 
-1. **Sign in as the business owner** of Fairfield Hardware Supply. **Move**: Get started, then the check says 16 of 18 items settle by rule and names the two that stay for an expert. Click **Move to Online payroll**; the summary shows the exception report.
-2. **Sign out, sign in as the payroll tax expert.** The queue has two lines: mark Kevin O'Neil's garnishment as not a tax, and map Tom Reed's "Local Tax" to Lancaster CSD.
-3. The rules accept both, pass the four go-live checks ($12,063.60 tie-out), go live and reconcile. **Sign in as the owner again**: the summary says live; **Go live** shows 4 taxes, $3,428.70 for October to December, and the W-2 boxes.
-4. **Sign in as the accountant**: **Run automation for every client** settles 86% across the six clients; the chart shows each client's share.
-5. **Sign in as the admin**:
-   - **Model**: Ohio passes every gate (silhouette 0.53, precision 100%, 53 labels); Pennsylvania stays in shadow mode. Set the silhouette threshold to 0.53 and Ohio drops to shadow mode (its score is 0.528).
-   - **Data**: run "Who decided", download the template and upload it as a new client.
+## Missing information
+
+A missing or unplaceable home address is a fact only the employer has, so it waits for the employer, not an expert. The move summary shows **Add address** next to it, and the owner's To do lists it under **Missing information**. Saving an address writes it to the database, the engine checks that employee's lines again, and the rules settle what they can. An address the lookup has never seen is kept, and the line stays with an expert. Missing agency account numbers are listed there too.
+
+## Proving the clustering: the ML Lab
+
+The admin's **ML Lab** answers "does the clustering work beyond 53 labels?" with a test anyone can rerun:
+
+1. Make 1,200 Desktop-style labels with known answers (600 or 2,400 on request; any seed).
+2. Hold back 20%. Fit clusters on the rest with the engine's own code; no answers are used to fit.
+3. Score the held-back labels exactly as the engine scores a new business's labels, and grade them.
+4. Compare with simple word matching, which uses the same clean-up.
+
+It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, the confusion matrix, every wrong answer, and the clusters with their purity. With seed 2026 the model is right on 98.4% of its suggestions and suggests for 78.8% of labels; word matching is right on 98.2% and suggests for 90.8%. The silhouette is 0.462, below the gate, so on a set this messy the state would stay in shadow mode. The screen states these numbers and does not claim a winner: across seeds neither method wins every time. What clustering adds is grouping hundreds of spellings into a few dozen families an expert names once, and a confidence that says when to defer.
+
+## Demo script (about six minutes)
+
+1. **Sign in as the business owner** of Buckeye Supply Co. (152 employees). **Move**: Get started; the check says 313 of 318 items settle by rule, 3 need an address from the employer and 2 need an expert. Click **Move to Online payroll**.
+2. On the summary, click **Add address** next to Gabriel Bell. On To do, click **Fill a demo address**, then **Save**: the engine checks his line again and the rules settle it. (Type an address the lookup does not know, and the line stays with an expert.)
+3. **Sign in as the payroll tax expert.** Buckeye's queue has two "Other Tax" lines. Then pick **Licking Pharmacy**: one unclear label is open on 151 lines; decide what it means once and every employee's address picks the exact tax.
+4. **Sign in as the admin**:
+   - **Portfolio**: 66 businesses, 11,330 employees, 96.6% settled by rule, and what is left by reason.
+   - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
+   - **Model**: Ohio passes every gate on the demo pool (silhouette 0.53, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode (its score is 0.528).
+   - **Data**: run "Added addresses" to see the address saved in step 2; download the template and upload it as a new business.
    - **Scenarios**: 76 of 76 pass; each row opens the case.
+
+The story clients show single cases in detail. For example, Fairfield Hardware Supply settles 16 of 18 by rule; the expert marks Kevin O'Neil's garnishment as not a tax and maps Tom Reed's "Local Tax" to Lancaster CSD; the rules then pass the four go-live checks ($12,063.60 tie-out), go live and reconcile.
 
 ## Scenario coverage
 
@@ -128,16 +154,18 @@ The admin's **Scenarios** page lists 76 scenarios, grouped by BRD step, and runs
 | --- | --- |
 | Ohio school-district codes, names, rates and tax bases | Real, from the Ohio Department of Taxation 2026 list (a small subset) |
 | Lancaster 2.3% and Columbus 2.5% city rates | Real, from the city websites |
-| Clustering, silhouette, precision gates | Implemented and tested; precision is measured on a 53-label pool written for this demo |
+| Clustering, silhouette, precision gates | Implemented and tested; the gates use a 53-label pool written for this demo |
+| ML Lab | Real computation with the engine's code, on 1,200 synthetic labels written from real label patterns |
+| Generated businesses | Synthetic, from a fixed seed; real towns, ZIP codes, districts and rates |
 | Address lookup | A hand-made table of fictional addresses mapped to real districts. In production this is Intuit's tax applicability service |
 | Database | Real SQLite, in the browser; rebuilt from the demo files on each visit |
 | Sign-in | Demo accounts without passwords |
-| Companies, employees, wages, account numbers | Fictional |
+| Businesses, employees, wages, account numbers | Fictional |
 | Copying employees, pay items and totals in the Move step | Simulated; the local tax checks are real |
 | Which taxes QuickBooks pays and files | A demo assumption, not an Intuit statement |
 | Connection to QuickBooks | None |
 
-This prototype is not affiliated with Intuit and is not tax advice. A 53-label pool is far too small to prove production accuracy; the gates show how the BRD's rule works, not that the model is ready.
+This prototype is not affiliated with Intuit and is not tax advice. Synthetic labels are not real customer labels: the ML Lab shows the method and how the gates react, not production accuracy, which needs real Desktop files labelled by experts.
 
 ## Files
 
@@ -147,12 +175,14 @@ This prototype is not affiliated with Intuit and is not tax advice. A 53-label p
 | `web/engine/cluster.mjs` | Average-linkage clustering, silhouette, naming clusters, scoring a new label |
 | `web/engine/analysis.mjs` | File checks, expected taxes, rollout gates, routing, rate checks, gaps |
 | `web/engine/workflow.mjs` | Decisions, automation rules, go-live checks, dollar tie-out, W-2, reconciliation |
-| `web/db.mjs` | The database: schema, loading, reading the engine's input with SQL, queries, CSV import |
+| `web/db.mjs` | The database: schema, loading, reading the engine's input with SQL, queries, CSV import, added addresses |
+| `web/generate.mjs` | The 60 generated businesses and the ML Lab's labelled set, from a fixed seed |
+| `web/mllab.mjs` | The ML Lab: hold-out split, fit, scoring, baseline, confusion matrix, 2D map |
 | `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |
 | `web/scenarios.mjs` | The 76 scenarios and their live checks |
 | `web/report.mjs` | JSON report and CSV export |
 | `web/app.mjs`, `web/styles.css` | The app |
 | `data/` | Catalog, address lookup, six companies, expert-labelled label pool |
-| `tests/` | Engine and workflow, every scenario plus exact boundaries, and the database |
+| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, and scale (generated data, added addresses, ML Lab) |
 | `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |
