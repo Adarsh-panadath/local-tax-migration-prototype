@@ -1,13 +1,25 @@
 // Browser app for the BRD v3 local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=9d0383a0d7';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=9d0383a0d7';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY } from './engine/workflow.mjs?v=9d0383a0d7';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=9d0383a0d7';
-import { buildReport, casesCSV } from './report.mjs?v=9d0383a0d7';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=9d0383a0d7';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=d2301949ca';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=d2301949ca';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY } from './engine/workflow.mjs?v=d2301949ca';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=d2301949ca';
+import { buildReport, casesCSV } from './report.mjs?v=d2301949ca';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=d2301949ca';
+import { loadSqlJs, createDatabase, readData, insertCompany, writeOutcomes, tableSummary, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS } from './db.mjs?v=d2301949ca';
 
 const STORE = 'local-tax-migration:brd-v3';
-const VIEWS = ['move', 'clients', 'analysis', 'review', 'expert', 'golive', 'reconcile', 'scenarios', 'model', 'audit'];
+const UPLOADS = 'local-tax-migration:uploads';
+const VIEWS = ['move', 'clients', 'analysis', 'review', 'expert', 'golive', 'scenarios', 'model', 'audit', 'data'];
+
+// Demo sign-in: each role sees only its own screens. Admin can also open any record from a scenario.
+const ROLES = {
+  owner: { icon: 'building', label: 'Business owner', side: 'Customer', blurb: 'Moves their own business to Online payroll', tabs: [['move', 'Move'], ['review', 'To do'], ['golive', 'Go live']] },
+  accountant: { icon: 'grid', label: 'Accountant', side: 'Customer', blurb: 'Moves every client they look after', tabs: [['clients', 'Clients'], ['move', 'Move'], ['review', 'To do'], ['golive', 'Go live']] },
+  expert: { icon: 'user', label: 'Payroll tax expert', side: 'Intuit staff', blurb: 'Decides the lines the rules leave', tabs: [['expert', 'Queue']] },
+  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'Model gates, tax reference and the data', tabs: [['model', 'Model'], ['analysis', 'Engine'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
+};
+const roleOf = () => ROLES[state.role];
+const canOpen = (view) => state.role === 'admin' || Boolean(roleOf()?.tabs.some(([id]) => id === view));
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
 // The hosted demo blocks file downloads, so it offers copy buttons instead.
@@ -27,11 +39,23 @@ let byKeyboard = false;     // the last activation came from the keyboard (move 
 let resetArmed = false;     // Reset needs a second click within a few seconds
 let resetTimer = null;
 let moving = null;          // the short "moving" sequence after Move to Online payroll: { companyId, step, timer }
+let files = null;           // the demo files as loaded, the database's seed
+let db = null;              // the in-browser SQLite database (null if it could not start)
+let dbError = null;
+let uploads = loadUploads(); // Desktop files uploaded on the Data page: [{ company, addresses }]
+let uploadMsg = null;       // the last upload's result: { tone, title, items }
+let query = { sql: 'SELECT route, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY route\nORDER BY lines DESC', result: null, error: null };
 
 // ---------- state ----------
 
 function freshState() {
-  return { companyId: 'C-FHS', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filters: { review: 'todo', expert: 'open' }, sel: {}, selIndex: {}, query: {}, moveStep: {}, detailOpen: false };
+  return { role: null, companyId: 'C-FHS', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filters: { review: 'todo', expert: 'open' }, sel: {}, selIndex: {}, query: {}, moveStep: {}, detailOpen: false };
+}
+function loadUploads() {
+  try { return JSON.parse(localStorage.getItem(UPLOADS) ?? '[]'); } catch { return []; }
+}
+function saveUploads() {
+  try { localStorage.setItem(UPLOADS, JSON.stringify(uploads)); } catch { /* the upload still works for this visit */ }
 }
 function loadState() {
   try {
@@ -50,7 +74,8 @@ function save() {
 
 const currentView = () => {
   const h = location.hash.replace('#', '');
-  return VIEWS.includes(h) ? h : 'move';
+  if (VIEWS.includes(h) && canOpen(h)) return h;
+  return roleOf()?.tabs[0][0] ?? 'move';
 };
 const companyById = (id = state.companyId) => data.companies.find((c) => c.company_id === id);
 const decisionsFor = (id = state.companyId) => (state.decisions[id] ??= emptyDecisions());
@@ -181,6 +206,7 @@ function focusSelector(el) {
 
 function render() {
   if (!data) return;
+  if (!state.role) { app.innerHTML = signIn(); lastView = null; return; }
   const view = currentView();
   const prevFocus = focusSelector(document.activeElement);
   let s;
@@ -198,8 +224,8 @@ function render() {
   }
   const wide = view === 'review' || view === 'expert';
   const listScroll = lastView === view ? document.querySelector('.records')?.scrollTop : null;
-  const body = { move: viewMove, clients: viewClients, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, reconcile: viewReconcile, scenarios: viewScenarios, model: viewModel, audit: viewAudit }[view](s);
-  app.innerHTML = `<button class="skip" type="button" data-action="skip">Skip to main content</button>${appbar(view, s)}${rail(view)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
+  const body = { move: viewMove, clients: viewClients, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
+  app.innerHTML = `<button class="skip" type="button" data-action="skip">Skip to main content</button>${appbar(view, s)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
   lastView = view;
   if (wide) {
     if (listScroll != null) { const r = document.querySelector('.records'); if (r) r.scrollTop = listScroll; }
@@ -256,54 +282,82 @@ function scenarios() {
   return scenarioResults;
 }
 
-const STEP_TABS = [['move', 'Move'], ['analysis', 'Analysis'], ['review', 'Review'], ['expert', 'Expert'], ['golive', 'Go live'], ['reconcile', 'Reconcile']];
-const OVERSIGHT = [['scenarios', 'Scenarios', 'list'], ['model', 'Governance', 'gauge'], ['audit', 'Decision log', 'history'], ['clients', 'All clients', 'grid']];
+// Screens that are about one client show its status line; the rest are about every client or the model.
+const COMPANY_VIEWS = new Set(['move', 'review', 'expert', 'golive', 'analysis']);
 
 function appbar(view, s) {
   const co = s.a.company;
+  const role = roleOf();
   const options = data.companies.map((c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
-  // A step shows a check once nothing is left in it, so the tabs double as a progress tracker.
+  // A step shows a tick once nothing is left in it, so the customer's tabs double as a progress tracker.
   const moved = Boolean(s.d.autoRun || s.d.live);
-  const finished = { move: moved, analysis: moved, review: s.awaiting === 0, expert: s.expert === 0, golive: Boolean(s.d.live), reconcile: Boolean(s.d.reconciled) };
+  const finished = { move: moved, review: moved && s.awaiting === 0, golive: Boolean(s.d.reconciled), expert: s.expert === 0 };
+  const steps = state.role === 'owner' || state.role === 'accountant';
   const tab = ([id, text], i) => {
     const n = id === 'review' ? s.awaiting : id === 'expert' ? s.expert : 0;
-    const done = finished[id];
-    return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}${done ? ' class="done"' : ''}><span class="step">${done ? `${icon('tick')}<span class="sr-only">Done:</span>` : i + 1}</span>${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}</a>`;
+    const done = steps && finished[id];
+    const mark = steps && id !== 'clients' ? `<span class="step">${done ? `${icon('tick')}<span class="sr-only">Done:</span>` : i + (state.role === 'accountant' ? 0 : 1)}</span>` : '';
+    return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}${done ? ' class="done"' : ''}>${mark}${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}${id === 'scenarios' ? `<span class="count ok">${scenarioCount()}</span>` : ''}</a>`;
   };
+  const company = state.role === 'owner'
+    ? `<span class="company-box static">${icon('building')}<span class="co-name">${esc(co.name)}</span><span class="plan">${esc(co.plan)}</span></span>`
+    : `<label class="company-box"><span class="sr-only">Client</span>${icon('building')}<select id="company" data-action="company">${options}</select><span class="plan">${esc(co.plan)}</span></label>`;
+  const user = `<span class="user-chip"><span class="avatar role-ic">${icon(role.icon)}</span><span class="user-text"><strong>${esc(role.label)}</strong><small>${esc(role.side)}</small></span></span>
+    <button class="btn quiet signout" type="button" data-action="sign-out">Sign out</button>`;
   const total = s.cases.length;
   const lines = s.cases.filter((c) => c.stage === 'awaiting_employer').length;
   const gaps = s.awaiting - lines;
   const action = lines + gaps + s.expert;
   const items = total + s.a.gaps.length; // Desktop lines plus expected taxes nobody withheld
-  const used = statesInUse(s.a);
   const statusTone = { 'Not started': 'info', 'In review': 'accent', Live: 'good', Reconciled: 'good' }[s.status];
-  const modeText = Object.values(s.a.models).filter((m) => used.has(m.state))
-    .map((m) => `<span class="mode ${m.mode === 'assisted' ? 'good' : 'warn'}"><span class="dot"></span>${esc(m.name)} ${m.mode === 'assisted' ? 'suggestions on' : 'in shadow mode'}</span>`).join('');
-  return `<header class="appbar">
-    <div class="topbar">
-      <a class="logo" href="#move"><span class="logo-tile">${icon('landmark')}</span><span class="logo-text"><strong>Local Tax Migration</strong><small>Desktop to Online payroll, demo</small></span></a>
-      <nav class="tabs" aria-label="Migration steps">${STEP_TABS.map(tab).join('')}</nav>
-      <div class="top-tools">
-        <label class="company-box"><span class="sr-only">Client</span>${icon('building')}<select id="company" data-action="company">${options}</select><span class="plan">${esc(co.plan)}</span></label>
-        <button class="btn reset${resetArmed ? ' armed' : ''}" type="button" data-action="reset" title="Clear every decision and start the demo again">${icon('reset')}<span>${resetArmed ? 'Click again to reset' : 'Reset'}</span></button>
-      </div>
-    </div>
-    <div class="batchbar">
+  const status = COMPANY_VIEWS.has(view) ? `<div class="batchbar">
       <span class="status ${statusTone}"><span class="dot"></span>${esc(s.status)}</span>
-      <span class="batch-progress"><span class="progress" role="img" aria-label="${items - action} of ${items} items settled"><span style="width:${(items ? ((items - action) / items) * 100 : 0).toFixed(1)}%"></span></span><span><b>${items - action}</b> of ${items} items settled</span></span>
+      <span class="batch-progress"><span class="progress" role="img" aria-label="${items - action} of ${items} items settled"><span style="width:${(items ? ((items - action) / items) * 100 : 0).toFixed(1)}%"></span></span><span><b>${items - action}</b> of ${items} settled</span></span>
       ${action ? `${lines + gaps ? `<span class="batch-need warn"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.expert ? `<span class="batch-need blue"><b>${s.expert}</b> with an expert</span>` : ''}` : `<span class="batch-need done">${icon('tick')}Nothing waiting</span>`}
       ${s.d.autoRun ? `<span class="batch-auto">${icon('spark')}<b>${pct(automationStats(s.a, s.d).share, 0)}</b> automated</span>` : ''}
-      ${modeText}
+    </div>` : '';
+  return `<header class="appbar">
+    <div class="topbar">
+      <a class="logo" href="#${role.tabs[0][0]}"><span class="logo-tile">${icon('landmark')}</span><span class="logo-text"><strong>Local Tax Migration</strong><small>Desktop to Online payroll, demo</small></span></a>
+      <nav class="tabs" aria-label="${esc(role.label)} screens">${role.tabs.map(tab).join('')}</nav>
+      <div class="top-tools">
+        ${company}
+        ${user}
+        <button class="btn reset${resetArmed ? ' armed' : ''}" type="button" data-action="reset" title="Clear every decision and upload, and start the demo again">${icon('reset')}<span>${resetArmed ? 'Click again to reset' : 'Reset'}</span></button>
+      </div>
     </div>
+    ${status}
   </header>`;
 }
 
-// The oversight pages, as an icon rail on the left of a wide screen and a row of pills on a narrow one.
-function rail(view) {
-  const sc = scenarios();
-  const passed = sc.filter((x) => x.pass).length;
-  const links = OVERSIGHT.map(([id, text, ic]) => `<a class="rail-link" href="#${id}"${view === id ? ' aria-current="page"' : ''}><span class="rail-ic">${icon(ic)}</span><span class="rail-label">${text}</span>${id === 'scenarios' ? `<span class="rail-badge" aria-label="${passed} of ${sc.length} pass">${passed}/${sc.length}</span>` : ''}</a>`).join('');
-  return `<nav class="rail" aria-label="Oversight"><div class="rail-group">${links}</div></nav>`;
+// ---------- sign in (demo accounts, no passwords) ----------
+
+function signIn() {
+  const options = data.companies.map((c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  const account = (id, extra = '') => {
+    const r = ROLES[id];
+    return `<div class="acct"><span class="avatar lg role-ic">${icon(r.icon)}</span><div class="acct-text"><strong>${esc(r.label)}</strong><span>${esc(r.blurb)}</span>${extra}</div><button class="btn primary" type="button" data-action="sign-in" data-role="${id}">Sign in</button></div>`;
+  };
+  const pick = `<label class="acct-pick"><span class="sr-only">Business</span><select id="signin-company">${options}</select></label>`;
+  return `<main class="signin" id="main" tabindex="-1">
+    <section class="signin-brand">
+      <span class="logo-tile">${icon('landmark')}</span>
+      <h1>Local Tax Migration</h1>
+      <p>Desktop to Online payroll, with every local tax checked line by line.</p>
+      <ul class="signin-points">
+        <li>${icon('check')}Rules settle most lines</li>
+        <li>${icon('check')}Experts decide the rest</li>
+        <li>${icon('check')}Nothing goes live without the employer</li>
+      </ul>
+    </section>
+    <section class="signin-panel" aria-labelledby="signin-h">
+      <div><h2 id="signin-h">Sign in</h2><p class="card-sub">Demo accounts, no passwords.</p></div>
+      <div class="signin-group"><h3>Customer</h3>${account('owner', pick)}${account('accountant')}</div>
+      <div class="signin-group"><h3>Intuit staff</h3>${account('expert')}${account('admin')}</div>
+      <p class="small muted">In a real product, customers would use their Intuit account and staff the company sign-in.</p>
+    </section>
+    ${footnote()}
+  </main>`;
 }
 
 function scenarioCount() {
@@ -312,7 +366,7 @@ function scenarioCount() {
 }
 
 function footnote() {
-  return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. Ohio school-district codes, names and rates come from the Ohio Department of Taxation's 2026 list; the Lancaster (2.3%) and Columbus (2.5%) city rates come from the cities' own pages. Companies, people, addresses, account numbers and wages are fictional. Not affiliated with or endorsed by Intuit.</p>`;
+  return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. Companies, people and wages are fictional; Ohio school-district and city tax rates are real (2026). Not affiliated with Intuit.</p>`;
 }
 
 // ---------- automation ----------
@@ -343,40 +397,6 @@ function automationPreview(s) {
   return { ...res, stats: automationStats(s.a, res.decisions) };
 }
 
-function automationCard(s) {
-  const d = s.d;
-  const ran = Boolean(d.autoRun);
-  const view = ran ? { decisions: d, exceptions: openExceptions(s.a, d), stats: automationStats(s.a, d) } : automationPreview(s);
-  const st = view.stats;
-  const left = view.exceptions;
-  const share = pct(st.share, 0);
-  const policy = policyOf(d);
-  const rules = AUTOMATION_RULES.map((r) => `<label class="rule"><input type="checkbox" data-action="auto-rule" data-rule="${r.id}"${policy[r.id] ? ' checked' : ''}${d.live ? ' disabled' : ''}><span><strong>${esc(r.label)}</strong><span>${esc(r.help)}</span></span></label>`).join('');
-  const owner = (x) => (x.owner === 'expert' ? 'Expert' : 'Employer');
-  const open = (x) => (x.kind === 'account' ? '<a class="btn" href="#golive">Add it</a>'
-    : `<button class="btn" type="button" data-action="goto" data-view="${x.owner === 'expert' ? 'expert' : 'review'}" data-key="${esc(x.kind === 'gap' ? `g|${x.gap_id}` : `c|${x.case_id}`)}">Open</button>`);
-  const leftList = left.length
-    ? `<div class="auto-left"><span class="label">${ran ? 'Left for a person' : 'Will be left for a person'} (${left.length})</span><ul>${left.map((x) => `<li><span class="who"><strong>${esc(x.employee ?? x.item)}</strong>${x.employee ? `<span>"${esc(labelOf(x.item))}"</span>` : ''}</span><span class="badge ${x.reason === 'account_missing' || x.owner === 'employer' ? 'warn' : REASON_TONE[x.reason] === 'bad' ? 'bad' : 'warn'}">${esc(exceptionText(x))}</span><span class="owner">${owner(x)}</span>${open(x)}</li>`).join('')}</ul></div>`
-    : `<p class="auto-done">${icon('check')}${d.live ? `Everything is settled. ${d.liveAuto ? 'The company went live and reconciled automatically.' : 'The company is live.'}` : 'Nothing is left for a person.'}</p>`;
-  const headline = ran
-    ? `<b>${st.auto}</b> of ${st.total} settled automatically`
-    : `<b>${st.auto}</b> of ${st.total} can be settled automatically`;
-  const sub = ran
-    ? `${st.manual ? `${plural(st.manual, 'decision')} by a person. ` : ''}${left.length ? 'The rest finishes by itself once these are decided.' : ''}`
-    : 'One click applies the rules below. Lines that need human judgement are never guessed: they stay for a person.';
-  return `<section class="auto-card" aria-labelledby="auto-h">
-    <div class="auto-head">
-      <div class="auto-title"><span class="auto-ic">${icon('spark')}</span><div><h2 id="auto-h">Automatic migration</h2><p>${ran ? (d.live ? 'Done.' : 'On. It re-runs after every decision a person makes.') : 'Ready to run.'}</p></div></div>
-      ${d.live ? '' : `<button class="btn ${ran ? '' : 'primary lg'}" type="button" data-action="run-auto">${icon('spark')}${ran ? 'Run again' : 'Run automatic migration'}</button>`}
-    </div>
-    <div class="auto-score">
-      <span class="ring" role="img" aria-label="${share} ${ran ? 'settled' : 'can be settled'} automatically" style="--p:${(st.share * 100).toFixed(1)}"><span>${share}</span></span>
-      <div><p class="auto-line">${headline}</p>${sub ? `<p class="auto-sub">${esc(sub)}</p>` : ''}</div>
-    </div>
-    ${leftList}
-    <details class="fold auto-rules"><summary>${icon('list')}Rules the employer approved (${AUTOMATION_RULES.filter((r) => policy[r.id]).length} of ${AUTOMATION_RULES.length} on)${icon('chevron', 'chev')}</summary><div class="fold-body">${rules}</div></details>
-  </section>`;
-}
 
 // ---------- 0 move to Online payroll ----------
 // The way a customer starts: a short wizard (start, check, move) and a summary with an exception report.
@@ -448,7 +468,7 @@ function moveStart(s) {
           <span>${icon('calendar')}First Online payroll in ${esc(f.first)}</span>
           <span>${icon('layers')}${esc(co.plan)} plan</span>
         </div>
-        <div class="row move-cta"><button class="btn primary lg" type="button" data-action="move-next">Get started${icon('arrow')}</button><a class="btn quiet" href="#analysis">See the full analysis</a></div>
+        <div class="row move-cta"><button class="btn primary lg" type="button" data-action="move-next">Get started${icon('arrow')}</button></div>
       </div>
       ${transferFigure(f)}
     </section>
@@ -578,8 +598,12 @@ function moveSummary(s) {
       : 'Every local tax item is settled. The go-live checks are next.';
   const waitTone = expert.length && !employer.length ? 'blue' : left.length ? 'warn' : 'good';
   const waitSub = left.length ? [expert.length ? `${expert.length} with an expert` : '', employer.length ? `${employer.length} with the employer` : ''].filter(Boolean).join(', ') : 'Nothing waiting';
+  // A customer cannot open the expert queue: their row says who has it instead.
   const open = (x) => (x.kind === 'account' ? '<a class="btn" href="#golive">Add it</a>'
-    : `<button class="btn" type="button" data-action="goto" data-view="${x.owner === 'expert' ? 'expert' : 'review'}" data-key="${esc(x.kind === 'gap' ? `g|${x.gap_id}` : `c|${x.case_id}`)}">Open</button>`);
+    : x.owner === 'expert' && !canOpen('expert') ? ''
+      : `<button class="btn" type="button" data-action="goto" data-view="${x.owner === 'expert' ? 'expert' : 'review'}" data-key="${esc(x.kind === 'gap' ? `g|${x.gap_id}` : `c|${x.case_id}`)}">Open</button>`);
+  const waitHref = employer.length ? (employer.every((x) => x.kind === 'account') ? '#golive' : '#review') : expert.length && canOpen('expert') ? '#expert' : null;
+  const rules = AUTOMATION_RULES.map((r) => `<label class="rule"><input type="checkbox" data-action="auto-rule" data-rule="${r.id}"${policy[r.id] ? ' checked' : ''}${d.live ? ' disabled' : ''}><span><strong>${esc(r.label)}</strong><span>${esc(r.help)}</span></span></label>`).join('');
   const report = left.length
     ? `<ul class="exc-list">${left.map((x) => `<li>${x.employee ? avatar(x.employee) : `<span class="avatar">${icon('landmark')}</span>`}<span class="who"><strong>${esc(x.employee ?? x.item)}</strong>${x.employee ? `<span>"${esc(labelOf(x.item))}"</span>` : '<span>Agency account</span>'}</span><span class="exc-tags">${badge(exceptionText(x), x.owner === 'expert' ? 'blue' : 'warn')}<span class="owner ${x.owner === 'expert' ? 'blue' : 'warn'}">${x.owner === 'expert' ? 'Expert' : 'Employer'}</span></span>${open(x)}</li>`).join('')}</ul>`
     : `<p class="auto-done flat">${icon('check')}No exceptions. Nothing needs a person.</p>`;
@@ -599,19 +623,19 @@ function moveSummary(s) {
       <span class="ring on-brand" role="img" aria-label="${share} settled automatically" style="--p:${(st.share * 100).toFixed(1)}"><span>${share}</span></span>
     </section>
     <div class="wl-tiles">
-      <div class="wl-tile"><div class="tile-head"><span class="t">${icon('monitor')}Copied from Desktop</span>${arrowLink('#analysis', 'See the full analysis')}</div><span class="n">${f.employees}${avatarStack(f.names, 3)}</span><p>${f.employees === 1 ? 'employee' : 'employees'}, ${plural(f.lines, 'local tax line')}${f.desktop.length ? `, ${monthSpan(f.desktop)} totals` : ''}</p></div>
-      <div class="wl-tile good"><div class="tile-head"><span class="t">${icon('spark')}Settled by rule</span>${arrowLink('#audit', 'Open the decision log')}</div><span class="n">${bigOf(st.auto, st.total)}</span><p>items${st.manual ? `; ${st.manual} more by a person` : ''}</p></div>
-      <div class="wl-tile ${waitTone}"><div class="tile-head"><span class="t">${icon(left.length ? 'user' : 'check')}Waiting for a person</span>${arrowLink(left.length ? (expert.length ? '#expert' : '#review') : '#golive', left.length ? (expert.length ? 'Open the expert queue' : 'Open the employer review') : 'Open the go-live checks')}</div><span class="n">${left.length}</span><p>${esc(waitSub)}</p></div>
+      <div class="wl-tile"><div class="tile-head"><span class="t">${icon('monitor')}Copied from Desktop</span></div><span class="n">${f.employees}${avatarStack(f.names, 3)}</span><p>${f.employees === 1 ? 'employee' : 'employees'}, ${plural(f.lines, 'local tax line')}${f.desktop.length ? `, ${monthSpan(f.desktop)} totals` : ''}</p></div>
+      <div class="wl-tile good"><div class="tile-head"><span class="t">${icon('spark')}Settled by rule</span></div><span class="n">${bigOf(st.auto, st.total)}</span><p>items${st.manual ? `; ${st.manual} more by a person` : ''}</p></div>
+      <div class="wl-tile ${waitTone}"><div class="tile-head"><span class="t">${icon(left.length ? 'user' : 'check')}Waiting for a person</span>${waitHref ? arrowLink(waitHref, 'Open what is waiting') : ''}</div><span class="n">${left.length}</span><p>${esc(waitSub)}</p></div>
     </div>
     <div class="wl-grid">
       <section class="card" aria-labelledby="exc-h">
-        <div class="card-head"><div><h2 id="exc-h">Exception report</h2><p class="card-sub">What the rules left for a person</p></div>${arrowLink(expert.length ? '#expert' : '#review', expert.length ? 'Open the expert queue' : 'Open the employer review')}</div>
+        <div class="card-head"><div><h2 id="exc-h">Exception report</h2><p class="card-sub">What the rules left for a person</p></div></div>
         <div class="card-body">${report}</div>
       </section>
       <section class="card" aria-labelledby="next-h">
         <div class="card-head"><div><h2 id="next-h">What happens next</h2><p class="card-sub">Up to the first Online payroll</p></div>${arrowLink('#golive', 'Open the go-live checks')}</div>
-        <div class="card-body"><ol class="next-steps">${next.map((x) => `<li class="${x.done ? 'done' : ''}"><span class="mv-mark${x.done ? ' done' : ''}">${x.done ? `${icon('tick')}<span class="sr-only">Done:</span>` : ''}</span><span>${esc(x.text)}</span></li>`).join('')}</ol>
-          <div class="row"><a class="btn" href="#analysis">See the full analysis</a><a class="btn quiet" href="#audit">${icon('history')}Decision log</a></div></div>
+        <div class="card-body"><ol class="next-steps">${next.map((x) => `<li class="${x.done ? 'done' : ''}"><span class="mv-mark${x.done ? ' done' : ''}">${x.done ? `${icon('tick')}<span class="sr-only">Done:</span>` : ''}</span><span>${esc(x.text)}</span></li>`).join('')}</ol></div>
+        ${fold('list', `Your rules (${AUTOMATION_RULES.filter((r) => policy[r.id]).length} of ${AUTOMATION_RULES.length} on)`, `<div class="rules-list">${rules}</div>`)}
       </section>
     </div>`;
 }
@@ -665,8 +689,7 @@ function viewClients() {
     </tr>`;
   }).join('');
   const share = totals.total ? totals.auto / totals.total : 0;
-  return `<div class="page-head"><h1>Clients <span class="soft">moving to Online payroll</span></h1>
-    <p class="lede">Run the automatic migration for every client at once. The rules settle what they can; each client keeps only its true exceptions for a person.</p></div>
+  return `<div class="page-head"><h1>Clients <span class="soft">moving to Online payroll</span></h1></div>
     <div class="dash-grid">
       ${clientChart()}
       <section class="card stat-card" aria-labelledby="all-h">
@@ -712,12 +735,10 @@ function viewAnalysis(s) {
     return `<tr data-employee="${esc(e.employee_id)}"><td><strong>${esc(e.name)}</strong>${employmentText(e) ? `<div class="small muted">${esc(employmentText(e))}</div>` : ''}</td><td>${homes}</td><td>${esc(site.name)}${e.remote ? '<div class="small muted">Works from home</div>' : ''}</td><td>${expected}</td></tr>`;
   }).join('');
 
-  return `<div class="page-head"><h1>${esc(a.company.name)} <span class="soft">migration analysis</span></h1>
-    <p class="lede">${plural(a.employees.length, 'employee')} and ${plural(a.cases.length, 'Desktop payroll line')} (one per employee per item) to move to Online payroll. Every line gets a proposed destination; nothing switches on until the employer confirms it.</p></div>
-    ${automationCard(s)}
-    ${a.company.company_id === 'C-FHS' ? demoGuide() : companyNote(a.company)}
+  return `<div class="page-head"><h1>${esc(a.company.name)} <span class="soft">through the engine</span></h1>
+    <p class="lede">${plural(a.employees.length, 'employee')}, ${plural(a.cases.length, 'Desktop line')}. ${esc(a.company.description ?? '')}</p></div>
     <section class="section" aria-labelledby="pipe-h">
-      <div class="section-head"><h2 id="pipe-h">The five steps</h2><p>Run while the company is still on Desktop. Every line ends in exactly one route, and nothing goes live without the employer.</p></div>
+      <div class="section-head"><h2 id="pipe-h">What each step found</h2></div>
       <ol class="pipeline">
         <li><strong>Find the state</strong><p>From the item's label, or else the employee's address.</p><span class="result">${esc(byState)}</span></li>
         <li><strong>List expected taxes</strong><p>Home and work addresses give a short list of taxes each person should have.</p><span class="result">${plural(expectedCount, 'expected tax', 'expected taxes')}${missingAddr ? `, ${plural(missingAddr, 'address', 'addresses')} missing` : ''}</span></li>
@@ -733,15 +754,15 @@ function viewAnalysis(s) {
       <div class="route-tile gap"><span class="n">${a.gaps.length}</span><span class="t">Expected, not withheld</span><p>On the expected list, but no Desktop item covers it.</p></div>
     </section>
     ${a.dataIssues.length ? `<section class="section" aria-labelledby="dq-h">
-      <div class="section-head"><h2 id="dq-h">Problems found in the Desktop file</h2><p>Checked before anything else. These were cleaned up so the analysis could run; fix them in the file before the move.</p></div>
+      <div class="section-head"><h2 id="dq-h">Problems found in the Desktop file</h2><p>Cleaned up so the analysis could run.</p></div>
       <ul class="marks">${a.dataIssues.map((i) => `<li>${mark('warn')}<span>${esc(i.text)}</span></li>`).join('')}</ul>
     </section>` : ''}
     <section class="section" aria-labelledby="items-h">
-      <div class="section-head"><h2 id="items-h">What came across from Desktop</h2><p>Law ID 177 or 0 marks an employer-created custom item. Its name is free text.</p></div>
+      <div class="section-head"><h2 id="items-h">Desktop payroll items</h2><p>Law ID 177 or 0 is an employer-created item with a free-text name.</p></div>
       <div class="table-wrap"><table><thead><tr><th>Item label</th><th>Law ID</th><th>Kind</th><th>Desktop setting</th><th>Rate</th><th>Agency on file</th><th class="num">Employees</th></tr></thead><tbody>${items}</tbody></table></div>
     </section>
     <section class="section" aria-labelledby="people-h">
-      <div class="section-head"><h2 id="people-h">Employees and their expected taxes</h2><p>From the demo address lookup. In production this is Intuit's tax applicability API.</p></div>
+      <div class="section-head"><h2 id="people-h">Employees and their expected taxes</h2><p>From the address lookup (Intuit's tax service in production).</p></div>
       <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Home address</th><th>Works at</th><th>Expected taxes</th></tr></thead><tbody>${people}</tbody></table></div>
     </section>`;
 }
@@ -753,24 +774,7 @@ function employmentText(e) {
   return parts.join(', ');
 }
 
-function companyNote(company) {
-  return `<section class="panel section" aria-labelledby="note-h">
-    <h2 id="note-h">What this client shows</h2>
-    <p>${esc(company.description ?? '')}</p>
-    <p class="small muted">Every case and its live check is listed on <a href="#scenarios">Scenario coverage</a>, with a link to the employee it concerns.</p>
-  </section>`;
-}
 
-function demoGuide() {
-  return `<section class="panel section" aria-labelledby="guide-h">
-    <h2 id="guide-h">Try the demo</h2>
-    <ol class="guide-steps">
-      <li><span>Click <strong>Run automatic migration</strong> above, or go through the <a href="#move">Move</a> steps the way a customer would. The employer's rules settle 16 of 18 items: the matches the addresses support, Priya Shah at the official 1.0% rate, Sara Lee's union dues, Raj Patel's missing Teays Valley tax, and Mike Brown's school tax (not owed in Columbus City Schools).</span></li>
-      <li><span><a href="#expert">Expert queue</a>: only two lines are left. Mark Kevin O'Neil's garnishment as not a tax, and map Tom Reed's "Local Tax" to Lancaster CSD once his address is known.</span></li>
-      <li><span>Automation accepts both decisions, goes live and reconciles. Check <a href="#golive">Go live</a> for the W-2 boxes and the <a href="#audit">Decision log</a> for every automatic step and its rule.</span></li>
-    </ol>
-  </section>`;
-}
 
 // ---------- 2 and 3: review workspaces (employer review and expert queue) ----------
 // A list of records on the left (Desktop lines, plus expected taxes nobody withheld) and the selected
@@ -932,16 +936,16 @@ function workspace(view, s) {
     todo: 'Nothing is waiting for the employer.', verified: 'No lines are ready to confirm.', expert: 'No lines are with an expert.',
     done: 'No decisions yet.', all: 'No records.', open: 'The expert queue is empty.', decided: 'No expert decisions yet.',
   }[filter];
-  const title = view === 'review' ? 'Employer review' : 'Expert queue';
+  const title = view === 'review' ? 'To do' : 'Expert queue';
   const blurb = view === 'review' ? plural(all.length, 'record') : `${all.filter((r) => r.groups.has('open')).length} open`;
   const autoStats = automationStats(s.a, s.d);
   const foot = view === 'review'
     ? (s.d.autoRun || live
-      ? `<div class="queue-foot"><p>${icon('spark')}Automation is on: ${autoStats.auto} of ${autoStats.total} settled automatically.${live ? '' : ' Anything left here is an exception for a person.'}</p></div>`
-      : `<div class="queue-foot"><button class="btn primary" type="button" data-action="run-auto">${icon('spark')}Run automatic migration</button><p>Settles ${automationPreview(s).stats.auto} of ${autoStats.total} by the employer's rules; only exceptions stay here.</p></div>`)
-    : '<div class="queue-foot"><p>Lines the system would not decide alone. An Intuit payroll expert decides; the employer still confirms before anything goes live.</p></div>';
+      ? `<div class="queue-foot"><p>${icon('spark')}${autoStats.auto} of ${autoStats.total} settled by rule.</p></div>`
+      : `<div class="queue-foot"><a class="btn primary" href="#move">${icon('spark')}Start the move</a><p>Rules settle ${automationPreview(s).stats.auto} of ${autoStats.total}; only exceptions stay here.</p></div>`)
+    : '<div class="queue-foot"><p>The employer confirms each decision before it goes live.</p></div>';
   let detail;
-  if (!sel) detail = `${mobileBack(view)}<div class="empty"><strong>${esc(emptyText)}</strong><span>${view === 'review' ? (s.expert ? `${plural(s.expert, 'line')} still with an expert. Those stay off until an expert decides and you confirm.` : 'Every line has a decision.') : 'Every line the system could not settle has an expert decision.'}</span><a class="btn" href="#golive">Go to go-live checks</a></div>`;
+  if (!sel) detail = `${mobileBack(view)}<div class="empty"><strong>${esc(emptyText)}</strong><span>${view === 'review' ? (s.expert ? `${plural(s.expert, 'line')} still with an expert. Those stay off until an expert decides and you confirm.` : 'Every line has a decision.') : 'Every line the system could not settle has an expert decision.'}</span>${canOpen('golive') ? '<a class="btn" href="#golive">Go to go-live checks</a>' : ''}</div>`;
   else if (sel.kind === 'gap') detail = gapDetail(sel.g, s);
   else detail = caseDetail(sel.c, s, view);
   return `<div class="workspace" data-open="${state.detailOpen && sel ? 'true' : 'false'}">
@@ -959,21 +963,20 @@ function workspace(view, s) {
   </div>`;
 }
 
-const mobileBack = (view) => `<div class="mobile-back"><button class="btn quiet" type="button" data-action="back">${icon('back')}Back to the ${view === 'review' ? 'review' : 'expert'} queue</button></div>`;
+const mobileBack = () => `<div class="mobile-back"><button class="btn quiet" type="button" data-action="back">${icon('back')}Back to the list</button></div>`;
 
 function viewReview(s) { return workspace('review', s); }
 function viewExpert(s) { return workspace('expert', s); }
 
 // ---------- record detail ----------
 
-function recordHeader({ name, id, meta, badgeHtml, flow, why, stage, next }) {
+function recordHeader({ name, id, meta, badgeHtml, flow, stage, next }) {
   return `<div class="rec-header">
     <div class="rec-title">
       <div class="rec-who">${avatar(name, 'lg')}<div><h2 id="detail-title" tabindex="-1">${esc(name)}</h2><p class="sub"><span class="idchip">${esc(id)}</span>${meta}</p></div></div>
       ${badgeHtml}
     </div>
     ${flow}
-    ${why ? `<p class="why">${esc(why)}</p>` : ''}
     <div class="next"><span class="next-ic">${icon('arrow')}</span><div><span class="next-label">Next step<span>${esc(stage)}</span></span><p>${esc(next)}</p></div></div>
   </div>`;
 }
@@ -1007,18 +1010,6 @@ function caseFlow(c) {
   return flow(from, to);
 }
 
-function caseWhy(c) {
-  if (c.route === 'local_tax') {
-    const p = c.proposal[0];
-    if (p.fromExpert) return `Mapped by an expert: ${expertText(c)}.`;
-    const where = p.address ? ` Found from the ${basisText(p.basis)}: ${[p.address.line1, p.address.city].filter(Boolean).join(', ')}.` : '';
-    return `${c.reasonText}${where}`;
-  }
-  if (c.route === 'not_a_tax') return c.decision.expert?.action === 'not_a_tax' ? 'An expert decided this is not a tax.' : c.reasonText;
-  if (c.route === 'custom_entry') return `Employer-managed: you pay and file it. ${c.entry.agency}, ${basisText(c.entry.basis)}, ${c.entry.frequency}.`;
-  if (c.route === 'stop') return c.decision.expert?.note || 'An expert found this tax does not apply to this employee.';
-  return `${c.reasonText} It stays off until an expert decides.`;
-}
 
 function nextStep(c, view, live) {
   if (live) return OPEN_STAGES.has(c.stage) ? 'This company is live, so decisions are locked. Undo go-live to change them.' : `Done: ${STAGE_LABEL[c.stage].toLowerCase()}. This company is live.`;
@@ -1050,18 +1041,14 @@ function checksBanner(c) {
   if (c.decision.expert) return `<div class="banner info">${icon('user', 'lg')}<div><strong>Expert decision:</strong> ${esc(expertText(c))}. The system's original findings are under "How the system decided".</div>${meta}</div>`;
   const issues = c.evidence.filter((x) => x.tone === 'fail' || x.tone === 'warn').map((x) => x.text);
   if (c.decision.sentToExpert) issues.push('The employer sent this line to an expert.');
-  if (!issues.length) {
-    const why = c.route === 'local_tax' ? 'The tax is on the expected list and the rate matches.' : c.route === 'not_a_tax' ? 'Desktop and the label agree this is not a tax.' : 'No blocking conflicts.';
-    const still = c.stage === 'awaiting_employer' ? ' It still needs confirming.' : '';
-    return `<div class="banner good">${icon('check', 'lg')}<div><strong>Rule checks passed.</strong> ${why}${still}</div>${meta}</div>`;
-  }
+  if (!issues.length) return '';
   const tone = c.stage === 'with_expert' && REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn';
   return `<div class="banner ${tone}">${icon('alert', 'lg')}<div><strong>${plural(issues.length, 'thing', 'things')} to check</strong><ul>${issues.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>${meta}</div>`;
 }
 
 function mappingTable(rows) {
   return `<section class="card" aria-label="Desktop versus Online mapping">
-    <div class="card-head"><span class="card-title">${icon('swap')}Desktop versus Online mapping</span><span class="meta">QuickBooks Desktop → QuickBooks Online Payroll</span></div>
+    <div class="card-head"><span class="card-title">${icon('swap')}Desktop versus Online</span></div>
     <div class="table-wrap"><table class="map-table"><thead><tr><th>Field</th><th>Desktop (source)</th><th>Online (target)</th><th>Check</th></tr></thead><tbody>
       ${rows.map(([k, a, b, n, cls]) => `<tr${cls ? ` class="${cls}"` : ''}><td>${esc(k)}</td><td data-l="Desktop">${a}</td><td data-l="Online">${b}</td><td>${n}</td></tr>`).join('')}
     </tbody></table></div>
@@ -1184,7 +1171,7 @@ function caseDetail(c, s, view) {
   if (c.decision.expert) steps.push({ tone: 'info', text: `Expert decision: ${expertText(c)}.` });
   const open = !c.verified && OPEN_STAGES.has(c.stage);
   return `${mobileBack(view)}
-    ${recordHeader({ name: c.employee_name, id: e.employee_id, meta, badgeHtml: badge(b, tone), flow: caseFlow(c), why: caseWhy(c), stage: STAGE_LABEL[c.stage], next: nextStep(c, view, live) })}
+    ${recordHeader({ name: c.employee_name, id: e.employee_id, meta, badgeHtml: badge(b, tone), flow: caseFlow(c), stage: STAGE_LABEL[c.stage], next: nextStep(c, view, live) })}
     ${checksBanner(c)}
     ${view === 'expert' && c.stage === 'with_expert' && !live ? expertTools(c, s) : ''}
     ${caseMapping(c, s)}
@@ -1198,14 +1185,17 @@ const moreMenu = (items) => (items.length ? `<details class="more"><summary clas
 function caseActions(c, s, view) {
   const id = esc(c.case_id);
   const key = esc(`c|${c.case_id}`);
-  if (s.d.live) return `<div class="action-bar">${logNote}<a class="btn" href="#golive">Live: see go-live</a></div>`;
+  // Buttons that open the other person's screen only appear for a role that can open it.
+  const toReview = canOpen('review') ? `<button class="btn" type="button" data-action="goto" data-view="review" data-key="${key}">Open in the employer's list</button>` : '';
+  const toExpert = canOpen('expert') ? `<button class="btn primary" type="button" data-action="goto" data-view="expert" data-key="${key}">Open in the expert queue</button>` : '<span class="small muted">With an expert. You confirm once they decide.</span>';
+  if (s.d.live) return `<div class="action-bar">${logNote}${canOpen('golive') ? '<a class="btn" href="#golive">Live: see go-live</a>' : '<span class="small muted">Live: decisions are locked.</span>'}</div>`;
   if (view === 'expert') {
-    if (c.stage === 'with_expert') return `<div class="action-bar">${logNote}<button class="btn" type="button" data-action="goto" data-view="review" data-key="${key}">Open in employer review</button></div>`;
-    return `<div class="action-bar">${logNote}<button class="btn" type="button" data-action="expert-undo" data-id="${id}">Reopen</button><button class="btn primary" type="button" data-action="goto" data-view="review" data-key="${key}">Open in employer review</button></div>`;
+    if (c.stage === 'with_expert') return `<div class="action-bar">${logNote}${toReview}</div>`;
+    return `<div class="action-bar">${logNote}<button class="btn" type="button" data-action="expert-undo" data-id="${id}">Reopen</button>${toReview}</div>`;
   }
   if (c.stage === 'with_expert') {
     const items = c.decision.sentToExpert && !c.decision.expert ? [`<button class="btn" type="button" data-action="unsend-expert" data-id="${id}">Take it back from the expert</button>`] : [];
-    return `<div class="action-bar">${logNote}${moreMenu(items)}<button class="btn primary" type="button" data-action="goto" data-view="expert" data-key="${key}">Open in the expert queue</button></div>`;
+    return `<div class="action-bar">${logNote}${moreMenu(items)}${toExpert}</div>`;
   }
   if (c.stage === 'awaiting_employer') {
     const optional = c.route === 'local_tax' && c.proposal.some((p) => p.optional);
@@ -1231,9 +1221,6 @@ function gapDetail(g, s) {
   const gapFlow = flow(
     flowSide('from', 'Desktop payroll', 'No item', esc(g.pastMonths.length ? `Nothing withheld ${monthSpan(g.pastMonths)}` : 'Nothing to withhold yet'), ''),
     flowSide('to', stage === 'awaiting_employer' ? 'Proposed for Online payroll' : stage === 'added' ? (s.d.gaps[g.gap_id]?.auto ? 'Added by rule' : 'Added by the employer') : 'Covered by an expert mapping', esc(g.tax.name), esc(`${g.tax.type === 'school_district' ? `SD ${g.tax.code} · ` : ''}${rateFmt(g.tax.rate)} · ${basisText(g.basis)}`), stage === 'awaiting_employer' ? 'bad' : stage === 'added' ? 'good' : 'neutral'));
-  const why = stage === 'covered'
-    ? `An expert mapped "${by?.item.label ?? ''}" to this tax, so it is not added twice.`
-    : `Expected from the ${basisText(g.basis)} ${[g.address.line1, g.address.city].filter(Boolean).join(', ')}, ${monthSpan(g.months)}, but no Desktop item withholds it.`;
   const next = live ? 'This company is live, so decisions are locked.'
     : stage === 'awaiting_employer' ? (g.cloudMonths.length ? 'Add it from the first cloud payroll, and discuss the back tax with the agency.' : 'Record the back tax for the agency; there are no Online paychecks to withhold it from.')
       : stage === 'added' ? 'Done. Undo it from the action bar if needed.' : 'Nothing to do: the expert mapping covers it.';
@@ -1254,7 +1241,7 @@ function gapDetail(g, s) {
   const steps = [{ step: 2, tone: 'fail', text: `${g.tax.name} is on ${g.employee_name}'s expected list (${basisText(g.basis)}, ${monthSpan(g.months)}), but no Desktop item withholds it.` }];
   if (by) steps.push({ tone: 'info', text: `Covered by the expert mapping of "${by.item.label}".` });
   return `${mobileBack('review')}
-    ${recordHeader({ name: g.employee_name, id: e.employee_id, meta: `${esc(site.name)} · ${money(e.monthly_wages)} a month`, badgeHtml: badge(b, tone), flow: gapFlow, why, stage: stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? 'Added' : 'Covered', next })}
+    ${recordHeader({ name: g.employee_name, id: e.employee_id, meta: `${esc(site.name)} · ${money(e.monthly_wages)} a month`, badgeHtml: badge(b, tone), flow: gapFlow, stage: stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? 'Added' : 'Covered', next })}
     ${banner}
     ${mappingTable(rows)}
     ${evidenceCard(s, { employee: e, state: g.tax.state, match: new Set([g.tax_id]), steps, historyTarget: `${g.employee_name}: ${g.tax.name}`, openSteps: stage === 'awaiting_employer' })}
@@ -1347,8 +1334,8 @@ function viewGoLive(s) {
       <td class="small muted">${a.source ? `From ${esc(a.source)}` : 'Enter from the agency letter'}</td>
     </tr>`).join('');
   return `<div class="page-head"><h1>Go live</h1>
-    <p class="lede">Confirmed taxes switch on with the first cloud payroll. Past Desktop withholding is relabelled to the confirmed tax so the W-2 is right; the amounts never change. Anything still with an expert stays off.</p></div>
-    ${live ? `<div class="live-banner"><span>Live since ${new Date(s.d.liveAt).toLocaleString()}: ${plural(liveCount, 'employee tax', 'employee taxes')} switched on.</span><div class="row"><a class="btn" href="#reconcile">Reconcile</a><button class="btn quiet" type="button" data-action="undo-live">Undo go-live (demo)</button></div></div>` : ''}
+    <p class="lede">Confirmed taxes switch on with the first Online payroll. Desktop history is relabelled for the W-2; amounts never change.</p></div>
+    ${live ? `<div class="live-banner"><span>Live since ${new Date(s.d.liveAt).toLocaleString()}: ${plural(liveCount, 'employee tax', 'employee taxes')} switched on.</span><div class="row"><button class="btn quiet" type="button" data-action="undo-live">Undo go-live (demo)</button></div></div>` : ''}
     <div class="two-col">
       <section class="panel section" aria-labelledby="checks-h">
         <h2 id="checks-h">Checks before the first cloud payroll</h2>
@@ -1364,9 +1351,10 @@ function viewGoLive(s) {
       </section>
     </div>
     <section class="section" aria-labelledby="acct-h">
-      <div class="section-head"><h2 id="acct-h">Agency accounts</h2><p>QuickBooks needs the account number and deposit frequency to pay and file. Filled from Desktop where the item had them.</p></div>
+      <div class="section-head"><h2 id="acct-h">Agency accounts</h2><p>Needed to pay and file. Filled from Desktop where it had them.</p></div>
       ${r.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>Agency</th><th>Account number</th><th>Deposit frequency</th><th>Source</th></tr></thead><tbody>${accounts}</tbody></table></div>` : '<div class="empty"><span>No taxes are confirmed yet, so no agency accounts are needed.</span></div>'}
     </section>
+    ${live ? reconcileSection(s) : ''}
     ${w2Section(s, w2)}`;
 }
 
@@ -1378,7 +1366,7 @@ function w2Section(s, w2) {
   const waiting = w2.length - shown.length;
   const body = shown.length
     ? `<div class="w2-grid">${shown.map(w2Card).join('')}</div>${waiting ? `<p class="small muted">${plural(waiting, 'employee has', 'employees have')} no confirmed local tax yet, so no local boxes are shown for them.</p>` : ''}`
-    : `<div class="empty"><strong>No local boxes yet.</strong><span>The W-2 local boxes appear here once taxes are confirmed in <a href="#review">Review</a> or by the automatic migration.</span></div>`;
+    : `<div class="empty"><strong>No local boxes yet.</strong><span>They appear once taxes are confirmed.</span></div>`;
   return `<section class="section" aria-labelledby="w2-h">
       <div class="section-head"><h2 id="w2-h">W-2 local boxes</h2><p>Projected for 2026: ${esc(span)}</p></div>
       ${body}
@@ -1400,25 +1388,25 @@ function w2Card(w) {
 
 // ---------- 5 reconcile ----------
 
-function viewReconcile(s) {
+// After go-live: withholding on the first Online payroll and quarter, compared with what the addresses say.
+function reconcileSection(s) {
   const cm = cloudMonths(s.a.company);
   const first = monthSpan([cm[0]]);
   const period = cm.length <= 3 ? 'first quarter' : 'Online months';
-  const head = `<div class="page-head"><h1>Reconcile</h1><p class="lede">After the first cloud payroll and again after the first quarter, withholding is compared with what each employee's addresses say they owe, and every mismatch is flagged.</p></div>`;
-  if (!s.d.live) return `${head}<div class="empty"><strong>Go live first.</strong><span>Reconciliation runs on real cloud paychecks, so it starts after the confirmed taxes are switched on.</span><a class="btn" href="#golive">Open go-live checks</a></div>`;
-  if (!s.d.reconciled) return `${head}<div class="empty"><strong>Ready to run.</strong><span>The demo simulates the first cloud payroll (${first}) and ${monthSpan(cm)} at the official rates.</span><button class="btn primary" type="button" data-action="run-reconcile">Run first payroll and first quarter</button></div>`;
+  const head = `<div class="section-head"><h2 id="rec-h">Reconcile</h2><p>After the first Online payroll and the first quarter, withholding is checked against the addresses.</p></div>`;
+  if (!s.d.reconciled) return `<section class="section" aria-labelledby="rec-h">${head}<div class="empty"><span>The demo simulates the first Online payroll (${first}) and ${monthSpan(cm)} at the official rates.</span><button class="btn primary" type="button" data-action="run-reconcile">Run first payroll and quarter</button></div></section>`;
   const r = reconcile(s.a, s.d);
   const rows = r.rows.map((x) => `<tr><td><strong>${esc(x.name)}</strong><div class="small muted">${esc(x.agency)}</div></td><td>${x.employees.map(esc).join(', ')}</td><td class="num">${money(x.firstPayroll)}</td><td class="num">${money(x.quarter)}</td><td>${pill(x.payer, x.qb ? 'good' : 'info')}</td></tr>`).join('');
   const fails = r.flags.filter((f) => f.tone === 'fail').length;
-  return `${head}
+  return `<section class="section" aria-labelledby="rec-h">${head}
     <div class="wl-tiles">
       <div class="wl-tile"><div class="tile-head"><span class="t">${icon('landmark')}Taxes withheld</span></div><span class="n">${r.rows.length}</span><p>${r.rows.length === 1 ? 'local tax' : 'local taxes'} on Online paychecks</p></div>
       <div class="wl-tile good"><div class="tile-head"><span class="t">${icon('calendar')}Withheld in ${esc(monthSpan(cm))}</span></div><span class="n">${bigMoney(r.totals.quarter)}</span><p>at the official rates</p></div>
       <div class="wl-tile ${fails ? 'bad' : 'good'}"><div class="tile-head"><span class="t">${icon(fails ? 'alert' : 'check')}Expected but missing</span></div><span class="n">${fails}</span><p>${fails ? `${plural(fails, 'expected tax', 'expected taxes')} not withheld` : 'No expected tax missing'}</p></div>
     </div>
     <div class="table-wrap"><table><thead><tr><th>Tax</th><th>Employees</th><th class="num">First payroll (${first})</th><th class="num">${period === 'first quarter' ? 'First quarter' : 'Online months'} (${monthSpan(cm)})</th><th>Who pays and files</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <section class="section" aria-labelledby="flags-h"><div class="section-head"><h2 id="flags-h">Flags</h2><p>${s.a.company.plan === 'Core' ? 'This company is on the Core plan, so it pays and files local taxes itself.' : 'Taxes QuickBooks supports are paid and filed automatically on this plan.'}</p></div>
-      ${r.flags.length ? `<ul class="marks panel">${r.flags.map((f) => `<li>${mark(f.tone)}<span>${esc(f.text)}</span></li>`).join('')}</ul>` : '<div class="empty"><span>No mismatches.</span></div>'}
+    ${r.flags.length ? `<ul class="marks panel">${r.flags.map((f) => `<li>${mark(f.tone)}<span>${esc(f.text)}</span></li>`).join('')}</ul>` : ''}
+    <p class="small muted">${s.a.company.plan === 'Core' ? 'Core plan: the employer pays and files local taxes.' : 'QuickBooks pays and files the taxes it supports on this plan.'}</p>
     </section>`;
 }
 
@@ -1439,7 +1427,7 @@ function thresholdPanel(s) {
       <input type="number" id="th-${f.key}" min="${f.min}" max="${f.max}" step="${f.step}" value="${t[f.key]}" data-action="threshold" data-key="${f.key}"${locked ? ' disabled' : ''}>
       <span class="small muted">${f.help} BRD value: ${f.show(DEFAULT_THRESHOLDS[f.key])}.</span></label>`).join('');
   return `<section class="panel section" aria-labelledby="th-h">
-    <div class="section-head"><h2 id="th-h">Try the gates</h2><p>Change a threshold to see a state switch between suggestions and shadow mode. A value exactly equal to the threshold passes. ${locked ? 'This company is live, so the thresholds are locked here.' : 'Changes apply to every client in this demo.'}</p></div>
+    <div class="section-head"><h2 id="th-h">Gate thresholds</h2><p>Change one to see a state switch to shadow mode. A value equal to the threshold passes.${locked ? ' Locked: this client is live.' : ''}</p></div>
     <div class="threshold-grid">${fields}</div>
     ${changed ? `<div class="row"><span class="pill warn"><span class="dot"></span>Thresholds differ from the BRD</span><button class="btn quiet" type="button" data-action="reset-thresholds"${locked ? ' disabled' : ''}>Back to BRD values</button></div>` : ''}
   </section>`;
@@ -1468,14 +1456,13 @@ function viewModel(s) {
         ${gate('Precision', `At least ${pct(t.precisionTarget, 0)} of high-confidence suggestions match the expert`, m.highConfidence ? `${pct(m.precision)} (${m.correct} of ${m.highConfidence})` : 'No high-confidence suggestions', m.gates.precision)}
         ${gate('Sample', `At least ${t.minSample} expert-labelled labels (demo scale)`, `${m.poolSize}`, m.gates.sample)}
       </tbody></table></div>
-      <p class="small muted">The model is fitted once per state on the expert-labelled labels, so these gates are the same for every client. Coverage: ${pct(m.coverage, 0)} of labelled labels get a high-confidence suggestion; the rest go to people. Silhouette says how well the groups are formed, not whether the names are right, so precision is measured separately against expert answers.${m.forced ? ' Shadow mode is forced on for this state.' : ''}</p>
+      <p class="small muted">Fitted once per state on expert-labelled labels. ${pct(m.coverage, 0)} of them get a high-confidence suggestion. Green labels are this client's; dotted ones are weak and go to an expert.${m.forced ? ' Shadow mode is forced on.' : ''}</p>
       ${unassigned}
       <div class="cluster-list">${clusters}</div>
     </section>`;
   }).join('');
-  return `<div class="page-head"><h1>Model governance</h1>
-    <p class="lede">Custom labels are clustered within each state and each cluster is named by its closest defined entry. Suggestions appear only in a state that passes every gate. Otherwise the model runs in shadow mode: it logs suggestions so precision can be measured, and people decide. Highlighted labels belong to this client (outlined ones were new to the model and joined the nearest cluster); dotted ones are weak signals that go to an expert.</p></div>
-    <p class="small muted">Model: ${esc(MODEL_VERSION)}.</p>
+  return `<div class="page-head"><h1>Model</h1>
+    <p class="lede">Suggestions show only in a state that passes every gate; otherwise the model runs in shadow mode and people decide. ${esc(MODEL_VERSION)}.</p></div>
     ${thresholdPanel(s)}
     ${panels}`;
 }
@@ -1491,7 +1478,7 @@ function viewScenarios() {
     const co = data.companies.find((c) => c.company_id === w.company);
     return co?.employees.find((e) => e.employee_id === w.employee)?.name ?? '';
   };
-  const VIEW_NAME = { review: 'Employer review', expert: 'Expert queue', golive: 'Go live', reconcile: 'Reconcile', model: 'Model governance', analysis: 'Analysis' };
+  const VIEW_NAME = { review: 'To do', expert: 'Expert queue', golive: 'Go live', reconcile: 'Go live', model: 'Model', analysis: 'Engine', audit: 'Log' };
   const groups = GROUPS.map((g) => {
     const rows = results.filter((r) => r.group === g.id).map((r) => `<tr>
         <td>${mark(r.pass ? 'pass' : 'fail')}<span class="sr-only">${r.pass ? 'Passes' : 'Fails'}</span></td>
@@ -1504,8 +1491,8 @@ function viewScenarios() {
       <div class="table-wrap"><table class="scenario-table"><thead><tr><th><span class="sr-only">Result</span></th><th>Scenario</th><th>What the check found</th><th>See it</th></tr></thead><tbody>${rows}</tbody></table></div>
     </section>`;
   }).join('');
-  return `<div class="page-head"><h1>Scenario coverage</h1>
-    <p class="lede">Every case the BRD design has to handle, including the boundary values. Each row runs a live check against the starting data when the page loads; the same checks run in the automated tests. Use the button on a row to open the client and employee it concerns.</p></div>
+  return `<div class="page-head"><h1>Scenarios</h1>
+    <p class="lede">Every case the BRD has to handle, with a live check. The same checks run in the automated tests.</p></div>
     <div class="score ${passed === results.length ? 'all' : ''}"><span class="n">${passed} of ${results.length}</span><span>scenarios pass</span></div>
     ${groups}`;
 }
@@ -1516,7 +1503,7 @@ function viewAudit(s) {
   const entries = state.audit.filter((a) => a.company_id === state.companyId);
   const rows = entries.map((a) => `<tr><td class="small">${esc(new Date(a.at).toLocaleString())}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td><td class="small muted">${esc(a.detail)}</td></tr>`).join('');
   return `<div class="page-head"><h1>Decision log</h1>
-    <p class="lede">Every decision by the employer, an expert or governance, with the model version that produced the suggestion. Export the full report with every line, its route, outcome and evidence.</p></div>
+    <p class="lede">Every decision for this client: who, when, and the rule or reason.</p></div>
     <div class="row">${HOSTED
       ? `<button class="btn primary" type="button" data-action="copy-json">Copy report (JSON)</button>
       <button class="btn" type="button" data-action="copy-csv">Copy lines (CSV)</button>
@@ -1526,7 +1513,58 @@ function viewAudit(s) {
       <button class="btn quiet" type="button" data-action="copy-json">Copy report</button>`}
     </div>
     <label class="sr-only" for="copy-box">Report JSON</label><textarea class="copy-box" id="copy-box" readonly hidden></textarea>
-    ${entries.length ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Line</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty"><strong>No decisions yet.</strong><span>Decisions on the review screen and in the expert queue appear here.</span><a class="btn" href="#review">Open employer review</a></div>'}`;
+    ${entries.length ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Line</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty"><strong>No decisions yet for this client.</strong></div>'}`;
+}
+
+// ---------- data (admin): the database, a query box and uploads ----------
+
+const EXAMPLES = [
+  ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY route\nORDER BY lines DESC'],
+  ['Who decided', 'SELECT COALESCE(decided_by, \'Nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY 1\nORDER BY lines DESC'],
+  ['Employees per client', 'SELECT c.name, COUNT(e.employee_id) AS employees\nFROM companies c LEFT JOIN employees e ON e.company_id = c.company_id\nGROUP BY c.company_id\nORDER BY c.sort'],
+  ['Ohio school taxes', 'SELECT code, name, rate, base\nFROM taxes\nWHERE type = \'school_district\'\nORDER BY code'],
+  ['Custom Desktop labels', 'SELECT c.name AS client, d.label, d.calc_rate AS rate\nFROM desktop_items d JOIN companies c ON c.company_id = d.company_id\nWHERE d.origin = \'custom\'\nORDER BY c.sort, d.sort'],
+];
+
+function viewData() {
+  syncOutcomes();
+  if (db && !query.result && !query.error) runSql(query.sql);
+  const head = `<div class="page-head"><h1>Data</h1>
+    <p class="lede">A SQLite database inside this page. It is rebuilt from the demo files on every visit; uploads stay in this browser.</p></div>`;
+  const groups = db ? tableSummary(db) : [];
+  const cards = groups.map((g) => `<section class="card" aria-labelledby="tg-${g.id}">
+      <div class="card-head"><div><h2 id="tg-${g.id}">${esc(g.title)}</h2><p class="card-sub">${esc(g.note)}</p></div></div>
+      <ul class="table-list">${g.tables.map((t) => `<li><button type="button" class="tbl" data-action="example-query" data-sql="${esc(`SELECT * FROM ${t.name} LIMIT 50`)}" title="${esc(t.columns.join(', '))}"><span class="tbl-name">${esc(t.name)}</span><span class="tbl-n">${t.rows}</span></button></li>`).join('')}</ul>
+    </section>`).join('');
+  const r = query.result;
+  const results = query.error
+    ? `<p class="query-error" role="alert">${icon('alert')}${esc(query.error)}</p>`
+    : r ? (r.columns.length
+      ? `<p class="small muted">${plural(r.total, 'row')}${r.total > r.rows.length ? `, first ${r.rows.length} shown` : ''}</p><div class="table-wrap result"><table><thead><tr>${r.columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.rows.map((row) => `<tr>${row.map((v) => `<td>${v === null ? '<span class="none">null</span>' : esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
+      : '<p class="small muted">No rows.</p>') : '';
+  const msg = uploadMsg ? `<div class="banner ${uploadMsg.tone}" id="upload-msg" tabindex="-1">${icon(uploadMsg.tone === 'good' ? 'check' : 'alert', 'lg')}<div><strong>${esc(uploadMsg.title)}</strong><ul>${uploadMsg.items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>${uploadMsg.id && data.companies.some((c) => c.company_id === uploadMsg.id) ? `<div class="row"><button class="btn" type="button" data-action="open-client" data-id="${esc(uploadMsg.id)}">Open its move</button><button class="btn quiet" type="button" data-action="company-switch" data-id="${esc(uploadMsg.id)}" data-view="analysis">See how the engine read it</button></div>` : ''}</div></div>` : '';
+  const list = uploads.length ? `<ul class="upload-list">${uploads.map((u) => `<li>${icon('file')}<span><strong>${esc(u.company.name)}</strong><span class="small muted">${esc(u.file ?? 'Uploaded file')}, ${plural(u.company.employees.length, 'employee')}</span></span><button class="btn quiet" type="button" data-action="remove-upload" data-id="${esc(u.company.company_id)}">Remove</button></li>`).join('')}</ul>` : '';
+  return `${head}
+    ${db ? '' : `<div class="banner warn">${icon('alert', 'lg')}<div><strong>The database could not start here.</strong> ${esc(dbError ?? '')} The app is reading the demo files directly; open the GitHub Pages site to use the database.</div></div>`}
+    ${db ? `<div class="data-grid">${cards}</div>` : ''}
+    <section class="card" aria-labelledby="q-h">
+      <div class="card-head"><div><h2 id="q-h">Ask the data</h2><p class="card-sub">One SELECT at a time. Click a table above to look inside it.</p></div></div>
+      <div class="card-body">
+        <div class="chips">${EXAMPLES.map(([t, sql]) => `<button type="button" class="chip-btn" data-action="example-query" data-sql="${esc(sql)}">${esc(t)}</button>`).join('')}</div>
+        <form class="query-form" data-action="run-query"><label class="sr-only" for="sql">SQL query</label><textarea id="sql" name="sql" rows="5" spellcheck="false"${db ? '' : ' disabled'}>${esc(query.sql)}</textarea><button class="btn primary" id="run-query-btn" type="submit"${db ? '' : ' disabled'}>Run query</button></form>
+        ${results}
+      </div>
+    </section>
+    <section class="card" aria-labelledby="up-h">
+      <div class="card-head"><div><h2 id="up-h">Add a Desktop file</h2><p class="card-sub">A CSV with one row per employee per payroll item. It runs through the same checks and engine as the demo clients.</p></div></div>
+      <div class="card-body">
+        <div class="row"><label class="btn primary file-btn">${icon('file')}Choose a CSV file<input type="file" accept=".csv,text/csv" data-action="upload" class="sr-only"></label><button class="btn" type="button" data-action="template">${HOSTED ? 'Copy the template' : 'Download the template'}</button></div>
+        <label class="sr-only" for="template-box">Template CSV</label><textarea class="copy-box" id="template-box" readonly hidden></textarea>
+        ${msg}
+        ${list}
+        ${fold('list', 'Columns in the file', `<table class="col-table"><tbody>${CSV_COLUMNS.map(([c, req, help]) => `<tr><td><code class="code">${esc(c)}</code></td><td>${req ? 'Required' : 'Optional'}</td><td class="small muted">${esc(help)}</td></tr>`).join('')}</tbody></table><p class="small muted">Addresses are matched to the demo address lookup. A home address it has never seen goes to an expert; a work address it has never seen stops the file.</p>`)}
+      </div>
+    </section>`;
 }
 
 // ---------- actions ----------
@@ -1593,9 +1631,54 @@ function handle(action, el) {
   const d = decisionsFor();
   const id = el.dataset?.id;
   switch (action) {
+    case 'sign-in': {
+      state.role = el.dataset.role;
+      if (state.role === 'owner') state.companyId = document.getElementById('signin-company')?.value ?? state.companyId;
+      state.detailOpen = false;
+      save();
+      afterRender = () => { window.scrollTo(0, 0); document.getElementById('main')?.focus({ preventScroll: true }); };
+      const home = `#${ROLES[state.role].tabs[0][0]}`;
+      if (location.hash === home) break;
+      location.hash = home;
+      return;
+    }
+    case 'sign-out':
+      if (moving) clearTimeout(moving.timer);
+      moving = null;
+      state.role = null;
+      save();
+      history.replaceState(null, '', location.pathname + location.search);
+      break;
+    case 'template': {
+      const text = csvTemplate(files.geocoder);
+      if (!HOSTED) { download('desktop-file-template.csv', text, 'text/csv'); return; }
+      const box = document.getElementById('template-box');
+      box.value = text;
+      box.hidden = false;
+      try { navigator.clipboard.writeText(text).then(() => toast('Template copied. Paste it into a .csv file.')).catch(() => { box.focus(); box.select(); }); } catch { box.focus(); box.select(); }
+      return;
+    }
+    case 'remove-upload': {
+      const gone = uploads.find((u) => u.company.company_id === id);
+      uploads = uploads.filter((u) => u.company.company_id !== id);
+      delete state.decisions[id];
+      saveUploads();
+      rebuildData();
+      if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies[0].company_id;
+      if (uploadMsg?.id === id) uploadMsg = null;
+      toast(`Removed ${gone?.company.name ?? 'the upload'}`);
+      break;
+    }
+    case 'run-query':
+      runSql(new FormData(el).get('sql'));
+      break;
+    case 'example-query':
+      runSql(el.dataset.sql);
+      break;
     case 'company-switch':
       state.companyId = el.dataset.id;
       toast(`Opened ${companyById().name}`);
+      if (el.dataset.view && location.hash !== `#${el.dataset.view}`) { save(); location.hash = `#${el.dataset.view}`; return; }
       break;
     case 'company':
       state.companyId = el.value;
@@ -1621,8 +1704,12 @@ function handle(action, el) {
       clearTimeout(resetTimer);
       if (moving) clearTimeout(moving.timer);
       moving = null;
-      state = freshState();
-      cache.clear();
+      state = { ...freshState(), role: state.role, companyId: state.companyId };
+      uploads = [];
+      uploadMsg = null;
+      saveUploads();
+      rebuildData();
+      if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies[0].company_id;
       toast('Demo reset to its starting data');
       break;
     }
@@ -1827,14 +1914,14 @@ function handle(action, el) {
       break;
     case 'open-scenario': {
       state.companyId = el.dataset.company;
-      const view = el.dataset.view;
+      const view = el.dataset.view === 'reconcile' ? 'golive' : el.dataset.view; // Reconcile now sits on the Go live page
       if (view === 'review' || view === 'expert') {
         state.filters[view] = 'all';
         state.detailOpen = Boolean(el.dataset.employee);
         if (el.dataset.employee) { focusEmployee = el.dataset.employee; keepDetail = true; }
       } else if (el.dataset.employee) pendingFocus = el.dataset.employee;
       save();
-      const target = `#${el.dataset.view}`;
+      const target = `#${view}`;
       if (location.hash === target) render();
       else location.hash = target;
       return;
@@ -1901,6 +1988,7 @@ app.addEventListener('click', (ev) => {
 });
 app.addEventListener('change', (ev) => {
   const el = ev.target.closest('[data-action]');
+  if (el?.dataset.action === 'upload') { uploadFile(el); return; }
   if (el && ['company', 'account', 'force-shadow', 'threshold', 'auto-rule'].includes(el.dataset.action)) handle(el.dataset.action, el);
 });
 app.addEventListener('submit', (ev) => {
@@ -1941,15 +2029,98 @@ function scrollToDetail() {
   if (window.innerWidth <= 900 || window.scrollY > top) window.scrollTo(0, Math.max(0, top));
 }
 
+// ---------- data: the database, with the demo files as the fallback ----------
+
+let SQLlib = null;
+// Rebuild the database from the demo files plus uploads, and read the engine's input back from it.
+function rebuildData() {
+  cache.clear();
+  scenarioResults = null;
+  if (SQLlib) {
+    try {
+      db?.close();
+      db = createDatabase(SQLlib, files, uploads);
+      data = readData(db);
+      return;
+    } catch (err) { dbError = err.message; db = null; }
+  }
+  data = fromFiles(files, uploads);
+}
+// Without the database (a viewer that blocks WebAssembly), the engine reads the files directly.
+function fromFiles(f, ups) {
+  const unplaced = ups.flatMap((u) => u.addresses ?? []).map((a) => ({ ...a, school_district: 'UNRESOLVED', municipality: null }));
+  return { catalog: f.catalog, geocoder: { ...f.geocoder, addresses: [...f.geocoder.addresses, ...unplaced] }, pools: f.pools, companies: [...f.companies, ...ups.map((u) => u.company)] };
+}
+
+// Write where every line ended up, and the decision log, into the outcome tables.
+function syncOutcomes() {
+  if (!db) return;
+  const lines = [];
+  for (const c of data.companies) {
+    let a;
+    try { a = analysisFor(c.company_id); } catch { continue; }
+    for (const k of effectiveAll(a, decisionsFor(c.company_id))) {
+      const e = k.decision.employer;
+      const x = k.decision.expert;
+      lines.push({
+        company_id: c.company_id, line_id: k.case_id, employee: k.employee_name, desktop_item: labelOf(k.item.label), state: k.state,
+        route: k.route, reason: k.reason ?? null, stage: k.stage,
+        online_tax: k.route === 'local_tax' ? k.proposal.map((p) => p.tax.name).join(' + ') : k.route === 'custom_entry' ? k.entry?.name ?? null : null,
+        decided_by: e ? (e.auto ? 'Rule' : 'Employer') : x ? (x.auto ? 'Rule' : 'Expert') : null,
+        rule: e?.rule ?? x?.rule ?? null,
+      });
+    }
+  }
+  writeOutcomes(db, lines, state.audit.map((a) => ({ at: a.at, company_id: a.company_id, actor: a.actor, action: a.action, target: a.target, detail: a.detail })));
+}
+
+function runSql(sql) {
+  query.sql = sql;
+  if (!db) { query.result = null; query.error = 'The database is not running here.'; return; }
+  syncOutcomes();
+  try { query.result = runQuery(db, sql); query.error = null; } catch (err) { query.result = null; query.error = err.message; }
+}
+
+async function uploadFile(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const text = await file.text();
+  const id = `U-${Date.now().toString(36).toUpperCase()}`;
+  const res = companyFromCsv(text, files.geocoder, id);
+  if (res.problems?.length) {
+    uploadMsg = { tone: 'bad', title: `${file.name} was not added`, items: res.problems };
+  } else {
+    // The engine's own file checks: a file it cannot analyse is refused with its reasons.
+    try {
+      analyseCompany(res.company, fromFiles(files, [...uploads, res]), state.settings);
+      uploads.push({ company: res.company, addresses: res.addresses, file: file.name });
+      saveUploads();
+      rebuildData();
+      const a = analysisFor(id);
+      log('Admin', 'Uploaded a Desktop file', res.company.name, file.name);
+      uploadMsg = { tone: 'good', title: `Added ${res.company.name}`, id, items: [`${plural(res.company.employees.length, 'employee')} and ${plural(a.cases.length, 'Desktop line')}: ${a.cases.filter((c) => c.route === 'local_tax').length} local tax, ${a.cases.filter((c) => c.route === 'not_a_tax').length} not a tax, ${a.cases.filter((c) => c.route === 'not_in_database').length} to an expert.`, ...a.dataIssues.map((d) => d.text)] };
+    } catch (err) {
+      if (err.name !== 'DataError') throw err;
+      uploadMsg = { tone: 'bad', title: `${file.name} was not added: the engine stops on it`, items: err.issues.map((x) => x.text) };
+    }
+  }
+  input.value = '';
+  save();
+  render();
+  document.getElementById('upload-msg')?.focus({ preventScroll: false });
+}
+
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=9d0383a0d7`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=d2301949ca`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };
     const [catalog, geocoder, pool, companies] = await Promise.all(['catalog.json', 'geocoder.json', 'label-pool.json', 'companies.json'].map(get));
-    data = { catalog, geocoder, pools: pool.pools, companies: companies.companies };
+    files = { catalog, geocoder, pools: pool.pools, poolMeta: pool.metadata, companies: companies.companies, companiesMeta: companies.metadata };
+    try { SQLlib = await loadSqlJs(); } catch (err) { dbError = err.message || 'WebAssembly is blocked here'; }
+    rebuildData();
     if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies[0].company_id;
     render();
   } catch (err) {
