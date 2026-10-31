@@ -39,6 +39,15 @@ CREATE TABLE employees (company_id TEXT NOT NULL, employee_id TEXT, name TEXT, s
 CREATE TABLE employee_addresses (company_id TEXT NOT NULL, employee_id TEXT, address_id TEXT, from_month INTEGER, sort INTEGER);
 CREATE TABLE employee_items (company_id TEXT NOT NULL, employee_id TEXT, item_id TEXT, sort INTEGER);
 
+CREATE INDEX employees_by_company ON employees (company_id);
+CREATE INDEX employee_addresses_by_company ON employee_addresses (company_id);
+CREATE INDEX employee_items_by_company ON employee_items (company_id);
+CREATE INDEX items_by_company ON desktop_items (company_id);
+CREATE INDEX worksites_by_company ON worksites (company_id);
+
+-- corrections the employer made before the move (a missing or wrong home address)
+CREATE TABLE corrections (company_id TEXT NOT NULL, employee_id TEXT, field TEXT, value TEXT, address_id TEXT, found_in_lookup INTEGER, at TEXT);
+
 -- outcomes (written by the app)
 CREATE TABLE line_outcomes (company_id TEXT, line_id TEXT, employee TEXT, desktop_item TEXT, state TEXT, route TEXT,
   reason TEXT, stage TEXT, online_tax TEXT, decided_by TEXT, rule TEXT);
@@ -47,7 +56,7 @@ CREATE TABLE decision_log (at TEXT, company_id TEXT, actor TEXT, action TEXT, ta
 
 // What each table is, for the Data page.
 export const TABLE_GROUPS = [
-  { id: 'customer', title: 'Customer data', note: 'From the Desktop file. Fictional in the demo.', tables: ['companies', 'worksites', 'employees', 'employee_addresses', 'employee_items', 'desktop_items', 'customer_addresses'] },
+  { id: 'customer', title: 'Customer data', note: 'From the Desktop files: 6 hand-made scenario clients and 60 generated businesses. Fictional.', tables: ['companies', 'worksites', 'employees', 'employee_addresses', 'employee_items', 'desktop_items', 'customer_addresses', 'corrections'] },
   { id: 'reference', title: 'Tax reference', note: 'Ohio codes and rates are real and public. The address lookup stands in for Intuit\'s tax service.', tables: ['states', 'taxes', 'no_tax_districts', 'state_place_names', 'defined_entries', 'defined_entry_states', 'address_lookup', 'label_pool'] },
   { id: 'outcome', title: 'Outcomes', note: 'Written by the app: where every line went, and who decided.', tables: ['line_outcomes', 'decision_log'] },
 ];
@@ -93,7 +102,7 @@ const opt = (o, k, v) => { if (v !== null && v !== undefined) o[k] = v; return o
 
 // ---------- writing ----------
 
-export function createDatabase(SQL, data, uploads = []) {
+export function createDatabase(SQL, data, uploads = [], generated = null) {
   const db = new SQL.Database();
   db.run(SCHEMA);
   db.run('BEGIN');
@@ -113,7 +122,12 @@ export function createDatabase(SQL, data, uploads = []) {
   insert(db, 'address_lookup', data.geocoder.addresses.map((a, i) => ({ address_id: a.address_id, line1: a.line1, city: a.city, state: a.state, zip: a.zip, school_district: a.school_district, municipality: a.municipality, sort: i })));
   insert(db, 'label_pool', Object.entries(data.pools).flatMap(([code, list]) => list.map((p, i) => ({ state_code: code, label: p.label, expert_label: p.expert_label, sort: i }))));
   data.companies.forEach((c, i) => insertCompany(db, c, 'demo', i));
-  uploads.forEach((u, i) => insertCompany(db, u.company, 'upload', 1000 + i, u.addresses));
+  if (generated) {
+    // Generated addresses are ones the lookup service knows, like the demo ones.
+    insert(db, 'address_lookup', generated.addresses.map((a, i) => ({ address_id: a.address_id, line1: a.line1, city: a.city, state: a.state, zip: a.zip, school_district: a.school_district, municipality: a.municipality, sort: 100000 + i })));
+    generated.companies.forEach((c, i) => insertCompany(db, c, 'generated', 100 + i));
+  }
+  uploads.forEach((u, i) => insertCompany(db, u.company, 'upload', 10000 + i, u.addresses));
   db.run('COMMIT');
   return db;
 }
@@ -138,6 +152,7 @@ export function insertCompany(db, c, source, sort, addresses = []) {
 // ---------- reading: the engine's input, rebuilt from SQL ----------
 
 export function readData(db) {
+  // Read everything once and group in memory: one query per table, however many companies there are.
   const info = Object.fromEntries(all(db, 'SELECT dataset, info_json FROM dataset_info').map((r) => [r.dataset, JSON.parse(r.info_json)]));
   const states = {};
   for (const s of all(db, 'SELECT * FROM states ORDER BY sort')) {
@@ -167,15 +182,28 @@ export function readData(db) {
   const geocoder = { metadata: info.geocoder, addresses: [...lookup, ...unplaced] };
   const pools = {};
   for (const r of all(db, 'SELECT state_code, label, expert_label FROM label_pool ORDER BY state_code, sort')) (pools[r.state_code] ??= []).push({ label: r.label, expert_label: r.expert_label });
-  const companies = all(db, 'SELECT * FROM companies ORDER BY sort').map((c) => readCompany(db, c));
+  const companies = readCompanies(db);
   return { catalog, geocoder, pools, poolMeta: info.label_pool, companies, companiesMeta: info.companies };
 }
 
-function readCompany(db, c) {
-  const id = c.company_id;
-  const out = { company_id: id, name: c.name, plan: c.plan, migration_month: c.migration_month };
-  out.worksites = all(db, 'SELECT site_id, name, address_id FROM worksites WHERE company_id = ? ORDER BY sort', [id]);
-  out.items = all(db, 'SELECT * FROM desktop_items WHERE company_id = ? ORDER BY sort', [id]).map((r) => {
+const groupBy = (rows) => { const m = new Map(); for (const r of rows) { const list = m.get(r.company_id); if (list) list.push(r); else m.set(r.company_id, [r]); } return m; };
+
+// All companies, or just one (after a correction), rebuilt from the customer tables.
+export function readCompanies(db, onlyId = null) {
+  const where = onlyId ? ' WHERE company_id = ?' : '';
+  const args = onlyId ? [onlyId] : [];
+  const sites = groupBy(all(db, `SELECT company_id, site_id, name, address_id FROM worksites${where} ORDER BY company_id, sort`, args));
+  const items = groupBy(all(db, `SELECT * FROM desktop_items${where} ORDER BY company_id, sort`, args));
+  const emps = groupBy(all(db, `SELECT * FROM employees${where} ORDER BY company_id, sort`, args));
+  const addrs = groupBy(all(db, `SELECT company_id, employee_id, address_id, from_month FROM employee_addresses${where} ORDER BY company_id, sort`, args));
+  const eitems = groupBy(all(db, `SELECT company_id, employee_id, item_id FROM employee_items${where} ORDER BY company_id, sort`, args));
+  return all(db, `SELECT * FROM companies${where} ORDER BY sort`, args).map((c) => readCompany(c, sites.get(c.company_id) ?? [], items.get(c.company_id) ?? [], emps.get(c.company_id) ?? [], addrs.get(c.company_id) ?? [], eitems.get(c.company_id) ?? []));
+}
+
+function readCompany(c, siteRows, itemRows, empRows, addrRows, eitemRows) {
+  const out = { company_id: c.company_id, name: c.name, plan: c.plan, migration_month: c.migration_month };
+  out.worksites = siteRows.map((w) => ({ site_id: w.site_id, name: w.name, address_id: w.address_id }));
+  out.items = itemRows.map((r) => {
     const it = { item_id: r.item_id, label: r.label, law_id: r.law_id, origin: r.origin, item_type: r.item_type, tracking_type: r.tracking_type };
     it.calc = r.calc_kind === 'flat_annual' ? { kind: r.calc_kind, amount: r.calc_amount } : { kind: r.calc_kind, rate: r.calc_rate };
     it.agency = r.agency;
@@ -185,12 +213,12 @@ function readCompany(db, c) {
     for (const k of (r.null_fields ?? '').split(',').filter(Boolean)) it[k] = null;
     return it;
   });
-  const addr = all(db, 'SELECT employee_id, address_id, from_month FROM employee_addresses WHERE company_id = ? ORDER BY sort', [id]);
-  const items = all(db, 'SELECT employee_id, item_id FROM employee_items WHERE company_id = ? ORDER BY sort', [id]);
-  out.employees = all(db, 'SELECT * FROM employees WHERE company_id = ? ORDER BY sort', [id]).map((r) => {
+  const addrBy = groupBy(addrRows.map((a) => ({ ...a, company_id: a.employee_id })));
+  const itemBy = groupBy(eitemRows.map((a) => ({ ...a, company_id: a.employee_id })));
+  out.employees = empRows.map((r) => {
     const e = { employee_id: r.employee_id, name: r.name, site_id: r.site_id, monthly_wages: r.monthly_wages };
-    e.addresses = addr.filter((a) => a.employee_id === r.employee_id).map((a) => ({ address_id: a.address_id, from_month: a.from_month }));
-    e.items = items.filter((x) => x.employee_id === r.employee_id).map((x) => x.item_id);
+    e.addresses = (addrBy.get(r.employee_id) ?? []).map((a) => ({ address_id: a.address_id, from_month: a.from_month }));
+    e.items = (itemBy.get(r.employee_id) ?? []).map((x) => x.item_id);
     if (r.remote !== null) e.remote = Boolean(r.remote);
     opt(e, 'hired_month', r.hired_month);
     opt(e, 'left_month', r.left_month);
@@ -198,6 +226,28 @@ function readCompany(db, c) {
   });
   opt(out, 'description', c.description);
   return out;
+}
+
+// ---------- corrections: the employer fixes a missing or wrong home address ----------
+
+export const addressKey = (line1, zip) => `${norm(line1)}|${norm(zip)}`;
+export function lookupIndex(addresses) {
+  return new Map(addresses.filter((a) => !a.missing && a.school_district !== 'UNRESOLVED').map((a) => [addressKey(a.line1, a.zip), a.address_id]));
+}
+
+// A corrected address replaces the employee's home address for the whole year. If the lookup knows it,
+// the engine can place it; if not, it is kept as customer data and the lookup cannot place it.
+export function applyCorrection(db, c, index) {
+  const found = index.get(addressKey(c.line1, c.zip));
+  const addressId = found ?? `${c.company_id}-C-${c.employee_id}`;
+  if (!found) {
+    db.run('DELETE FROM customer_addresses WHERE company_id = ? AND address_id = ?', [c.company_id, addressId]);
+    insert(db, 'customer_addresses', [{ company_id: c.company_id, address_id: addressId, line1: c.line1, city: c.city, state: c.state, zip: c.zip }]);
+  }
+  db.run('DELETE FROM employee_addresses WHERE company_id = ? AND employee_id = ?', [c.company_id, c.employee_id]);
+  insert(db, 'employee_addresses', [{ company_id: c.company_id, employee_id: c.employee_id, address_id: addressId, from_month: 1, sort: 0 }]);
+  insert(db, 'corrections', [{ company_id: c.company_id, employee_id: c.employee_id, field: 'home_address', value: [c.line1, c.city, c.state, c.zip].filter(Boolean).join(', '), address_id: addressId, found_in_lookup: found ? 1 : 0, at: c.at }]);
+  return { addressId, found: Boolean(found) };
 }
 
 // ---------- outcomes ----------

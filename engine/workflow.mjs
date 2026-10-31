@@ -1,6 +1,6 @@
 // Decisions by employers and experts, the go-live checks, W-2 history and reconciliation.
 // Nothing here goes live without an employer decision (BRD: never activate without confirmation).
-import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs?v=d2301949ca';
+import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs?v=434c75f1ea';
 
 const usd = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
@@ -18,6 +18,8 @@ export function emptyDecisions() {
 }
 
 const RATE_OK = new Set(['match', 'no_history']);
+/** Reasons a line waits for a home address, which only the employer can give. */
+export const NEEDS_ADDRESS = new Set(['no_address', 'address_unresolved']);
 
 // The case as it stands after any expert and employer decisions.
 export function effectiveCase(c, decisions, analysis) {
@@ -380,7 +382,11 @@ export function exceptions(analysis, decisions) {
   const out = [];
   const cases = effectiveAll(analysis, decisions);
   for (const c of cases) {
-    if (c.stage === 'with_expert') out.push({ kind: 'case', case_id: c.case_id, employee_id: c.employee_id, employee: c.employee_name, item: c.item.label, reason: c.reason, owner: 'expert' });
+    // A line that waits for a home address waits for the employer: only they can give it. An expert can still map it.
+    if (c.stage === 'with_expert') {
+      const needsAddress = NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert;
+      out.push({ kind: 'case', case_id: c.case_id, employee_id: c.employee_id, employee: c.employee_name, item: c.item.label, reason: c.reason, owner: needsAddress ? 'employer' : 'expert', ...(needsAddress ? { needs: 'address' } : {}) });
+    }
     else if (c.stage === 'awaiting_employer') out.push({ kind: 'case', case_id: c.case_id, employee_id: c.employee_id, employee: c.employee_name, item: c.item.label, reason: decisions.cases[c.case_id]?.hold ? 'held' : 'rule_off', owner: 'employer' });
   }
   for (const g of analysis.gaps) {
