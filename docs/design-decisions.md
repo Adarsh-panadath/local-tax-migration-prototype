@@ -95,6 +95,19 @@ Never automated: a weak or missing label signal, conflicting evidence, a missing
 
 Every automatic step is logged with its rule. Any of them can be undone; an undone line is held for a person and automation skips it from then on. Each rule can be switched off.
 
+## 5b. How a customer starts: the move
+
+*Added by the prototype.* Intuit's own Desktop-to-Online move is a short wizard in Desktop (start, choose what moves, export), followed by a welcome page that lists what matched and an exception report for what did not. Its help pages describe employees, pay items and year-to-date totals being copied, but none of them say how local taxes are mapped; the local tax article has the employer pick each employee's local taxes by hand. The move copies the data but does not interpret it.
+
+The prototype keeps that shape and puts the local tax step inside it:
+
+1. **Start**: what moves, and the client's loose Desktop labels next to the exact taxes its addresses call for.
+2. **Check**: before the move, what the employer's rules will settle, what stays for a person and why, and the rules to approve.
+3. **Move**: the rules run (the same `automate` as everywhere else).
+4. **Summary**: settled by rule, waiting for a person, an exception report that links to each record, and the steps up to the first Online payroll.
+
+The screens are our own design and carry no Intuit branding. The copy of employees, pay items and totals is simulated and says so on screen; the local tax checks are real.
+
 ## 6. Go-live checks
 
 Four checks must pass:

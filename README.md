@@ -102,11 +102,19 @@ Boundary values are tested exactly: a gate value equal to its threshold passes (
 
 The interface follows the team's Google Stitch mockup:
 
-- **Top bar:** a deep-green band with the client picker and the five migration steps. A step shows a tick once nothing is left in it, so the tabs double as a progress tracker; amber counts show what is waiting.
+- **Move** (the start page): the way a customer begins, modelled on the shape of Intuit's own Desktop-to-Online move (a short wizard, then a summary with an exception report). The screens are our own design, not a copy of Intuit's.
+  1. **Start:** what moves. Employees, pay items and year-to-date totals are copied as they are. Local taxes are checked line by line. A panel shows the client's loose Desktop labels next to the exact taxes its addresses call for.
+  2. **Check:** before anything moves, how many items the rules will settle, which stay for a person and why, and the seven rules to approve. Desktop file problems are listed here too.
+  3. **Move:** a short sequence that shows each step with its real result (employees, expected taxes, routes, items settled). It is skipped for people who prefer reduced motion.
+  4. **Summary:** settled by rule, waiting for a person, an exception report with a link to each record, and what happens next up to the first Online payroll.
+
+  In the demo the copying is simulated; the local tax checks and the rules run for real, through the same engine as every other screen.
+- **Top bar:** a deep-green band with the client picker and the six steps (Move, Analysis, Review, Expert, Go live, Reconcile). A step shows a tick once nothing is left in it, so the tabs double as a progress tracker; amber counts show what is waiting. On a phone the client picker and Reset share one row with the logo, and the current step scrolls into view.
 - **Status line:** one count for the whole client: items settled out of Desktop lines plus expected taxes nobody withheld, then who holds the rest (the employer or an expert), the model mode and links to the oversight pages.
 - **Review** and **Expert** are list-and-detail workspaces:
   - On the left is a searchable record list with filter chips, grouped by employee. Each row shows the Desktop item and where it is heading.
   - On the right is the selected record. It shows the target tax and the next step, a checks banner, and a Desktop-versus-Online table. Below that come the supporting evidence (addresses and expected taxes), how the system decided, the model suggestion and the decision history. A sticky action bar sits at the bottom.
+- **All clients:** one row per client with its status, the share automated and what is left for a person; Open goes to that client's move summary.
 - **On a phone:** the list opens into the record, with a back link and the action bar fixed at the bottom. The clients table becomes one block per client.
 
 Colour always means the same thing: green is settled or ready, amber is waiting for the employer, blue is with an expert, red is a gap or a tax that is not owed.
@@ -125,16 +133,16 @@ Keyboard: a skip link leads to the main content, focus moves to the record you o
 
 ## Demo script (about five minutes)
 
-The demo opens on **Fairfield Hardware Supply** (Premium plan, 8 employees, 17 Desktop lines).
+The demo opens on the **Move** page for **Fairfield Hardware Supply** (Premium plan, 8 employees, 17 Desktop lines).
 
-1. **Analysis**: the Automatic migration panel says 16 of 18 items can be settled by rule. Click **Run automatic migration**.
+1. **Move**: click **Get started**. The check says 16 of 18 items can be settled by rule and names the two that stay for an expert. Click **Move to Online payroll**; the summary shows the exception report. (The same run is available as **Run automatic migration** on the Analysis page.)
    - Settled: the 11 lines that were ready to confirm (on the expected list, rate equal), Priya Shah at the official 1.0% rate (Desktop over-withheld $207), Sara Lee's union dues, Raj Patel's missing Teays Valley tax ($648 back tax flagged), and Mike Brown's school tax (not owed in Columbus City Schools).
    - Left for a person: Tom Reed and Kevin O'Neil.
 2. **Expert**: mark Kevin O'Neil's "Wage Garnishment" as not a tax (Desktop calls it a tax, the label says garnishment), and map Tom Reed's "Local Tax" to Lancaster CSD once his address is known.
 3. Automation accepts both, passes the four go-live checks ($12,063.60 tie-out), goes live and reconciles: 4 taxes, $3,428.70 for the quarter, no expected tax missing.
 4. **Go live** shows the W-2 boxes; **Decision log** shows each automatic step with its rule.
-5. **All clients**: **Run automation for every client** settles 86% across the six clients and leaves 10 exceptions (Fairfield's two were decided in step 2).
-6. To show the manual path instead, open **Review** before running automation: every record has its own Confirm button.
+5. **All clients**: **Run automation for every client** settles 86% across the six clients and leaves 10 exceptions (Fairfield's two were decided in step 2). **Open** on any client shows its move summary.
+6. To show the manual path instead, open **Review** before moving: every record has its own Confirm button.
 7. **Model governance**: Ohio passes every gate (silhouette 0.53, precision 100%, 53 labels). Pennsylvania stays in shadow mode. In **Try the gates**, set the silhouette threshold to 0.53 and Ohio drops to shadow mode (its score is 0.528); set it to 0.52 and suggestions come back.
 8. **Scenario coverage**: 76 of 76 pass. Open any row to see the case in the app.
 9. **Decision log**: every action, with the JSON and CSV export.
