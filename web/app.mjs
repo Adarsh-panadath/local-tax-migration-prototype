@@ -5,7 +5,7 @@ import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Prev
 import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs';
 import { buildReport, casesCSV } from './report.mjs';
 import { GROUPS, runScenarios } from './scenarios.mjs';
-import { loadSqlJs, createDatabase, readData, readCompanies, writeOutcomes, tableSummary, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs';
+import { loadSqlJs, createDatabase, readData, readCompanies, insertCompany, writeWork, workRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs';
 import { generateBusinesses, SEED } from './generate.mjs';
 import { runLab, KEY_NAMES } from './mllab.mjs';
 
@@ -46,7 +46,7 @@ let db = null;              // the in-browser SQLite database (null if it could 
 let dbError = null;
 let uploads = loadUploads(); // Desktop files uploaded on the Data page: [{ company, addresses }]
 let uploadMsg = null;       // the last upload's result: { tone, title, items }
-let query = { sql: 'SELECT route, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY route\nORDER BY lines DESC', result: null, error: null };
+let query = { sql: 'SELECT route, COUNT(*) AS lines\nFROM line_results\nGROUP BY route\nORDER BY lines DESC', result: null, error: null };
 let generated = null;       // the synthetic businesses (100+ employees each), made from a fixed seed on every visit
 let lookupIdx = null;       // address lookup by street and ZIP, for addresses the employer adds
 const previews = new Map(); // one row per business for the portfolio: what the rules settle and what is left
@@ -1943,27 +1943,73 @@ function viewAudit(s) {
 // ---------- data (admin): the database, a query box and uploads ----------
 
 const EXAMPLES = [
-  ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY route\nORDER BY lines DESC'],
-  ['Who decided', 'SELECT COALESCE(decided_by, \'Nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM line_outcomes\nGROUP BY 1\nORDER BY lines DESC'],
+  ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM line_results\nGROUP BY route\nORDER BY lines DESC'],
+  ['Who decided', 'SELECT COALESCE(decided_by, \'nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM line_results\nGROUP BY 1\nORDER BY lines DESC'],
+  ['One line across the keys', 'SELECT e.name AS employee, p.label AS desktop_item, a.city, a.school_district, r.route, r.online_tax\nFROM desktop_lines l\nJOIN employees e ON e.company_id = l.company_id AND e.employee_id = l.employee_id\nJOIN payroll_items p ON p.company_id = l.company_id AND p.item_id = l.item_id\nJOIN employee_addresses h ON h.company_id = l.company_id AND h.employee_id = l.employee_id\nJOIN addresses a ON a.address_id = h.address_id\nLEFT JOIN line_results r ON r.company_id = l.company_id AND r.employee_id = l.employee_id AND r.item_id = l.item_id\nWHERE l.company_id = \'G-001\'\nLIMIT 50'],
+  ['Owed, not withheld', 'SELECT c.name AS business, e.name AS employee, t.name AS tax, x.months\nFROM expected_taxes x\nJOIN companies c ON c.company_id = x.company_id\nJOIN employees e ON e.company_id = x.company_id AND e.employee_id = x.employee_id\nJOIN taxes t ON t.tax_id = x.tax_id\nWHERE x.gap = 1\nORDER BY c.sort\nLIMIT 100'],
+  ['Open lines by reason', 'SELECT reason, COUNT(*) AS lines\nFROM line_results\nWHERE stage = \'with_expert\'\nGROUP BY reason\nORDER BY lines DESC'],
   ['Biggest businesses', 'SELECT c.name, c.source, COUNT(e.employee_id) AS employees\nFROM companies c LEFT JOIN employees e ON e.company_id = c.company_id\nGROUP BY c.company_id\nORDER BY employees DESC\nLIMIT 15'],
-  ['Open lines by reason', 'SELECT reason, COUNT(*) AS lines\nFROM line_outcomes\nWHERE stage = \'with_expert\'\nGROUP BY reason\nORDER BY lines DESC'],
-  ['Added addresses', 'SELECT c.name, k.employee_id, k.value, k.found_in_lookup, k.at\nFROM corrections k JOIN companies c ON c.company_id = k.company_id\nORDER BY k.at DESC'],
-  ['Ohio school taxes', 'SELECT code, name, rate, base\nFROM taxes\nWHERE type = \'school_district\'\nORDER BY code'],
-  ['Custom Desktop labels', 'SELECT c.name AS client, d.label, d.calc_rate AS rate\nFROM desktop_items d JOIN companies c ON c.company_id = d.company_id\nWHERE d.origin = \'custom\'\nORDER BY c.sort, d.sort'],
+  ['Problems in Desktop files', 'SELECT c.name AS business, i.employee_id, i.kind, i.value\nFROM import_issues i JOIN companies c ON c.company_id = i.company_id'],
+  ['Added addresses', 'SELECT c.name AS business, k.employee_id, k.value, k.found_in_lookup, k.at\nFROM corrections k JOIN companies c ON c.company_id = k.company_id\nORDER BY k.at DESC'],
 ];
+const LAYER_NO = { reference: 1, source: 2, work: 3, audit: 4 };
+let schemaSel = 'employees';  // the table open in the schema view
+const ruleResults = {};      // the database's answer to each rule check
+
+// The schema, read from the database itself: four layers of tables, then one table in detail.
+function schemaCard(groups) {
+  const layers = groups.map((g) => `<div class="layer layer-${g.id}">
+      <div class="layer-head"><span class="layer-n">${LAYER_NO[g.id]}</span><div><strong>${esc(g.title)}</strong><span>${esc(g.owner)}</span></div></div>
+      <ul class="layer-tables">${g.tables.map((t) => `<li><button type="button" class="tbl" data-action="schema-table" data-key="${esc(t.name)}"${t.name === schemaSel ? ' aria-current="true"' : ''}><span class="tbl-name">${esc(t.name)}</span><span class="tbl-n">${num(t.rows)}</span></button></li>`).join('')}</ul>
+    </div>`).join('');
+  const t = describeTable(db, schemaSel) ?? describeTable(db, 'employees');
+  const layer = groups.find((g) => g.tables.some((x) => x.name === t.name));
+  const keyOf = (c) => [c.pk ? '<span class="key pk">PK</span>' : '', c.links.length ? '<span class="key fk">FK</span>' : ''].join('');
+  const cols = t.columns.map((c) => `<tr><td><code class="code">${esc(c.name)}</code></td><td class="small">${esc((c.type || 'TEXT').toLowerCase())}</td><td>${keyOf(c) || '<span class="muted">-</span>'}</td><td class="small">${c.notNull ? 'Yes' : '<span class="muted">No</span>'}</td><td>${c.links.map((x) => `<button type="button" class="link-tbl" data-action="schema-table" data-key="${esc(x)}">${esc(x)}</button>`).join(' ') || '<span class="muted">-</span>'}</td></tr>`).join('');
+  const fks = t.foreignKeys.map((f) => `<li><code class="code">${esc(f.from.join(', '))}</code> must match <button type="button" class="link-tbl" data-action="schema-table" data-key="${esc(f.table)}">${esc(f.table)}</button> <code class="code">${esc(f.to.join(', '))}</code></li>`).join('');
+  return `<section class="card" aria-labelledby="schema-h">
+    <div class="card-head"><div><h2 id="schema-h">Schema</h2><p class="card-sub">The blueprint: ${groups.reduce((n, g) => n + g.tables.length, 0)} tables in four layers. Click a table to see its columns, keys and rules.</p></div>
+      <div class="row">${HOSTED ? '<button class="btn" type="button" data-action="copy-schema">Copy schema.sql</button>' : `<button class="btn" type="button" data-action="download-schema">schema.sql</button><button class="btn primary" type="button" data-action="download-db">${icon('file')}Download the database</button>`}</div></div>
+    <div class="card-body">
+      <div class="layers">${layers}</div>
+      <div class="tdetail" id="tdetail" tabindex="-1">
+        <div class="tdetail-head"><div><h3><code>${esc(t.name)}</code></h3><p class="small muted">Layer ${LAYER_NO[layer.id]}, ${esc(layer.title.toLowerCase())}. ${plural(t.rows, 'row')}.</p></div><button class="btn quiet" type="button" data-action="example-query" data-sql="${esc(`SELECT * FROM ${t.name} LIMIT 50`)}">Look inside</button></div>
+        <p class="tdetail-note">${esc(TABLE_NOTES[t.name] ?? '')}</p>
+        <div class="table-wrap"><table class="col-table"><thead><tr><th>Column</th><th>Type</th><th>Key</th><th>Required</th><th>Links to</th></tr></thead><tbody>${cols}</tbody></table></div>
+        <div class="tdetail-links">
+          ${fks ? `<div><span class="label">Foreign keys</span><ul class="fk-list">${fks}</ul></div>` : '<div><span class="label">Foreign keys</span><p class="small muted">None: nothing else has to exist first.</p></div>'}
+          <div><span class="label">Rules</span>${t.checks.length ? `<ul class="fk-list">${t.checks.map((c) => `<li><code class="code wrap">${esc(c)}</code></li>`).join('')}</ul>` : '<p class="small muted">Keys only.</p>'}</div>
+          <div><span class="label">Linked from</span>${t.linkedFrom.length ? `<p class="link-row">${t.linkedFrom.map((x) => `<button type="button" class="link-tbl" data-action="schema-table" data-key="${esc(x)}">${esc(x)}</button>`).join(' ')}</p>` : '<p class="small muted">No other table points here.</p>'}</div>
+        </div>
+        ${fold('file', 'The CREATE TABLE statement', `<pre class="sql-pre">${esc(t.sql)}</pre>`)}
+      </div>
+      <label class="sr-only" for="schema-box">schema.sql</label><textarea class="copy-box" id="schema-box" readonly hidden></textarea>
+    </div>
+    ${fold('layers', 'Diagram of the main tables', '<img class="erd" src="./schema-diagram.svg" alt="Entity-relationship diagram of the main tables: companies, worksites, employees, employee addresses, addresses, payroll items, Desktop lines, taxes, expected taxes, line results and decisions, with their primary and foreign keys." loading="lazy" width="1304" height="1475">')}
+  </section>`;
+}
+
+// Proof that the rules are in the database, not only in the app.
+function rulesCard() {
+  const rows = RULE_CHECKS.map((c) => {
+    const r = ruleResults[c.id];
+    const answer = r ? (r.refused ? `<span class="rule-out bad">${icon('x')}Refused: ${esc(r.refused)}</span>` : `<span class="rule-out warn">${icon('alert')}Accepted, then rolled back</span>`) : '';
+    return `<li><div class="rule-text"><strong>${esc(c.label)}</strong><span class="small muted">${esc(c.rule)} rule</span>${r ? `<code class="sql-line">${esc(c.sql)}</code>${answer}` : ''}</div><button class="btn" type="button" data-action="try-rule" data-key="${c.id}">Try it</button></li>`;
+  }).join('');
+  return `<section class="card" aria-labelledby="rules-h">
+    <div class="card-head"><div><h2 id="rules-h">The database checks the data itself</h2><p class="card-sub">Each button tries to break one rule. The database refuses it; nothing changes.</p></div><button class="btn quiet" type="button" data-action="try-rule" data-key="all">Try all</button></div>
+    <div class="card-body"><ul class="rule-list">${rows}</ul></div>
+  </section>`;
+}
 
 function viewData() {
   const head = `<div class="page-head"><h1>Data</h1>
-    <p class="lede">A SQLite database inside this page, rebuilt on every visit from the demo files and the generated businesses. Uploads and added addresses stay in this browser.</p></div>`;
-  // The outcome tables need every business analysed first.
+    <p class="lede">A real SQLite database inside this page, with its keys and rules switched on. It is rebuilt on every visit; uploads and added addresses stay in this browser.</p></div>`;
+  // The work tables need every business analysed first.
   if (db && unchecked().length) { warmUp(); return head + warmPanel(); }
-  syncOutcomes();
+  syncWork();
   if (db && !query.result && !query.error) runSql(query.sql);
   const groups = db ? tableSummary(db) : [];
-  const cards = groups.map((g) => `<section class="card" aria-labelledby="tg-${g.id}">
-      <div class="card-head"><div><h2 id="tg-${g.id}">${esc(g.title)}</h2><p class="card-sub">${esc(g.note)}</p></div></div>
-      <ul class="table-list">${g.tables.map((t) => `<li><button type="button" class="tbl" data-action="example-query" data-sql="${esc(`SELECT * FROM ${t.name} LIMIT 50`)}" title="${esc(t.columns.join(', '))}"><span class="tbl-name">${esc(t.name)}</span><span class="tbl-n">${t.rows}</span></button></li>`).join('')}</ul>
-    </section>`).join('');
   const r = query.result;
   const results = query.error
     ? `<p class="query-error" role="alert">${icon('alert')}${esc(query.error)}</p>`
@@ -1974,9 +2020,9 @@ function viewData() {
   const list = uploads.length ? `<ul class="upload-list">${uploads.map((u) => `<li>${icon('file')}<span><strong>${esc(u.company.name)}</strong><span class="small muted">${esc(u.file ?? 'Uploaded file')}, ${plural(u.company.employees.length, 'employee')}</span></span><button class="btn quiet" type="button" data-action="remove-upload" data-id="${esc(u.company.company_id)}">Remove</button></li>`).join('')}</ul>` : '';
   return `${head}
     ${db ? '' : `<div class="banner warn">${icon('alert', 'lg')}<div><strong>The database could not start here.</strong> ${esc(dbError ?? '')} The app is reading the demo files directly; open the GitHub Pages site to use the database.</div></div>`}
-    ${db ? `<div class="data-grid">${cards}</div>` : ''}
+    ${db ? schemaCard(groups) + rulesCard() : ''}
     <section class="card" aria-labelledby="q-h">
-      <div class="card-head"><div><h2 id="q-h">Ask the data</h2><p class="card-sub">One SELECT at a time. Click a table above to look inside it.</p></div></div>
+      <div class="card-head"><div><h2 id="q-h">Ask the data</h2><p class="card-sub">One SELECT at a time; the database stays read-only here.</p></div></div>
       <div class="card-body">
         <div class="chips">${EXAMPLES.map(([t, sql]) => `<button type="button" class="chip-btn" data-action="example-query" data-sql="${esc(sql)}">${esc(t)}</button>`).join('')}</div>
         <form class="query-form" data-action="run-query"><label class="sr-only" for="sql">SQL query</label><textarea id="sql" name="sql" rows="5" spellcheck="false"${db ? '' : ' disabled'}>${esc(query.sql)}</textarea><button class="btn primary" id="run-query-btn" type="submit"${db ? '' : ' disabled'}>Run query</button></form>
@@ -2049,7 +2095,7 @@ function download(name, text, type) {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    toast(`Saving ${name}. If nothing downloads here, use Copy report.`);
+    toast(`Saving ${name}.`);
   } catch {
     toast('Downloads are blocked here. Use Copy report instead.');
   }
@@ -2101,6 +2147,30 @@ function handle(action, el) {
     case 'run-query':
       runSql(new FormData(el).get('sql'));
       break;
+    case 'schema-table':
+      schemaSel = el.dataset.key;
+      afterRender = () => { const d = document.getElementById('tdetail'); if (!d) return; if (d.getBoundingClientRect().top < 0 || d.getBoundingClientRect().top > window.innerHeight * 0.6) d.scrollIntoView({ block: 'start' }); if (byKeyboard) d.focus({ preventScroll: true }); };
+      break;
+    case 'try-rule':
+      if (!db) return;
+      for (const c of RULE_CHECKS) if (el.dataset.key === 'all' || el.dataset.key === c.id) ruleResults[c.id] = tryRule(db, c.id);
+      break;
+    case 'download-db': {
+      if (!db) return;
+      syncWork();
+      download('local-tax-migration.sqlite', exportDatabase(db), 'application/vnd.sqlite3');
+      return;
+    }
+    case 'download-schema':
+      download('schema.sql', SCHEMA.trimStart(), 'text/plain');
+      return;
+    case 'copy-schema': {
+      const box = document.getElementById('schema-box');
+      const text = SCHEMA.trimStart();
+      const fallback = () => { box.value = text; box.hidden = false; box.focus(); box.select(); toast('Copying is blocked here. The schema is selected below; copy it manually.'); };
+      try { navigator.clipboard.writeText(text).then(() => toast('schema.sql copied to the clipboard')).catch(fallback); } catch { fallback(); }
+      return;
+    }
     case 'example-query':
       runSql(el.dataset.sql);
       break;
@@ -2585,35 +2655,20 @@ function fromFiles(f, ups, gen = generated) {
   };
 }
 
-// Write where every line ended up, and the decision log, into the outcome tables.
-function syncOutcomes() {
+// Write the work and audit tables: the engine's results for every business, every decision and the log.
+// Only when something changed since the last write.
+function syncWork() {
   if (!db) return;
-  const key = JSON.stringify([settingsKey(), data.companies.length, state.decisions, state.audit.length, state.audit[0]?.at ?? '']);
+  const key = JSON.stringify([settingsKey(), data.companies.length, state.decisions, state.audit.length, state.audit[0]?.at ?? '', state.corrections.length]);
   if (key === outcomesKey) return;
-  const lines = [];
-  for (const c of data.companies) {
-    let a;
-    try { a = analysisFor(c.company_id); } catch { continue; }
-    for (const k of effectiveAll(a, peekDecisions(c.company_id))) {
-      const e = k.decision.employer;
-      const x = k.decision.expert;
-      lines.push({
-        company_id: c.company_id, line_id: k.case_id, employee: k.employee_name, desktop_item: labelOf(k.item.label), state: k.state,
-        route: k.route, reason: k.reason ?? null, stage: k.stage,
-        online_tax: k.route === 'local_tax' ? k.proposal.map((p) => p.tax.name).join(' + ') : k.route === 'custom_entry' ? k.entry?.name ?? null : null,
-        decided_by: e ? (e.auto ? 'Rule' : 'Employer') : x ? (x.auto ? 'Rule' : 'Expert') : null,
-        rule: e?.rule ?? x?.rule ?? null,
-      });
-    }
-  }
-  writeOutcomes(db, lines, state.audit.map((a) => ({ at: a.at, company_id: a.company_id, actor: a.actor, action: a.action, target: a.target, detail: a.detail })));
+  writeWork(db, workRows({ companies: data.companies, analysisOf: (id) => analysisFor(id), decisionsOf: peekDecisions, audit: state.audit, modelVersion: MODEL_VERSION }));
   outcomesKey = key;
 }
 
 function runSql(sql) {
   query.sql = sql;
   if (!db) { query.result = null; query.error = 'The database is not running here.'; return; }
-  syncOutcomes();
+  syncWork();
   try { query.result = runQuery(db, sql); query.error = null; } catch (err) { query.result = null; query.error = err.message; }
 }
 
@@ -2629,6 +2684,21 @@ async function uploadFile(input) {
     // The engine's own file checks: a file it cannot analyse is refused with its reasons.
     try {
       analyseCompany(res.company, fromFiles(files, [...uploads, res]), state.settings);
+      // Then the database's keys and rules, tried inside a savepoint that is always rolled back.
+      let refused = null;
+      if (db) {
+        db.run('SAVEPOINT upload_check');
+        try { insertCompany(db, res.company, 'upload', 99999, res.addresses); } catch (err) { refused = err.message; }
+        db.run('ROLLBACK TO upload_check');
+        db.run('RELEASE upload_check');
+      }
+      if (refused) {
+        uploadMsg = { tone: 'bad', title: `${file.name} was not added: the database refused it`, items: [refused] };
+        input.value = '';
+        render();
+        document.getElementById('upload-msg')?.focus({ preventScroll: false });
+        return;
+      }
       uploads.push({ company: res.company, addresses: res.addresses, file: file.name });
       saveUploads();
       rebuildData();

@@ -13,9 +13,10 @@ Sign in with a demo account (no passwords). Progress is saved in your own browse
 To run it on your computer (Node.js 20 or later; no install step, no API keys):
 
 ```sh
-npm test        # 131 checks: engine, every scenario, the database, scale and the ML Lab
+npm test        # checks: engine, every scenario, the database and its keys, scale and the ML Lab
 npm run build   # copies web/ and data/ into dist/
 npm start       # serves dist/ at http://localhost:3000
+npm run schema  # rewrites docs/schema.* from the schema the app runs
 ```
 
 ## Three people, one screen set each
@@ -52,13 +53,20 @@ Desktop payroll file
 
 ## The database
 
-The demo data lives in a **SQLite database inside the page** (sql.js, compiled to WebAssembly; no server, no account, no keys). It is rebuilt from the demo files on every visit, so every visitor has a private copy. The engine reads its input from the database with SQL, and a test checks that this equals the files exactly.
+The data lives in a **SQLite database inside the page** (sql.js, compiled to WebAssembly; no server, no account, no keys), with primary keys, foreign keys and CHECK rules switched on. It is rebuilt on every visit, so every visitor has a private copy. The engine reads its input from the database with SQL, and a test checks that this equals the files exactly.
 
-- **Customer data** (fictional): businesses, work sites, employees, their addresses, Desktop payroll items, and home addresses the employer added.
-- **Tax reference** (real and public where it matters): states, Ohio school-district and city taxes, defined entries, the demo address lookup and the expert-labelled label pool.
-- **Outcomes**: where every Desktop line ended up (route, stage, Online tax, decided by which rule or person) and the decision log.
+**The schema has 22 tables in four layers** (full explanation, every table and its keys: [docs/schema.md](docs/schema.md); the SQL: [docs/schema.sql](docs/schema.sql)):
 
-The admin's **Data** page shows every table with its row count, runs read-only SQL queries (with examples), and accepts a **Desktop file as CSV**: download the template, upload it, and the new company goes through the same file checks and engine as the demo clients. A file with missing columns or an unknown work site is refused with the reason; a home address the lookup has never seen goes to an expert. Uploads stay in your browser. See [the data contract](docs/data-contract.md) for the columns.
+| Layer | Owner | Tables |
+| --- | --- | --- |
+| 1. Tax reference | Intuit | `states`, `taxes`, `no_tax_districts`, `state_place_names`, `defined_entries`, `defined_entry_states`, `addresses`, `label_pool` |
+| 2. Source | Customer: the Desktop file, never edited | `companies`, `worksites`, `payroll_items`, `employees`, `employee_addresses`, `desktop_lines`, `import_issues` |
+| 3. Work | Engine and people | `expected_taxes`, `line_results`, `decisions`, `corrections`, `migrations` |
+| 4. Audit | System | `audit_log`, `model_runs` |
+
+![The main tables and how they link](web/schema-diagram.svg)
+
+The admin's **Data** page shows the schema read from the database itself: click a table for its columns, keys, rules and links. **The database checks the data itself** has five buttons that each try to break a rule (a business that does not exist, a duplicate employee, month 13, a 150% rate, an item that was never set up); the database refuses each one. **Download the database** gives the whole thing as a `.sqlite` file to open in any SQLite tool. The page also runs read-only SQL queries (with examples) and accepts a **Desktop file as CSV**: download the template, upload it, and the new company goes through the same file checks and engine as the demo clients. A file with missing columns or an unknown work site is refused with the reason; a home address the lookup has never seen goes to an expert. Uploads stay in your browser. See [the data contract](docs/data-contract.md) for the columns.
 
 Customer payroll data stays fictional on purpose: real payroll files hold social security numbers and wages. Real companies demo the same way: invented people, real tax rules.
 

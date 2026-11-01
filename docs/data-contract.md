@@ -65,9 +65,12 @@ When the page opens, the files above are loaded into a SQLite database in the br
 
 | Group | Tables |
 | --- | --- |
-| Customer data | `companies` (`source`: `demo`, `generated` or `upload`), `worksites`, `employees`, `employee_addresses`, `employee_items`, `desktop_items`, `customer_addresses` (addresses the lookup has never seen), `corrections` (home addresses the employer added) |
-| Tax reference | `states`, `taxes`, `no_tax_districts`, `state_place_names`, `defined_entries`, `defined_entry_states`, `address_lookup`, `label_pool` |
-| Outcomes | `line_outcomes` (every Desktop line: route, stage, Online tax, decided by, rule), `decision_log` |
+| Tax reference | `states`, `taxes`, `no_tax_districts`, `state_place_names`, `defined_entries`, `defined_entry_states`, `addresses` (the lookup's, and ones customers typed: `source`), `label_pool` |
+| Source (the Desktop file) | `companies` (`source`: `demo`, `generated` or `upload`), `worksites`, `payroll_items`, `employees`, `employee_addresses`, `desktop_lines`, `import_issues` |
+| Work | `expected_taxes`, `line_results`, `decisions`, `corrections`, `migrations` |
+| Audit | `audit_log`, `model_runs` |
+
+Every table has a primary key; foreign keys and CHECK rules are on. A row in a Desktop file that breaks a key (an item that does not exist, the same item twice, an address nobody knows) goes to `import_issues`, and the engine still reports it. The full schema, with every table's keys and rules, is in [schema.md](schema.md).
 
 The Data page runs one read-only `SELECT` at a time.
 
@@ -78,7 +81,7 @@ The Data page runs one read-only `SELECT` at a time.
 - Towns are real Ohio places (Lancaster, Pickerington, Columbus, Carroll, Bremen, Baltimore, Millersport, Ashville) with their real ZIP codes, school districts and city taxes. People live where commuters to each work site plausibly live.
 - Desktop labels are written the way people type them: abbreviations, typos, place names, upper and lower case.
 - Each business has its own mix of problems: missing home addresses, addresses the lookup cannot place, people who moved, wrong rates, Columbus residents with a school tax withheld, items nobody set up, ambiguous labels, union dues, garnishments, joiners and leavers.
-- Their addresses join the demo lookup (`address_lookup`, `G-A00001` onward).
+- Their addresses join the demo lookup (`addresses`, `G-A00001` onward).
 
 A test (`tests/scale.test.mjs`) checks that the generator gives the same businesses every time, that each has at least 100 employees, that every one goes through the engine, and that they round-trip through the database exactly.
 
@@ -87,7 +90,7 @@ A test (`tests/scale.test.mjs`) checks that the generator gives the same busines
 A line that needs a home address (`no_address`, or `address_unresolved` when the lookup cannot place it) waits for the employer: the owner's **To do** lists it under **Missing information**. Saving an address:
 
 1. Looks it up by street and ZIP in the address lookup.
-2. Writes it to the database: `employee_addresses` (for the whole year), `customer_addresses` if the lookup has never seen it, and a row in `corrections` (`company_id`, `employee_id`, `value`, `address_id`, `found_in_lookup`, `at`).
+2. Writes it to the database: `employee_addresses` (for the whole year), `addresses` (as a customer address) if the lookup has never seen it, and a row in `corrections` (`company_id`, `employee_id`, `value`, `address_id`, `found_in_lookup`, `at`).
 3. Reads that business back from the database, and the engine checks its lines again. If the business has moved, the employer's rules run and settle what they can.
 
 An address the lookup knows settles the line by rule; one it has never seen is kept, and the line stays with an expert as `address_unresolved`. Added addresses are kept in the browser and applied again whenever the database is rebuilt.

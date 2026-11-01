@@ -1,0 +1,22 @@
+{
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Plus Jakarta Sans, Helvetica, Arial, sans-serif",
+    "fontSize": "14px",
+    "primaryColor": "#ffffff",
+    "primaryBorderColor": "#187a4a",
+    "primaryTextColor": "#121714",
+    "lineColor": "#78807b",
+    "tertiaryColor": "#f6f7f6",
+    "attributeBackgroundColorOdd": "#ffffff",
+    "attributeBackgroundColorEven": "#f6f7f6"
+  },
+  "er": {
+    "layoutDirection": "TB",
+    "useMaxWidth": true
+  },
+  "htmlLabels": false,
+  "flowchart": {
+    "htmlLabels": false
+  }
+}

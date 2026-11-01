@@ -1,0 +1,210 @@
+erDiagram
+  states {
+    text state_code PK
+    text name
+    text rollout
+  }
+  taxes {
+    text tax_id PK
+    text state_code FK
+    text type
+    text code
+    text name
+    text place
+    real rate
+    text base
+    text basis
+    text agency
+    integer qb_pays_and_files
+  }
+  no_tax_districts {
+    text state_code PK, FK
+    text name PK
+    text place
+    text note
+  }
+  state_place_names {
+    text state_code PK, FK
+    text place_name PK
+  }
+  defined_entries {
+    text entry_id PK
+    text kind
+    text tax_type
+    text label
+    text text
+  }
+  defined_entry_states {
+    text entry_id PK, FK
+    text state_code PK, FK
+  }
+  addresses {
+    text address_id PK
+    text line1
+    text city
+    text state
+    text zip
+    text school_district
+    text municipality
+    text source
+    text company_id FK
+  }
+  label_pool {
+    integer label_id PK
+    text state_code FK
+    text label
+    text expert_label
+  }
+  companies {
+    text company_id PK
+    text name
+    text plan
+    integer migration_month
+    text description
+    text source
+  }
+  worksites {
+    text company_id PK, FK
+    text site_id PK
+    text name
+    text address_id FK
+  }
+  payroll_items {
+    text company_id PK, FK
+    text item_id PK
+    text label
+    integer law_id
+    text origin
+    text item_type
+    text tracking_type
+    text calc_kind
+    real calc_rate
+    real calc_amount
+    text agency
+    text agency_account
+    text deposit_frequency
+    text system_tax_id FK
+  }
+  employees {
+    text company_id PK, FK
+    text employee_id PK
+    text name
+    text site_id FK
+    real monthly_wages
+    integer remote
+    integer hired_month
+    integer left_month
+  }
+  employee_addresses {
+    text company_id PK, FK
+    text employee_id PK, FK
+    integer from_month PK
+    text address_id FK
+  }
+  desktop_lines {
+    text company_id PK, FK
+    text employee_id PK, FK
+    text item_id PK, FK
+  }
+  import_issues {
+    integer issue_id PK
+    text company_id FK
+    text employee_id FK
+    text kind
+    text value
+    integer from_month
+    integer position
+  }
+  expected_taxes {
+    text company_id PK, FK
+    text employee_id PK, FK
+    text tax_id PK, FK
+    integer required
+    text months
+    integer gap
+  }
+  line_results {
+    text company_id PK, FK
+    text employee_id PK, FK
+    text item_id PK, FK
+    text state
+    text route
+    text reason
+    text stage
+    text online_tax
+    text decided_by
+    text rule
+  }
+  decisions {
+    integer decision_id PK
+    text company_id FK
+    text employee_id FK
+    text item_id FK
+    text tax_id FK
+    text decided_by
+    text action
+    text rule
+    text at
+  }
+  corrections {
+    integer correction_id PK
+    text company_id FK
+    text employee_id FK
+    text value
+    text address_id FK
+    integer found_in_lookup
+    text at
+  }
+  migrations {
+    text company_id PK, FK
+    text status
+    text rules_off
+  }
+  audit_log {
+    integer log_id PK
+    text at
+    text company_id FK
+    text actor
+    text action
+    text target
+    text detail
+  }
+  model_runs {
+    text state_code PK, FK
+    text model_version PK
+    integer labels
+    integer k
+    real silhouette
+    real precision_score
+    real coverage
+    text mode
+  }
+  states ||--o{ taxes : "state_code"
+  states ||--o{ no_tax_districts : "state_code"
+  states ||--o{ state_place_names : "state_code"
+  states ||--o{ defined_entry_states : "state_code"
+  defined_entries ||--o{ defined_entry_states : "entry_id"
+  companies ||--o{ addresses : "company_id"
+  states ||--o{ label_pool : "state_code"
+  addresses ||--o{ worksites : "address_id"
+  companies ||--o{ worksites : "company_id"
+  taxes ||--o{ payroll_items : "system_tax_id"
+  companies ||--o{ payroll_items : "company_id"
+  worksites ||--o{ employees : "company_id, site_id"
+  companies ||--o{ employees : "company_id"
+  employees ||--o{ employee_addresses : "company_id, employee_id"
+  addresses ||--o{ employee_addresses : "address_id"
+  payroll_items ||--o{ desktop_lines : "company_id, item_id"
+  employees ||--o{ desktop_lines : "company_id, employee_id"
+  employees ||--o{ import_issues : "company_id, employee_id"
+  employees ||--o{ expected_taxes : "company_id, employee_id"
+  taxes ||--o{ expected_taxes : "tax_id"
+  desktop_lines ||--o| line_results : "company_id, employee_id, item_id"
+  desktop_lines ||--o{ decisions : "company_id, employee_id, item_id"
+  employees ||--o{ decisions : "company_id, employee_id"
+  taxes ||--o{ decisions : "tax_id"
+  employees ||--o{ corrections : "company_id, employee_id"
+  addresses ||--o{ corrections : "address_id"
+  companies ||--o| migrations : "company_id"
+  companies ||--o{ audit_log : "company_id"
+  states ||--o{ model_runs : "state_code"
