@@ -1,8 +1,8 @@
 // The BRD v3 pipeline for one company:
 //   1 find the state · 2 list expected taxes · 3 cluster custom items · 4 route every item · (5 employer confirms, see workflow.mjs)
-import { clusterLabels, assignLabel, MODEL_VERSION } from './cluster.mjs?v=93cbd9ba74';
-import { normalize } from './text.mjs?v=93cbd9ba74';
-import { desktopMonths, cloudMonths, employedMonths, itemAmount, monthSpan, range, round2, sum, rateCheck } from './util.mjs?v=93cbd9ba74';
+import { clusterLabels, assignLabel, MODEL_VERSION } from './cluster.mjs?v=b3c6c68678';
+import { normalize } from './text.mjs?v=b3c6c68678';
+import { desktopMonths, cloudMonths, employedMonths, itemAmount, monthSpan, range, round2, sum, rateCheck } from './util.mjs?v=b3c6c68678';
 
 export const DEFAULT_THRESHOLDS = {
   silhouetteFloor: 0.5,   // state-level cluster quality needed before suggestions are shown

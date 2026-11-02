@@ -1,6 +1,6 @@
 // Clustering of custom labels within one state, scored with the silhouette coefficient,
 // and naming of each cluster by its closest defined catalogue entry.
-import { normalize, buildVectorizer, cosine, centroid } from './text.mjs?v=93cbd9ba74';
+import { normalize, buildVectorizer, cosine, centroid } from './text.mjs?v=b3c6c68678';
 
 export const MODEL_VERSION = 'label-clusters v1.1 (fitted per state on the labelled pool; TF-IDF + trigrams, average linkage)';
 
