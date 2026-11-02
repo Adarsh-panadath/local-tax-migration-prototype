@@ -1,24 +1,24 @@
 // Browser app for the BRD v3 local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=780bba2390';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=780bba2390';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_ADDRESS } from './engine/workflow.mjs?v=780bba2390';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=780bba2390';
-import { buildReport, casesCSV } from './report.mjs?v=780bba2390';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=780bba2390';
-import { loadSqlJs, createDatabase, readData, readCompanies, insertCompany, writeWork, workRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=780bba2390';
-import { generateBusinesses, SEED } from './generate.mjs?v=780bba2390';
-import { runLab, KEY_NAMES } from './mllab.mjs?v=780bba2390';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=ce70b5a061';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=ce70b5a061';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_ADDRESS } from './engine/workflow.mjs?v=ce70b5a061';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=ce70b5a061';
+import { buildReport, casesCSV } from './report.mjs?v=ce70b5a061';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=ce70b5a061';
+import { loadSqlJs, createDatabase, readData, readCompanies, insertCompany, writeWork, workRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=ce70b5a061';
+import { generateBusinesses, SEED } from './generate.mjs?v=ce70b5a061';
+import { runLab, KEY_NAMES } from './mllab.mjs?v=ce70b5a061';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
-const VIEWS = ['move', 'review', 'expert', 'golive', 'portfolio', 'model', 'lab', 'analysis', 'data', 'scenarios', 'audit'];
+const VIEWS = ['move', 'review', 'expert', 'golive', 'analysis', 'model', 'lab', 'data', 'scenarios', 'audit'];
 
-// Demo sign-in: each role sees only its own screens. Admin can also open any record from a scenario.
-// The owner moves one business. Intuit staff see every business: the expert by queue, the admin as a portfolio.
+// Demo sign-in: each role sees only its own screens. All three work on the same business:
+// the owner moves it, the expert decides what the rules leave, the admin looks under the hood.
 const ROLES = {
   owner: { icon: 'building', label: 'Business owner', side: 'Customer', blurb: 'Moves their own business to Online payroll', tabs: [['move', 'Move'], ['review', 'To do'], ['golive', 'Go live']] },
   expert: { icon: 'user', label: 'Payroll tax expert', side: 'Intuit staff', blurb: 'Decides the lines the rules leave', tabs: [['expert', 'Queue']] },
-  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'Every business, the model and the data', tabs: [['portfolio', 'Portfolio'], ['model', 'Model'], ['lab', 'ML Lab'], ['analysis', 'Engine'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
+  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'The engine, the model and the data', tabs: [['analysis', 'Engine'], ['model', 'Model'], ['lab', 'ML Lab'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
 };
 const roleOf = () => ROLES[state.role];
 const canOpen = (view) => state.role === 'admin' || Boolean(roleOf()?.tabs.some(([id]) => id === view));
@@ -47,10 +47,8 @@ let dbError = null;
 let uploads = loadUploads(); // Desktop files uploaded on the Data page: [{ company, addresses }]
 let uploadMsg = null;       // the last upload's result: { tone, title, items }
 let query = { sql: 'SELECT route, COUNT(*) AS lines\nFROM line_results\nGROUP BY route\nORDER BY lines DESC', result: null, error: null };
-let generated = null;       // the synthetic businesses (100+ employees each), made from a fixed seed on every visit
+let generated = null;       // the demo business (152 employees), made from a fixed seed on every visit
 let lookupIdx = null;       // address lookup by street and ZIP, for addresses the employer adds
-const previews = new Map(); // one row per business for the portfolio: what the rules settle and what is left
-let warming = null;         // the portfolio's first pass over every business, a few at a time: { done, total, timer }
 let outcomesKey = null;     // the state the outcome tables were last written for
 let lab = { seed: SEED, total: 1200, result: null, running: false, error: null };
 const more = {};            // "Show all" toggles for long lists
@@ -105,10 +103,9 @@ function analysisFor(id = state.companyId) {
   return v;
 }
 function forgetCompany(id) {
-  for (const m of [cache, previews]) for (const k of [...m.keys()]) if (k.startsWith(`${id}|`)) m.delete(k);
+  for (const k of [...cache.keys()]) if (k.startsWith(`${id}|`)) cache.delete(k);
   outcomesKey = null;
 }
-const sourceOf = (id) => (id.startsWith('G-') ? 'generated' : id.startsWith('U-') ? 'upload' : 'story');
 // The analysis index also holds placeholders for addresses the lookup does not know.
 const addressById = (id) => analysisFor().idx.addresses.get(id) ?? data.geocoder.addresses.find((a) => a.address_id === id);
 const stateName = (st) => data.catalog.states[st]?.name ?? st ?? 'Unknown state';
@@ -250,7 +247,7 @@ function render() {
   }
   const wide = view === 'review' || view === 'expert';
   const listScroll = lastView === view ? document.querySelector('.records')?.scrollTop : null;
-  const body = { move: viewMove, portfolio: viewPortfolio, lab: viewLab, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
+  const body = { move: viewMove, lab: viewLab, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
   app.innerHTML = `<button class="skip" type="button" data-action="skip">Skip to main content</button>${appbar(view, s)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
   lastView = view;
   if (wide) {
@@ -303,22 +300,20 @@ function applySearch(view) {
   }
 }
 
-// The scenarios check the six story clients exactly as shipped: no uploads, no added addresses.
+// The scenarios check the six small test files exactly as shipped: no uploads, no added addresses.
 function scenarios() {
   scenarioResults ??= runScenarios(fromFiles(files, [], null));
   return scenarioResults;
 }
 
-// Screens that are about one business show its status line; the rest are about every business or the model.
+// Screens about the business show its status line; the ML Lab, data and scenarios are not about its progress.
 const COMPANY_VIEWS = new Set(['move', 'review', 'expert', 'golive', 'analysis']);
-const GLOBAL_VIEWS = new Set(['portfolio', 'lab', 'data', 'scenarios']);
+const GLOBAL_VIEWS = new Set(['lab', 'data', 'scenarios']);
 
-// Businesses in groups: the generated ones (100+ employees) first, then the small story clients, then uploads.
+// The demo moves one business. A picker appears only after a Desktop file is uploaded on the Data page.
+const oneBusiness = () => data.companies.length <= 1;
 function companyOptions() {
-  const opt = (c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}${sourceOf(c.company_id) === 'generated' ? ` (${c.employees.length})` : ''}</option>`;
-  const group = (label, list) => (list.length ? `<optgroup label="${esc(label)}">${list.map(opt).join('')}</optgroup>` : '');
-  const by = (src) => data.companies.filter((c) => sourceOf(c.company_id) === src);
-  return group('Generated businesses, employees in brackets', by('generated')) + group('Story clients, one case each', by('story')) + group('Uploaded', by('upload'));
+  return data.companies.map((c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}${c.company_id.startsWith('U-') ? ' (uploaded)' : ''}</option>`).join('');
 }
 
 function appbar(view, s) {
@@ -329,12 +324,12 @@ function appbar(view, s) {
   const finished = { move: moved, review: moved && s.awaiting === 0 && s.info === 0, golive: Boolean(s.d.reconciled), expert: s.expert === 0 };
   const steps = state.role === 'owner';
   const tab = ([id, text], i) => {
-    const n = id === 'review' ? s.awaiting + s.info : id === 'expert' ? s.expert : 0;
+    const n = s.status === 'Not started' && steps ? 0 : id === 'review' ? s.awaiting + s.info : id === 'expert' ? s.expert : 0;
     const done = steps && finished[id];
     const mark = steps ? `<span class="step">${done ? `${icon('tick')}<span class="sr-only">Done:</span>` : i + 1}</span>` : '';
     return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}${done ? ' class="done"' : ''}>${mark}${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}${id === 'scenarios' ? `<span class="count ok">${scenarioCount()}</span>` : ''}</a>`;
   };
-  const company = state.role === 'owner'
+  const company = state.role === 'owner' || oneBusiness()
     ? `<span class="company-box static">${icon('building')}<span class="co-name">${esc(co.name)}</span><span class="plan">${esc(co.plan)}</span></span>`
     : GLOBAL_VIEWS.has(view) ? ''
       : `<label class="company-box"><span class="sr-only">Business</span>${icon('building')}<select id="company" data-action="company">${companyOptions()}</select><span class="plan">${esc(co.plan)}</span></label>`;
@@ -350,7 +345,7 @@ function appbar(view, s) {
   const status = COMPANY_VIEWS.has(view) ? `<div class="batchbar">
       <span class="status ${statusTone}"><span class="dot"></span>${esc(s.status)}</span>
       <span class="batch-progress"><span class="progress" role="img" aria-label="${items - action} of ${items} items settled"><span style="width:${(items ? ((items - action) / items) * 100 : 0).toFixed(1)}%"></span></span><span><b>${items - action}</b> of ${items} settled</span></span>
-      ${action ? `${lines + gaps ? `<span class="batch-need warn"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.info ? `<span class="batch-need warn"><b>${s.info}</b> waiting for an address</span>` : ''}${expertOnly ? `<span class="batch-need blue"><b>${expertOnly}</b> with an expert</span>` : ''}` : `<span class="batch-need done">${icon('tick')}Nothing waiting</span>`}
+      ${s.status === 'Not started' ? '' : action ? `${lines + gaps ? `<span class="batch-need warn"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.info ? `<span class="batch-need warn"><b>${s.info}</b> waiting for an address</span>` : ''}${expertOnly ? `<span class="batch-need blue"><b>${expertOnly}</b> with an expert</span>` : ''}` : `<span class="batch-need done">${icon('tick')}Nothing waiting</span>`}
       ${s.d.autoRun ? `<span class="batch-auto">${icon('spark')}<b>${pct(automationStats(s.a, s.d).share, 0)}</b> automated</span>` : ''}
     </div>` : '';
   return `<header class="appbar">
@@ -374,7 +369,9 @@ function signIn() {
     const r = ROLES[id];
     return `<div class="acct"><span class="avatar lg role-ic">${icon(r.icon)}</span><div class="acct-text"><strong>${esc(r.label)}</strong><span>${esc(r.blurb)}</span>${extra}</div><button class="btn primary" type="button" data-action="sign-in" data-role="${id}">Sign in</button></div>`;
   };
-  const pick = `<label class="acct-pick"><span class="sr-only">Business</span><select id="signin-company">${companyOptions()}</select></label>`;
+  const pick = oneBusiness()
+    ? `<span class="acct-biz">${icon('building')}${esc(companyById().name)}, ${plural(companyById().employees.length, 'employee')}</span>`
+    : `<label class="acct-pick"><span class="sr-only">Business</span><select id="signin-company">${companyOptions()}</select></label>`;
   return `<main class="signin" id="main" tabindex="-1">
     <section class="signin-brand">
       <span class="logo-tile">${icon('landmark')}</span>
@@ -402,7 +399,7 @@ function scenarioCount() {
 }
 
 function footnote() {
-  return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. Businesses, people and wages are fictional (60 are generated from a fixed seed); Ohio school-district and city tax rates are real (2026). Not affiliated with Intuit.</p>`;
+  return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. The business, its people and wages are fictional; Ohio school-district and city tax rates are real (2026). Not affiliated with Intuit.</p>`;
 }
 
 // ---------- automation ----------
@@ -684,152 +681,8 @@ function moveSummary(s) {
     </div>`;
 }
 
-// ---------- portfolio (admin): every business at once ----------
-// Each business goes through the whole engine and its rules: what the rules settled, or, for a business
-// that has not moved yet, what they would settle. The first pass takes a few seconds, so it runs a few
-// businesses at a time behind a progress bar; after that each row is kept until that business changes.
-
 const count = new Intl.NumberFormat('en-US');
 const num = (n) => count.format(n);
-const SOURCE_TEXT = { generated: 'Generated', story: 'Story client', upload: 'Uploaded' };
-const rowKey = (id) => `${id}|${settingsKey()}|${JSON.stringify(peekDecisions(id))}`;
-
-function portfolioRow(id) {
-  const key = rowKey(id);
-  if (previews.has(key)) return previews.get(key);
-  const c = companyById(id);
-  const d = peekDecisions(id);
-  const base = { id, name: c.name, source: sourceOf(id), plan: c.plan, employees: c.employees.length };
-  let row;
-  try {
-    const a = analysisFor(id);
-    const ran = Boolean(d.autoRun || d.live);
-    const after = ran ? d : automate(a, d, policyOf(d)).decisions;
-    const st = automationStats(a, after);
-    const left = openExceptions(a, after);
-    const expert = left.filter((x) => x.owner === 'expert').length;
-    row = { ...base, lines: a.cases.length, st, left, expert, employer: left.length - expert, ran, status: d.reconciled ? 'Reconciled' : d.live ? 'Live' : ran ? 'Moved' : 'Not moved' };
-  } catch (err) {
-    if (err.name !== 'DataError') throw err;
-    row = { ...base, broken: err.issues.length };
-  }
-  previews.set(key, row);
-  return row;
-}
-const unchecked = () => data.companies.filter((c) => !previews.has(rowKey(c.company_id))).map((c) => c.company_id);
-
-function warmUp() {
-  if (warming) return;
-  const todo = unchecked();
-  if (!todo.length) return;
-  const total = data.companies.length;
-  warming = { done: total - todo.length, total, timer: null };
-  const step = () => {
-    const t0 = performance.now();
-    while (todo.length && performance.now() - t0 < 40) { portfolioRow(todo.shift()); warming.done += 1; }
-    const bar = document.getElementById('warm-bar');
-    if (bar) { bar.setAttribute('aria-valuenow', String(warming.done)); bar.firstElementChild.style.width = `${((warming.done / total) * 100).toFixed(1)}%`; }
-    const text = document.getElementById('warm-n');
-    if (text) text.textContent = `${warming.done} of ${total}`;
-    if (todo.length) { warming.timer = setTimeout(step, 0); return; }
-    warming = null;
-    if (state.role && ['portfolio', 'data'].includes(currentView())) render();
-  };
-  warming.timer = setTimeout(step, 30);
-}
-
-function warmPanel() {
-  const total = data.companies.length;
-  const done = warming?.done ?? total - unchecked().length;
-  return `<section class="panel warm" aria-labelledby="warm-h">
-    <h2 id="warm-h">Checking every business</h2>
-    <div class="progress wide" id="warm-bar" role="progressbar" aria-label="Businesses checked" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done}"><span style="width:${((done / total) * 100).toFixed(1)}%"></span></div>
-    <p class="small muted"><b id="warm-n">${done} of ${total}</b>. Each one goes through the whole engine: addresses, label clusters, routes and the rules.</p>
-  </section>`;
-}
-
-const BINS = [[0, 0.9, 'Under 90%'], [0.9, 0.95, '90–95%'], [0.95, 0.98, '95–98%'], [0.98, 0.99, '98–99%'], [0.99, 1, '99–100%'], [1, 2, '100%']];
-const niceMax = (n) => { const step = n <= 8 ? 2 : n <= 20 ? 5 : n <= 40 ? 10 : 20; return Math.max(step * 4, Math.ceil(n / step) * step); };
-
-function viewPortfolio() {
-  const head = `<div class="page-head"><h1>Portfolio <span class="soft">every business moving to Online payroll</span></h1></div>`;
-  if (unchecked().length) { warmUp(); return head + warmPanel(); }
-  const rows = data.companies.map((c) => portfolioRow(c.company_id));
-  const ok = rows.filter((r) => !r.broken);
-  const sum = (f) => ok.reduce((n, r) => n + f(r), 0);
-  const employees = rows.reduce((n, r) => n + r.employees, 0);
-  const auto = sum((r) => r.st.auto);
-  const total = sum((r) => r.st.total);
-  const left = sum((r) => r.left.length);
-  const expert = sum((r) => r.expert);
-  const notMoved = ok.filter((r) => !r.ran).length;
-  const of = (src) => rows.filter((r) => r.source === src).length;
-  const mix = [of('generated') ? `${of('generated')} generated, 100+ employees each` : '', of('story') ? `${of('story')} story clients` : '', of('upload') ? `${of('upload')} uploaded` : ''].filter(Boolean).join('; ');
-
-  // How many businesses fall in each band of "share settled by rule".
-  const bins = BINS.map(([lo, hi, label]) => ({ label, n: ok.filter((r) => r.st.share >= lo && r.st.share < hi).length }));
-  const top = niceMax(Math.max(...bins.map((b) => b.n)));
-  const axis = [1, 0.75, 0.5, 0.25, 0].map((f) => `<span style="--y:${f * 100}">${Math.round(top * f)}</span>`).join('');
-  const cols = bins.map((b) => `<li><span class="bar-wrap"><span class="bar" style="--h:${((b.n / top) * 100).toFixed(1)}"><span class="bar-val">${b.n}</span></span></span><span class="bar-lbl">${esc(b.label)}<span class="sr-only">: ${plural(b.n, 'business', 'businesses')}</span></span></li>`).join('');
-
-  // What is left for a person, by reason. Blue is with an expert, amber with the employer.
-  const reasons = new Map();
-  for (const r of ok) {
-    for (const x of r.left) {
-      const v = reasons.get(x.reason) ?? { reason: x.reason, owner: x.owner, n: 0 };
-      v.n += 1;
-      reasons.set(x.reason, v);
-    }
-  }
-  const list = [...reasons.values()].sort((a, b) => b.n - a.n);
-  const rmax = Math.max(1, ...list.map((x) => x.n));
-  const hbars = list.length
-    ? `<ul class="hbars">${list.map((x) => `<li><span class="hb-lbl">${esc(exceptionText(x))}<span class="owner ${x.owner === 'expert' ? 'blue' : 'warn'}">${x.owner === 'expert' ? 'Expert' : 'Employer'}</span></span><span class="hb-track"><span class="hb-bar ${x.owner === 'expert' ? 'blue' : 'warn'}" style="width:${((x.n / rmax) * 100).toFixed(1)}%"></span><b>${num(x.n)}</b></span></li>`).join('')}</ul>`
-    : `<p class="auto-done flat">${icon('check')}Nothing is left for a person anywhere.</p>`;
-
-  const tone = { 'Not moved': '', Moved: 'blue', Live: 'good', Reconciled: 'good' };
-  const sorted = [...rows].sort((a, b) => (b.broken ? 1e9 : b.left.length) - (a.broken ? 1e9 : a.left.length) || b.employees - a.employees);
-  const shown = more.portfolio ? sorted : sorted.slice(0, 12);
-  const cell = (r) => `<td><div class="client-cell"><span class="co-tile ${tone[r.status] || 'idle'}" aria-hidden="true">${esc(initials(r.name))}</span><div><strong>${esc(r.name)}</strong><div class="small muted">${SOURCE_TEXT[r.source]}, ${esc(r.plan)} plan</div></div></div></td>`;
-  const open = (r) => `<td><button class="btn quiet" type="button" data-action="company-switch" data-id="${esc(r.id)}" data-view="analysis">Open</button></td>`;
-  const body = shown.map((r) => (r.broken
-    ? `<tr>${cell({ ...r, status: '' })}<td class="num" data-l="Employees">${r.employees}</td><td colspan="5" data-l="Status"><span class="bad-text">The engine stops on this file: ${plural(r.broken, 'problem')}</span></td>${open(r)}</tr>`
-    : `<tr>${cell(r)}
-      <td class="num" data-l="Employees">${num(r.employees)}</td>
-      <td class="num" data-l="Desktop lines">${num(r.lines)}</td>
-      <td class="num" data-l="Settled by rule"><span class="auto-cell"><b>${pct(r.st.share)}</b><span class="progress xs" aria-hidden="true"><span style="width:${(r.st.share * 100).toFixed(1)}%"></span></span></span></td>
-      <td class="num" data-l="With an expert">${r.expert || '<span class="muted">0</span>'}</td>
-      <td class="num" data-l="With the employer">${r.employer || '<span class="muted">0</span>'}</td>
-      <td data-l="Status">${pill(r.status, tone[r.status])}</td>
-      ${open(r)}
-    </tr>`)).join('');
-
-  return `${head}
-    <div class="wl-tiles four">
-      <div class="wl-tile"><div class="tile-head"><span class="t">${icon('building')}Businesses</span></div><span class="n">${rows.length}</span><p>${esc(mix)}</p></div>
-      <div class="wl-tile"><div class="tile-head"><span class="t">${icon('users')}Employees</span></div><span class="n">${num(employees)}</span><p>${num(sum((r) => r.lines))} Desktop local tax lines</p></div>
-      <div class="wl-tile good"><div class="tile-head"><span class="t">${icon('spark')}Settled by rule</span></div><span class="n">${pct(total ? auto / total : 0)}</span><p>${num(auto)} of ${num(total)} items</p></div>
-      <div class="wl-tile ${left ? 'warn' : 'good'}"><div class="tile-head"><span class="t">${icon('user')}Waiting for a person</span></div><span class="n">${num(left)}</span><p>${num(expert)} with an expert, ${num(left - expert)} with employers</p></div>
-    </div>
-    <div class="dash-grid even">
-      <section class="card chart-card" aria-labelledby="hist-h">
-        <div class="card-head"><div><h2 id="hist-h">Businesses by share settled by rule</h2><p class="card-sub">${notMoved ? `${notMoved === ok.length ? 'None has moved yet: what' : `${plural(notMoved, 'business has', 'businesses have')} not moved yet: for them, what`} the rules would settle` : 'After each move'}</p></div></div>
-        <div class="chart"><div class="axis" aria-hidden="true">${axis}</div><ol class="bars">${cols}</ol></div>
-      </section>
-      <section class="card" aria-labelledby="left-h">
-        <div class="card-head"><div><h2 id="left-h">What is left for a person</h2><p class="card-sub">By reason, across every business</p></div></div>
-        <div class="card-body">${hbars}</div>
-      </section>
-    </div>
-    <section class="card" aria-labelledby="biz-h">
-      <div class="card-head"><div><h2 id="biz-h">Businesses</h2><p class="card-sub">Most work left first. Open one to see how the engine read it.</p></div></div>
-      <div class="table-wrap"><table class="biz-table">
-        <thead><tr><th>Business</th><th class="num">Employees</th><th class="num">Desktop lines</th><th class="num">Settled by rule</th><th class="num">With an expert</th><th class="num">With the employer</th><th>Status</th><th><span class="sr-only">Open</span></th></tr></thead>
-        <tbody>${body}</tbody></table></div>
-      ${sorted.length > 12 ? `<div class="card-foot"><button class="btn quiet" type="button" data-action="show-more" data-key="portfolio">${more.portfolio ? 'Show the first 12' : `Show all ${sorted.length}`}</button></div>` : ''}
-    </section>
-    <p class="small muted">Generated businesses are synthetic: names, people, addresses and Desktop labels come from a fixed seed (${SEED}), so every visit sees the same data. The tax rates and districts are real.</p>`;
-}
 
 // ---------- ML Lab (admin): proof that the label clustering works, on far more labels ----------
 // It runs the engine's own clustering code on a labelled set (web/mllab.mjs), holds part back, and grades
@@ -1026,7 +879,7 @@ function viewAnalysis(s) {
     const users = a.company.employees.filter((e) => e.items.includes(i.item_id)).length;
     return `<tr><td><strong>${esc(labelOf(i.label))}</strong></td><td>${i.law_id}</td><td>${i.origin === 'custom' ? 'Custom' : 'System-defined'}</td><td>${esc(i.item_type)}, ${esc(i.tracking_type)}</td><td>${esc(rateText(i))}</td><td>${esc(i.agency)}</td><td class="num">${users}</td></tr>`;
   }).join('');
-  const PEOPLE_SHOWN = 25;
+  const PEOPLE_SHOWN = 10;
   const people = a.employees.slice(0, more.people ? undefined : PEOPLE_SHOWN).map((e) => {
     const site = a.company.worksites.find((w) => w.site_id === e.site_id);
     const homes = e.expected.periods.length
@@ -1786,7 +1639,7 @@ function w2Section(s, w2) {
   const span = dm.length ? `Desktop withholding relabelled for ${monthSpan(dm)}, plus Online payroll from ${monthSpan([cm[0]])}.` : 'The company moves in January, so every month comes from Online payroll.';
   const shown = w2.filter((w) => w.lines.length);
   const waiting = w2.length - shown.length;
-  const W2_SHOWN = 12;
+  const W2_SHOWN = 6;
   const body = shown.length
     ? `<div class="w2-grid">${shown.slice(0, more.w2 ? undefined : W2_SHOWN).map(w2Card).join('')}</div>${shown.length > W2_SHOWN ? `<div class="row"><button class="btn quiet" type="button" data-action="show-more" data-key="w2">${more.w2 ? `Show the first ${W2_SHOWN}` : `Show all ${shown.length} employees`}</button></div>` : ''}${waiting ? `<p class="small muted">${plural(waiting, 'employee has', 'employees have')} no confirmed local tax yet, so no local boxes are shown for them.</p>` : ''}`
     : `<div class="empty"><strong>No local boxes yet.</strong><span>They appear once taxes are confirmed.</span></div>`;
@@ -1829,9 +1682,39 @@ function reconcileSection(s) {
       <div class="wl-tile ${fails ? 'bad' : 'good'}"><div class="tile-head"><span class="t">${icon(fails ? 'alert' : 'check')}Expected but missing</span></div><span class="n">${fails}</span><p>${fails ? `${plural(fails, 'expected tax', 'expected taxes')} not withheld` : 'No expected tax missing'}</p></div>
     </div>
     <div class="table-wrap"><table><thead><tr><th>Tax</th><th>Employees</th><th class="num">First payroll (${first})</th><th class="num">${period === 'first quarter' ? 'First quarter' : 'Online months'} (${monthSpan(cm)})</th><th>Who pays and files</th></tr></thead><tbody>${rows}</tbody></table></div>
-    ${r.flags.length ? `<ul class="marks panel">${r.flags.map((f) => `<li>${mark(f.tone)}<span>${esc(f.text)}</span></li>`).join('')}</ul>` : ''}
+    ${flagSummary(r.flags)}
     <p class="small muted">${s.a.company.plan === 'Core' ? 'Core plan: the employer pays and files local taxes.' : 'QuickBooks pays and files the taxes it supports on this plan.'}</p>
     </section>`;
+}
+
+// Reconcile notes, one row per kind with a count and the dollars, and every note in a fold.
+// A business with 150 people has hundreds of notes; nobody reads them one by one.
+const FLAG_KIND = {
+  missing: 'Expected tax not withheld',
+  with_expert: 'Still with an expert, nothing withheld',
+  not_owed: 'Withheld but not owed: correction with the agency',
+  rate_over: 'Past withholding too high: new paychecks use the official rate',
+  rate_under: 'Past withholding too low: new paychecks use the official rate',
+  employer_managed: 'Employer-managed: confirm you paid and filed it',
+  optional_off: 'Optional home-city tax not set up (allowed)',
+  optional_kept: 'Optional courtesy withholding kept',
+};
+function flagSummary(flags) {
+  if (!flags.length) return '';
+  const kinds = new Map();
+  for (const f of flags) {
+    const k = kinds.get(f.kind) ?? { kind: f.kind, tone: f.tone, n: 0, amount: 0 };
+    k.n += 1;
+    k.amount += f.amount ?? 0;
+    kinds.set(f.kind, k);
+  }
+  const order = { fail: 0, warn: 1, info: 2 };
+  const rows = [...kinds.values()].sort((a, b) => order[a.tone] - order[b.tone] || b.n - a.n)
+    .map((k) => `<tr><td>${mark(k.tone)}<span class="flag-k">${esc(FLAG_KIND[k.kind] ?? k.kind)}</span></td><td class="num">${num(k.n)}</td><td class="num">${k.amount ? money(k.amount) : '<span class="muted">-</span>'}</td></tr>`).join('');
+  return `<section class="card" aria-label="Reconcile notes">
+    <div class="table-wrap"><table class="flag-table"><thead><tr><th>Note</th><th class="num">Lines</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${fold('list', `Every note (${num(flags.length)})`, `<ul class="marks">${flags.map((f) => `<li>${mark(f.tone)}<span>${esc(f.text)}</span></li>`).join('')}</ul>`)}
+  </section>`;
 }
 
 // ---------- model governance ----------
@@ -1851,7 +1734,7 @@ function thresholdPanel(s) {
       <input type="number" id="th-${f.key}" min="${f.min}" max="${f.max}" step="${f.step}" value="${t[f.key]}" data-action="threshold" data-key="${f.key}"${locked ? ' disabled' : ''}>
       <span class="small muted">${f.help} BRD value: ${f.show(DEFAULT_THRESHOLDS[f.key])}.</span></label>`).join('');
   return `<section class="panel section" aria-labelledby="th-h">
-    <div class="section-head"><h2 id="th-h">Gate thresholds</h2><p>Change one to see a state switch to shadow mode. A value equal to the threshold passes.${locked ? ' Locked: this client is live.' : ''}</p></div>
+    <div class="section-head"><h2 id="th-h">Gate thresholds</h2><p>Change one to see a state switch to shadow mode. A value equal to the threshold passes.${locked ? ' Locked: this business is live.' : ''}</p></div>
     <div class="threshold-grid">${fields}</div>
     ${changed ? `<div class="row"><span class="pill warn"><span class="dot"></span>Thresholds differ from the BRD</span><button class="btn quiet" type="button" data-action="reset-thresholds"${locked ? ' disabled' : ''}>Back to BRD values</button></div>` : ''}
   </section>`;
@@ -1863,7 +1746,15 @@ function viewModel(s) {
     const t = m.thresholds;
     const gate = (name, rule, measured, pass) => `<tr><td><strong>${name}</strong></td><td>${rule}</td><td>${measured}</td><td>${pill(pass ? 'Pass' : 'Fail', pass ? 'good' : 'bad')}</td></tr>`;
     const chip = (x, extra = '') => `<span class="label-chip${extra}${x.silhouette < t.itemFloor ? ' weak' : ''}">${esc(x.label)}<b>${x.silhouette.toFixed(2)}</b></span>`;
-    const clusters = [...m.clusters].sort((a, b) => b.size - a.size).map((c) => `<div class="cluster${c.kind ? '' : ' unnamed'}">
+    // A label alone in its cluster has silhouette 0 by definition: list those together instead of one card each.
+    const lone = (c) => c.members.length + c.assigned.length <= 1;
+    const singles = m.clusters.filter(lone);
+    const singleCard = singles.length ? `<div class="cluster singles">
+        <div class="cluster-head"><strong>Labels alone in their cluster</strong><span class="small muted">${plural(singles.length, 'label')}</span></div>
+        <span class="small muted">Nothing close enough to group with, so the silhouette is 0. Each is named after its closest entry.</span>
+        <ul class="single-list">${singles.map((c) => `<li>${[...c.members, ...c.assigned].map((x) => chip(x, c.assigned.includes(x) ? ' mine assigned' : x.fromCompany ? ' mine' : '')).join('')}<span class="small muted">${esc(c.kind ? c.name : 'No entry close enough')}</span></li>`).join('')}</ul>
+      </div>` : '';
+    const clusters = [...m.clusters].filter((c) => !lone(c)).sort((a, b) => b.size - a.size).map((c) => `<div class="cluster${c.kind ? '' : ' unnamed'}">
         <div class="cluster-head"><strong>${esc(c.name)}</strong><span class="small muted">${plural(c.size, 'label')}</span></div>
         <div class="meter${c.meanSilhouette < t.silhouetteFloor ? ' low' : ''}" role="img" aria-label="Mean silhouette ${c.meanSilhouette.toFixed(2)}"><span style="width:${Math.max(0, c.meanSilhouette) * 100}%"></span></div>
         <span class="small muted">Mean silhouette ${c.meanSilhouette.toFixed(2)}${c.kind ? `, ${c.kind === 'tax' ? 'tax' : 'non-tax'} entry` : ', no entry close enough'}</span>
@@ -1880,9 +1771,9 @@ function viewModel(s) {
         ${gate('Precision', `At least ${pct(t.precisionTarget, 0)} of high-confidence suggestions match the expert`, m.highConfidence ? `${pct(m.precision)} (${m.correct} of ${m.highConfidence})` : 'No high-confidence suggestions', m.gates.precision)}
         ${gate('Sample', `At least ${t.minSample} expert-labelled labels (demo scale)`, `${m.poolSize}`, m.gates.sample)}
       </tbody></table></div>
-      <p class="small muted">Fitted once per state on expert-labelled labels. ${pct(m.coverage, 0)} of them get a high-confidence suggestion. Green labels are this client's; dotted ones are weak and go to an expert.${m.forced ? ' Shadow mode is forced on.' : ''}</p>
+      <p class="small muted">Fitted once per state on expert-labelled labels. ${pct(m.coverage, 0)} of them get a high-confidence suggestion. Green labels come from ${esc(s.a.company.name)}'s Desktop file; dotted ones are weak and go to an expert.${m.forced ? ' Shadow mode is forced on.' : ''}</p>
       ${unassigned}
-      <div class="cluster-list">${clusters}</div>
+      <div class="cluster-list">${clusters}${singleCard}</div>
     </section>`;
   }).join('');
   return `<div class="page-head"><h1>Model</h1>
@@ -1896,38 +1787,33 @@ function viewModel(s) {
 function viewScenarios() {
   const results = scenarios();
   const passed = results.filter((r) => r.pass).length;
-  const name = (id) => data.companies.find((c) => c.company_id === id)?.name ?? id;
-  const person = (w) => {
-    if (!w.employee) return '';
-    const co = data.companies.find((c) => c.company_id === w.company);
-    return co?.employees.find((e) => e.employee_id === w.employee)?.name ?? '';
-  };
-  const VIEW_NAME = { review: 'To do', expert: 'Expert queue', golive: 'Go live', reconcile: 'Go live', model: 'Model', analysis: 'Engine', audit: 'Log' };
   const groups = GROUPS.map((g) => {
-    const rows = results.filter((r) => r.group === g.id).map((r) => `<tr>
+    const mine = results.filter((r) => r.group === g.id);
+    const ok = mine.filter((r) => r.pass).length;
+    const rows = mine.map((r) => `<tr>
         <td>${mark(r.pass ? 'pass' : 'fail')}<span class="sr-only">${r.pass ? 'Passes' : 'Fails'}</span></td>
         <td><strong>${esc(r.title)}</strong><div class="small muted">${esc(r.expect)}</div></td>
         <td class="small">${esc(r.detail)}</td>
-        <td><button class="btn quiet" type="button" data-action="open-scenario" data-company="${esc(r.where.company)}" data-view="${esc(r.where.view)}" data-employee="${esc(r.where.employee ?? '')}">${esc([person(r.where) || name(r.where.company), VIEW_NAME[r.where.view]].filter(Boolean).join(', '))}</button></td>
       </tr>`).join('');
-    return `<section class="section" aria-labelledby="sg-${g.id}">
-      <div class="section-head"><h2 id="sg-${g.id}">${esc(g.title)}</h2></div>
-      <div class="table-wrap"><table class="scenario-table"><thead><tr><th><span class="sr-only">Result</span></th><th>Scenario</th><th>What the check found</th><th>See it</th></tr></thead><tbody>${rows}</tbody></table></div>
-    </section>`;
+    // One fold per step, closed unless something in it fails.
+    return `<details class="fold"${ok < mine.length ? ' open' : ''}><summary>${icon(ok === mine.length ? 'check' : 'alert')}<span class="fold-t">${esc(g.title)}</span><span class="count ${ok === mine.length ? 'ok' : 'bad'}">${ok}/${mine.length}</span>${icon('chevron', 'chev')}</summary>
+      <div class="fold-body"><div class="table-wrap"><table class="scenario-table"><thead><tr><th><span class="sr-only">Result</span></th><th>Scenario</th><th>What the check found</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+    </details>`;
   }).join('');
   return `<div class="page-head"><h1>Scenarios</h1>
-    <p class="lede">Every case the BRD has to handle, with a live check. The same checks run in the automated tests.</p></div>
+    <p class="lede">Every case the BRD has to handle, checked live each time the page opens. Each one runs on a small test file made for that case, separate from the business being moved. The same checks run in the automated tests. Open a step to see its checks.</p></div>
     <div class="score ${passed === results.length ? 'all' : ''}"><span class="n">${passed} of ${results.length}</span><span>scenarios pass</span></div>
-    ${groups}`;
+    <section class="card scen-card" aria-label="Scenarios by step">${groups}</section>`;
 }
 
 // ---------- decision log ----------
 
+const LOG_SHOWN = 50;
 function viewAudit(s) {
   const entries = state.audit.filter((a) => a.company_id === state.companyId);
-  const rows = entries.map((a) => `<tr><td class="small">${esc(new Date(a.at).toLocaleString())}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td><td class="small muted">${esc(a.detail)}</td></tr>`).join('');
+  const rows = entries.slice(0, more.audit ? undefined : LOG_SHOWN).map((a) => `<tr><td class="small">${esc(new Date(a.at).toLocaleString())}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td><td class="small muted">${esc(a.detail)}</td></tr>`).join('');
   return `<div class="page-head"><h1>Decision log</h1>
-    <p class="lede">Every decision for this client: who, when, and the rule or reason.</p></div>
+    <p class="lede">Every decision for this business, newest first: who, when, and the rule or reason.</p></div>
     <div class="row">${HOSTED
       ? `<button class="btn primary" type="button" data-action="copy-json">Copy report (JSON)</button>
       <button class="btn" type="button" data-action="copy-csv">Copy lines (CSV)</button>
@@ -1937,7 +1823,8 @@ function viewAudit(s) {
       <button class="btn quiet" type="button" data-action="copy-json">Copy report</button>`}
     </div>
     <label class="sr-only" for="copy-box">Report JSON</label><textarea class="copy-box" id="copy-box" readonly hidden></textarea>
-    ${entries.length ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Line</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty"><strong>No decisions yet for this client.</strong></div>'}`;
+    ${entries.length ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Line</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${entries.length > LOG_SHOWN ? `<div class="row"><button class="btn quiet" type="button" data-action="show-more" data-key="audit">${more.audit ? `Show the newest ${LOG_SHOWN}` : `Show all ${num(entries.length)} entries`}</button></div>` : ''}` : '<div class="empty"><strong>No decisions yet. Run the move as the business owner and every step lands here.</strong></div>'}`;
 }
 
 // ---------- data (admin): the database, a query box and uploads ----------
@@ -1945,14 +1832,16 @@ function viewAudit(s) {
 const EXAMPLES = [
   ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM line_results\nGROUP BY route\nORDER BY lines DESC'],
   ['Who decided', 'SELECT COALESCE(decided_by, \'nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM line_results\nGROUP BY 1\nORDER BY lines DESC'],
-  ['One line across the keys', 'SELECT e.name AS employee, p.label AS desktop_item, a.city, a.school_district, r.route, r.online_tax\nFROM desktop_lines l\nJOIN employees e ON e.company_id = l.company_id AND e.employee_id = l.employee_id\nJOIN payroll_items p ON p.company_id = l.company_id AND p.item_id = l.item_id\nJOIN employee_addresses h ON h.company_id = l.company_id AND h.employee_id = l.employee_id\nJOIN addresses a ON a.address_id = h.address_id\nLEFT JOIN line_results r ON r.company_id = l.company_id AND r.employee_id = l.employee_id AND r.item_id = l.item_id\nWHERE l.company_id = \'G-001\'\nLIMIT 50'],
-  ['Owed, not withheld', 'SELECT c.name AS business, e.name AS employee, t.name AS tax, x.months\nFROM expected_taxes x\nJOIN companies c ON c.company_id = x.company_id\nJOIN employees e ON e.company_id = x.company_id AND e.employee_id = x.employee_id\nJOIN taxes t ON t.tax_id = x.tax_id\nWHERE x.gap = 1\nORDER BY c.sort\nLIMIT 100'],
+  ['One line across the keys', 'SELECT e.name AS employee, p.label AS desktop_item, a.city, a.school_district, r.route, r.online_tax\nFROM desktop_lines l\nJOIN employees e ON e.company_id = l.company_id AND e.employee_id = l.employee_id\nJOIN payroll_items p ON p.company_id = l.company_id AND p.item_id = l.item_id\nJOIN employee_addresses h ON h.company_id = l.company_id AND h.employee_id = l.employee_id\nJOIN addresses a ON a.address_id = h.address_id\nLEFT JOIN line_results r ON r.company_id = l.company_id AND r.employee_id = l.employee_id AND r.item_id = l.item_id\nLIMIT 50'],
+  ['Owed, not withheld', 'SELECT e.name AS employee, t.name AS tax, x.months\nFROM expected_taxes x\nJOIN employees e ON e.company_id = x.company_id AND e.employee_id = x.employee_id\nJOIN taxes t ON t.tax_id = x.tax_id\nWHERE x.gap = 1\nORDER BY e.name'],
   ['Open lines by reason', 'SELECT reason, COUNT(*) AS lines\nFROM line_results\nWHERE stage = \'with_expert\'\nGROUP BY reason\nORDER BY lines DESC'],
-  ['Biggest businesses', 'SELECT c.name, c.source, COUNT(e.employee_id) AS employees\nFROM companies c LEFT JOIN employees e ON e.company_id = c.company_id\nGROUP BY c.company_id\nORDER BY employees DESC\nLIMIT 15'],
-  ['Problems in Desktop files', 'SELECT c.name AS business, i.employee_id, i.kind, i.value\nFROM import_issues i JOIN companies c ON c.company_id = i.company_id'],
-  ['Added addresses', 'SELECT c.name AS business, k.employee_id, k.value, k.found_in_lookup, k.at\nFROM corrections k JOIN companies c ON c.company_id = k.company_id\nORDER BY k.at DESC'],
+  ['Desktop items', 'SELECT p.label, p.law_id, p.origin, COUNT(l.employee_id) AS employees\nFROM payroll_items p LEFT JOIN desktop_lines l ON l.company_id = p.company_id AND l.item_id = p.item_id\nGROUP BY p.company_id, p.item_id\nORDER BY employees DESC'],
+  ['Problems in the Desktop file', 'SELECT employee_id, kind, value\nFROM import_issues'],
+  ['Added addresses', 'SELECT employee_id, value, found_in_lookup, at\nFROM corrections\nORDER BY at DESC'],
 ];
 const LAYER_NO = { reference: 1, source: 2, work: 3, audit: 4 };
+// The tables that tell the story of one line: a Desktop line belongs to an employee, whose address picks the tax.
+const MAIN_TABLES = new Set(['companies', 'employees', 'addresses', 'payroll_items', 'desktop_lines', 'taxes', 'line_results']);
 let schemaSel = 'employees';  // the table open in the schema view
 const ruleResults = {};      // the database's answer to each rule check
 
@@ -1960,7 +1849,7 @@ const ruleResults = {};      // the database's answer to each rule check
 function schemaCard(groups) {
   const layers = groups.map((g) => `<div class="layer layer-${g.id}">
       <div class="layer-head"><span class="layer-n">${LAYER_NO[g.id]}</span><div><strong>${esc(g.title)}</strong><span>${esc(g.owner)}</span></div></div>
-      <ul class="layer-tables">${g.tables.map((t) => `<li><button type="button" class="tbl" data-action="schema-table" data-key="${esc(t.name)}"${t.name === schemaSel ? ' aria-current="true"' : ''}><span class="tbl-name">${esc(t.name)}</span><span class="tbl-n">${num(t.rows)}</span></button></li>`).join('')}</ul>
+      <ul class="layer-tables">${g.tables.map((t) => `<li><button type="button" class="tbl${MAIN_TABLES.has(t.name) ? ' main' : ''}" data-action="schema-table" data-key="${esc(t.name)}"${t.name === schemaSel ? ' aria-current="true"' : ''}><span class="tbl-name">${esc(t.name)}</span><span class="tbl-n">${num(t.rows)}</span></button></li>`).join('')}</ul>
     </div>`).join('');
   const t = describeTable(db, schemaSel) ?? describeTable(db, 'employees');
   const layer = groups.find((g) => g.tables.some((x) => x.name === t.name));
@@ -1968,7 +1857,7 @@ function schemaCard(groups) {
   const cols = t.columns.map((c) => `<tr><td><code class="code">${esc(c.name)}</code></td><td class="small">${esc((c.type || 'TEXT').toLowerCase())}</td><td>${keyOf(c) || '<span class="muted">-</span>'}</td><td class="small">${c.notNull ? 'Yes' : '<span class="muted">No</span>'}</td><td>${c.links.map((x) => `<button type="button" class="link-tbl" data-action="schema-table" data-key="${esc(x)}">${esc(x)}</button>`).join(' ') || '<span class="muted">-</span>'}</td></tr>`).join('');
   const fks = t.foreignKeys.map((f) => `<li><code class="code">${esc(f.from.join(', '))}</code> must match <button type="button" class="link-tbl" data-action="schema-table" data-key="${esc(f.table)}">${esc(f.table)}</button> <code class="code">${esc(f.to.join(', '))}</code></li>`).join('');
   return `<section class="card" aria-labelledby="schema-h">
-    <div class="card-head"><div><h2 id="schema-h">Schema</h2><p class="card-sub">The blueprint: ${groups.reduce((n, g) => n + g.tables.length, 0)} tables in four layers. Click a table to see its columns, keys and rules.</p></div>
+    <div class="card-head"><div><h2 id="schema-h">Schema</h2><p class="card-sub">The blueprint: one database, ${groups.reduce((n, g) => n + g.tables.length, 0)} tables in four layers, like sheets in one workbook. Start with the bold ones; click any table for its columns, keys and rules.</p></div>
       <div class="row">${HOSTED ? '<button class="btn" type="button" data-action="copy-schema">Copy schema.sql</button>' : `<button class="btn" type="button" data-action="download-schema">schema.sql</button><button class="btn primary" type="button" data-action="download-db">${icon('file')}Download the database</button>`}</div></div>
     <div class="card-body">
       <div class="layers">${layers}</div>
@@ -2004,9 +1893,7 @@ function rulesCard() {
 
 function viewData() {
   const head = `<div class="page-head"><h1>Data</h1>
-    <p class="lede">A real SQLite database inside this page, with its keys and rules switched on. It is rebuilt on every visit; uploads and added addresses stay in this browser.</p></div>`;
-  // The work tables need every business analysed first.
-  if (db && unchecked().length) { warmUp(); return head + warmPanel(); }
+    <p class="lede">A real SQLite database inside this page, with its keys and rules switched on. It holds the business being moved, the Ohio tax reference, and every result and decision.</p></div>`;
   syncWork();
   if (db && !query.result && !query.error) runSql(query.sql);
   const groups = db ? tableSummary(db) : [];
@@ -2030,7 +1917,7 @@ function viewData() {
       </div>
     </section>
     <section class="card" aria-labelledby="up-h">
-      <div class="card-head"><div><h2 id="up-h">Add a Desktop file</h2><p class="card-sub">A CSV with one row per employee per payroll item. It runs through the same checks and engine as the demo clients.</p></div></div>
+      <div class="card-head"><div><h2 id="up-h">Try your own Desktop file</h2><p class="card-sub">A CSV with one row per employee per payroll item. It goes through the same checks and engine as ${esc(generated?.companies[0]?.name ?? 'the demo business')}, and a business picker appears so you can switch between them.</p></div></div>
       <div class="card-body">
         <div class="row"><label class="btn primary file-btn">${icon('file')}Choose a CSV file<input type="file" accept=".csv,text/csv" data-action="upload" class="sr-only"></label><button class="btn" type="button" data-action="template">${HOSTED ? 'Copy the template' : 'Download the template'}</button></div>
         <label class="sr-only" for="template-box">Template CSV</label><textarea class="copy-box" id="template-box" readonly hidden></textarea>
@@ -2190,7 +2077,7 @@ function handle(action, el) {
         resetArmed = true;
         el.classList.add('armed');
         el.querySelector('span').textContent = 'Click again to reset';
-        toast('This clears every decision for every client. Click Reset again to confirm.');
+        toast('This clears every decision, address and upload. Click Reset again to confirm.');
         clearTimeout(resetTimer);
         resetTimer = setTimeout(() => {
           resetArmed = false;
@@ -2473,20 +2360,6 @@ function handle(action, el) {
       log('Intuit governance', 'Restored the BRD thresholds', 'All states');
       toast('Thresholds are back to the BRD values');
       break;
-    case 'open-scenario': {
-      state.companyId = el.dataset.company;
-      const view = el.dataset.view === 'reconcile' ? 'golive' : el.dataset.view; // Reconcile now sits on the Go live page
-      if (view === 'review' || view === 'expert') {
-        state.filters[view] = 'all';
-        state.detailOpen = Boolean(el.dataset.employee);
-        if (el.dataset.employee) { focusEmployee = el.dataset.employee; keepDetail = true; }
-      } else if (el.dataset.employee) pendingFocus = el.dataset.employee;
-      save();
-      const target = `#${view}`;
-      if (location.hash === target) render();
-      else location.hash = target;
-      return;
-    }
     case 'force-shadow': {
       state.settings.forceShadow = { ...state.settings.forceShadow, [el.dataset.state]: el.checked };
       cache.clear();
@@ -2624,23 +2497,21 @@ let SQLlib = null;
 // Addresses the employer added are applied again on every rebuild, so they survive a reload.
 function rebuildData() {
   cache.clear();
-  previews.clear();
   outcomesKey = null;
-  if (warming) { clearTimeout(warming.timer); warming = null; }
   scenarioResults = null;
   lookupIdx = lookupIndex(lookupAddresses());
-  const known = new Set([...files.companies, ...(generated?.companies ?? []), ...uploads.map((u) => u.company)].map((c) => c.company_id));
+  const known = new Set([...(generated?.companies ?? []), ...uploads.map((u) => u.company)].map((c) => c.company_id));
   const corrections = state.corrections.filter((c) => known.has(c.company_id));
   if (SQLlib) {
     try {
       db?.close();
-      db = createDatabase(SQLlib, files, uploads, generated);
+      db = createDatabase(SQLlib, { ...files, companies: [] }, uploads, generated); // the six test files stay out of the business's database
       for (const c of corrections) applyCorrection(db, c, lookupIdx);
       data = readData(db);
       return;
     } catch (err) { dbError = err.message; db = null; }
   }
-  data = fromFiles(files, uploads);
+  data = fromFiles({ ...files, companies: [] }, uploads);
   for (const c of corrections) correctInMemory(c);
 }
 const lookupAddresses = () => [...files.geocoder.addresses, ...(generated?.addresses ?? [])];
@@ -2719,13 +2590,13 @@ async function uploadFile(input) {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=780bba2390`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=ce70b5a061`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };
     const [catalog, geocoder, pool, companies] = await Promise.all(['catalog.json', 'geocoder.json', 'label-pool.json', 'companies.json'].map(get));
     files = { catalog, geocoder, pools: pool.pools, poolMeta: pool.metadata, companies: companies.companies, companiesMeta: companies.metadata };
-    generated = generateBusinesses(catalog);
+    generated = generateBusinesses(catalog, { count: 1 }); // the business being moved: Buckeye Supply Co.
     try { SQLlib = await loadSqlJs(); } catch (err) { dbError = err.message || 'WebAssembly is blocked here'; }
     rebuildData();
     if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies.find((c) => c.company_id === 'G-001')?.company_id ?? data.companies[0].company_id;

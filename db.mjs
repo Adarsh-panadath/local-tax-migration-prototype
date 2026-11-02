@@ -1,5 +1,5 @@
-import { effectiveAll } from './engine/workflow.mjs?v=780bba2390';
-import { monthSpan } from './engine/util.mjs?v=780bba2390';
+import { effectiveAll } from './engine/workflow.mjs?v=ce70b5a061';
+import { monthSpan } from './engine/util.mjs?v=ce70b5a061';
 
 // The demo's database: SQLite (sql.js, compiled to WebAssembly) running inside the page.
 // No server, no account and no keys. It is rebuilt every time the page opens, so each visitor gets

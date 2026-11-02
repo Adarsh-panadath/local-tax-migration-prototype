@@ -159,7 +159,6 @@ export function generateBusinesses(catalog, { seed = SEED, count = GENERATED_COU
     while (!name || usedNames.has(name)) name = `${pick(r, PREFIX)} ${pick(r, TRADE)}`;
     usedNames.add(name);
     const id = `G-${String(i + 1).padStart(3, '0')}`;
-    const code = name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
     const worksites = p.sites.map((town, s) => ({ site_id: `S${s + 1}`, name: `${town} ${s === 0 ? 'main site' : 'branch'}`, address_id: newAddress(town, `${int(r, 100, 2400)} ${pick(r, SITE_ADDRESS[town])}`).address_id }));
     const siteTown = Object.fromEntries(p.sites.map((t, s) => [`S${s + 1}`, t]));
     const items = [];
@@ -244,7 +243,7 @@ export function generateBusinesses(catalog, { seed = SEED, count = GENERATED_COU
       worksites,
       items,
       employees: employees.map((x) => x.emp),
-      description: `Generated business (${code}): ${employees.length} employees across ${p.sites.join(' and ')}.`,
+      description: `${p.sites.length > 1 ? `${p.sites.length} sites` : 'One site'}: ${p.sites.join(' and ')}, Ohio.`,
     });
   }
   return { companies, addresses };
