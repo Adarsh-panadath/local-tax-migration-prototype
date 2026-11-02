@@ -8,8 +8,9 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "start": "node scripts/serve.mjs",
-    "test": "node --test tests/*.test.mjs",
+    "start": "node scripts/build.mjs && node scripts/serve.mjs",
+    "serve": "node scripts/serve.mjs",
+    "test": "node --test",
     "schema": "node scripts/schema.mjs"
   }
 }

@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { resolve, extname } from 'node:path';
+import { resolve, extname, sep } from 'node:path';
 
 const root = resolve('dist');
 const types = {
@@ -12,7 +12,7 @@ http.createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url, 'http://localhost').pathname.replace(/\/$/, '/index.html');
     const path = resolve(root, '.' + decodeURIComponent(pathname));
-    if (!path.startsWith(root + '/')) throw new Error('Invalid path');
+    if (!path.startsWith(root + sep)) throw new Error('Invalid path'); // sep: \ on Windows, / elsewhere
     const body = await readFile(path);
     const type = types[extname(path)] || 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': type.startsWith('text/') || type === 'application/json' ? `${type}; charset=utf-8` : type, 'Cache-Control': 'no-store' });

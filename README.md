@@ -15,11 +15,12 @@ Sign in with a demo account (no passwords). Progress is saved in your own browse
 To run it on your computer (Node.js 20 or later; no install step, no API keys):
 
 ```sh
+npm start       # builds the app into dist/ and serves it at http://localhost:3000
 npm test        # checks: engine, every scenario, the database and its keys, scale and the ML Lab
-npm run build   # copies web/ and data/ into dist/
-npm start       # serves dist/ at http://localhost:3000
 npm run schema  # rewrites docs/schema.* from the schema the app runs
 ```
+
+Works on Windows, macOS and Linux. Nothing to install apart from Node.js: no packages, no database server, no keys. To use another port: `PORT=8080 npm start` (Windows PowerShell: `$env:PORT=8080; npm start`).
 
 ## Three people, one screen set each
 
