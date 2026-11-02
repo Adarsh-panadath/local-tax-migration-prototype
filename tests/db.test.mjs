@@ -9,6 +9,7 @@ import { analyseCompany } from '../web/engine/analysis.mjs';
 import { automate, automationStats, emptyDecisions } from '../web/engine/workflow.mjs';
 import { generateBusinesses } from '../web/generate.mjs';
 import { schemaDocs } from '../scripts/schema-docs.mjs';
+import { asStored } from './helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const read = async (f) => JSON.parse(await readFile(new URL(`../data/${f}`, import.meta.url), 'utf8'));
@@ -31,13 +32,12 @@ const lookup = [...geocoder.addresses, ...gen.addresses];
 const ref = { catalog, lookup, pools: pool.pools };
 const files = { catalog, geocoder: { addresses: lookup }, pools: pool.pools };
 const dbFor = (company, addresses = []) => createDatabase(SQL, { company, addresses, lookup, catalog });
-const dropEmpty = (v) => JSON.parse(JSON.stringify(v, (k, x) => (x === null ? undefined : x)));
-const pick = (x) => ({ cases: x.cases.map((k) => [k.case_id, k.route, k.reason, k.proposal.map((p) => p.tax.tax_id)]), gaps: x.gaps.map((g) => g.gap_id), issues: x.dataIssues.map((d) => d.text) });
+const pick = (x) => ({ cases: x.cases.map((k) => [k.case_id, k.route, k.reason, k.proposal.map((p) => `${p.tax.tax_id} ${p.months}`)]), gaps: x.gaps.map((g) => g.gap_id), issues: x.dataIssues.map((d) => d.text) });
 const auto = (x) => automationStats(x, automate(x, emptyDecisions()).decisions);
 
-test('the business reads back from its database exactly as it was written', () => {
+test('the business reads back from its database as it was written', () => {
   const back = readData(dbFor(buckeye), ref);
-  assert.deepStrictEqual(back.companies, [buckeye]);
+  assert.deepStrictEqual(back.companies, [asStored(buckeye)]);
   assert.equal(back.catalog, catalog);
   assert.equal(back.geocoder.addresses.length, lookup.length, 'no address typed by the employer yet');
 });
@@ -45,7 +45,7 @@ test('the business reads back from its database exactly as it was written', () =
 test('the engine gives the same answers from the database as from the file', () => {
   for (const c of [buckeye, ...companies.companies.filter((x) => x.company_id !== 'C-RPS')]) {
     const back = readData(dbFor(c), ref);
-    assert.deepStrictEqual(back.companies[0], dropEmpty(c), c.company_id);
+    assert.deepStrictEqual(back.companies[0], asStored(c), c.company_id);
     const a = analyseCompany(c, files);
     const b = analyseCompany(back.companies[0], back);
     assert.deepStrictEqual(pick(b), pick(a), c.company_id);
@@ -59,24 +59,26 @@ test('a Desktop file that breaks a key is refused by the database', () => {
   const twice = structuredClone(buckeye);
   twice.employees[0].items.push(twice.employees[0].items[0]);
   assert.throws(() => dbFor(twice), /UNIQUE constraint failed: desktop_lines/);
+  const movedTwice = structuredClone(buckeye);
+  movedTwice.employees[0].addresses.push({ address_id: movedTwice.employees[1].addresses[0].address_id, from_month: 8 }, { address_id: movedTwice.employees[2].addresses[0].address_id, from_month: 11 });
+  assert.throws(() => dbFor(movedTwice), /one move a year/);
 });
 
-test('one database per migration: three groups of tables, no company id outside the company table', () => {
+test('seven tables in three groups, one database per migration, no company id outside the company table', () => {
   const db = dbFor(buckeye);
   const groups = tableSummary(db);
   assert.deepStrictEqual(groups.map((g) => g.id), ['desktop', 'lookup', 'results']);
+  assert.deepStrictEqual(groups.map((g) => g.tables.map((t) => t.name)), [['company', 'employees', 'payroll_items', 'desktop_lines'], ['addresses', 'taxes'], ['results']]);
   const rows = Object.fromEntries(groups.flatMap((g) => g.tables.map((t) => [t.name, t.rows])));
-  assert.equal(rows.company, 1);
-  assert.equal(rows.employees, 152);
-  assert.equal(rows.desktop_lines, 313);
-  assert.equal(rows.payroll_items, 12);
-  assert.equal(rows.line_results, 0);
+  assert.deepStrictEqual(rows, { company: 1, employees: 152, payroll_items: 12, desktop_lines: 313, addresses: rows.addresses, taxes: rows.taxes, results: 0 });
   // Only the addresses this business uses go in.
   const used = new Set([...buckeye.worksites.map((w) => w.address_id), ...buckeye.employees.flatMap((e) => e.addresses.map((a) => a.address_id))]);
   assert.equal(rows.addresses, used.size);
   const inSchema = all(db, "SELECT name FROM sqlite_master WHERE type = 'table'").map((r) => r.name).sort();
   assert.deepStrictEqual(TABLE_GROUPS.flatMap((g) => g.tables).sort(), inSchema, 'every table is in exactly one group');
   for (const t of inSchema.filter((x) => x !== 'company')) assert.ok(!describeTable(db, t).columns.some((c) => c.name === 'company_id'), t);
+  // The movers: the new address and the month are on the employee's row.
+  assert.equal(all(db, 'SELECT COUNT(*) AS n FROM employees WHERE new_home_address_id IS NOT NULL')[0].n, buckeye.employees.filter((e) => e.addresses.length === 2).length);
 });
 
 test('every table has a primary key, and the keys are enforced', () => {
@@ -88,7 +90,8 @@ test('every table has a primary key, and the keys are enforced', () => {
   }
   assert.ok(describeTable(db, 'company').checks.includes('migration_month BETWEEN 1 AND 12'));
   const emp = describeTable(db, 'employees');
-  assert.deepStrictEqual(emp.foreignKeys.map((f) => f.table), ['worksites']);
+  assert.deepStrictEqual(emp.foreignKeys.map((f) => f.from.join()), ['work_address_id', 'home_address_id', 'new_home_address_id']);
+  assert.ok(emp.foreignKeys.every((f) => f.table === 'addresses'));
   assert.ok(emp.linkedFrom.includes('desktop_lines'));
   // Each rule check is refused by the database itself, and nothing changes.
   const before = all(db, 'SELECT COUNT(*) AS n FROM employees')[0].n;
@@ -128,24 +131,26 @@ test('the query box runs one SELECT and nothing that changes data', () => {
   assert.equal(runQuery(db, 'SELECT COUNT(*) FROM employees').rows[0][0], 152);
 });
 
-test('the result tables hold the engine\'s results and the log, and they obey the keys', () => {
+test('the results table holds where every line went, and obeys the keys', () => {
   const db = dbFor(buckeye);
   const back = readData(db, ref);
   const a = analyseCompany(back.companies[0], back);
   const decided = automate(a, emptyDecisions()).decisions;
-  const log = [{ at: '2026-10-31T00:00:01Z', company_id: 'G-001', actor: 'Automation', action: 'Confirmed', target: 'Maya Perez: Lancaster Schools', detail: 'Rule: Confirm matches the address supports' }, { at: '2026-10-31T00:00:00Z', company_id: 'G-001', actor: 'Employer', action: 'Started the move to Online payroll', target: 'Buckeye Supply Co.', detail: '' }];
-  writeResults(db, resultRows({ analysis: a, decisions: decided, log }));
+  writeResults(db, resultRows({ analysis: a, decisions: decided }));
   const n = (sql) => all(db, sql)[0].n;
-  assert.equal(n('SELECT COUNT(*) AS n FROM line_results'), 313, 'one result per Desktop line');
-  assert.equal(n('SELECT COUNT(*) AS n FROM expected_taxes WHERE gap = 1'), a.gaps.length, 'gaps come straight out of expected_taxes');
+  assert.equal(n('SELECT COUNT(*) AS n FROM results'), 313, 'one result per Desktop line');
+  assert.equal(n("SELECT COUNT(*) AS n FROM results WHERE route = 'local_tax'"), n('SELECT COUNT(*) AS n FROM results WHERE tax_id IS NOT NULL'), 'every local tax line names its Online tax');
   // 313 of 318 items settled by rule: Desktop lines plus taxes nobody withheld.
-  assert.equal(n("SELECT COUNT(*) AS n FROM line_results WHERE decided_by = 'rule'") + a.gaps.length, automationStats(a, decided).auto);
+  assert.equal(n("SELECT COUNT(*) AS n FROM results WHERE decided_by = 'rule'") + a.gaps.length, automationStats(a, decided).auto);
   assert.equal(automationStats(a, decided).auto, 313);
-  assert.deepStrictEqual(all(db, 'SELECT who FROM decision_log ORDER BY log_id').map((r) => r.who), ['Employer', 'Automation'], 'oldest first');
+  // A mover's line names the tax at the new address, the one that goes live in October.
+  const mover = buckeye.employees.find((e) => e.addresses.length === 2 && e.addresses[1].from_month <= 10 && e.items.length);
+  const live = all(db, "SELECT r.tax_id, a.school_district FROM results r JOIN employees e ON e.employee_id = r.employee_id JOIN addresses a ON a.address_id = e.new_home_address_id JOIN taxes t ON t.tax_id = r.tax_id WHERE r.employee_id = ? AND t.type = 'school_district'", [mover.employee_id]);
+  assert.ok(live.every((r) => r.tax_id.endsWith(r.school_district)), JSON.stringify(live));
   assert.deepStrictEqual(all(db, 'PRAGMA foreign_key_check'), []);
   // Writing again replaces the results; it does not add to them.
-  writeResults(db, resultRows({ analysis: a, decisions: decided, log }));
-  assert.equal(n('SELECT COUNT(*) AS n FROM line_results'), 313);
+  writeResults(db, resultRows({ analysis: a, decisions: decided }));
+  assert.equal(n('SELECT COUNT(*) AS n FROM results'), 313);
 });
 
 test('the CSV template uploads cleanly and runs through the engine', () => {
@@ -157,7 +162,7 @@ test('the CSV template uploads cleanly and runs through the engine', () => {
   assert.equal(company.items.length, 2);
   const back = readData(dbFor(company, addresses), ref);
   const up = back.companies[0];
-  assert.deepStrictEqual(up, company);
+  assert.deepStrictEqual(up, asStored(company));
   const a = analyseCompany(up, back);
   assert.equal(a.cases.length, 6);
   assert.deepStrictEqual(a.dataIssues, []);

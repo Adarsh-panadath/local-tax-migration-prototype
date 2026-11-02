@@ -4,20 +4,12 @@ erDiagram
     text name
     integer migration_month
   }
-  worksites {
-    text site_id PK
-    text name
-    text address_id FK
-  }
   employees {
     text employee_id PK
     text name
-    text site_id FK
-  }
-  home_addresses {
-    text employee_id PK, FK
-    integer from_month PK
-    text address_id FK
+    text work_address_id FK
+    text home_address_id FK
+    text new_home_address_id FK
   }
   payroll_items {
     text item_id PK
@@ -36,31 +28,21 @@ erDiagram
   taxes {
     text tax_id PK
     text name
+    text code
     real rate
   }
-  expected_taxes {
-    text employee_id PK, FK
-    text tax_id PK, FK
-    integer gap
-  }
-  line_results {
+  results {
     text employee_id PK, FK
     text item_id PK, FK
     text route
+    text tax_id FK
     text decided_by
   }
-  decision_log {
-    integer log_id PK
-    text who
-    text action
-  }
-  addresses ||--o{ worksites : "address_id"
-  worksites ||--o{ employees : "site_id"
-  addresses ||--o{ home_addresses : "address_id"
-  employees ||--o{ home_addresses : "employee_id"
+  addresses ||--o{ employees : "new_home_address_id"
+  addresses ||--o{ employees : "home_address_id"
+  addresses ||--o{ employees : "work_address_id"
   taxes ||--o{ payroll_items : "system_tax_id"
   payroll_items ||--o{ desktop_lines : "item_id"
   employees ||--o{ desktop_lines : "employee_id"
-  taxes ||--o{ expected_taxes : "tax_id"
-  employees ||--o{ expected_taxes : "employee_id"
-  desktop_lines ||--o| line_results : "employee_id, item_id"
+  desktop_lines ||--o| results : "employee_id, item_id"
+  taxes ||--o{ results : "tax_id"

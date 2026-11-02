@@ -65,9 +65,11 @@ One database per migration. When the page opens, the business being moved is loa
 
 | Group | Tables |
 | --- | --- |
-| Desktop file | `company` (one row), `worksites`, `employees`, `home_addresses`, `payroll_items`, `desktop_lines` |
-| Tax lookup | `addresses` (only the ones this business uses; `source` = `lookup`, or `employer` for one the lookup cannot place), `taxes` |
-| Migration results | `expected_taxes`, `line_results`, `decision_log` |
+| From the Desktop file | `company` (one row), `employees` (with work site, home address and a move), `payroll_items`, `desktop_lines` |
+| From Intuit's lookup | `addresses` (only the ones this business uses; `school_district` = `UNRESOLVED` for one the lookup cannot place), `taxes` |
+| Our result | `results` (one row per Desktop line) |
+
+A work site is stored on each employee's row and comes back named by its name; the description is not stored; an employee keeps at most one move a year.
 
 Every table has a primary key; foreign keys and CHECK rules are on. A Desktop file that breaks a key (an item that does not exist, the same item twice for one person, an address nobody knows) is refused when it is loaded, with the database's own message. The full schema is in [schema.md](schema.md).
 
@@ -89,7 +91,7 @@ A test (`tests/scale.test.mjs`) checks that the generator gives the same busines
 A line that needs a home address (`no_address`, or `address_unresolved` when the lookup cannot place it) waits for the employer: the owner's **To do** lists it under **Missing information**. Saving an address:
 
 1. Looks it up by street and ZIP in the address lookup.
-2. Writes it to the database: `home_addresses` (for the whole year), and `addresses` (as the lookup placed it, or with `source` = `employer` if the lookup has never seen it). The log records it as "Added a home address".
+2. Writes it to the database: the employee's `home_address_id` (for the whole year), and the address in `addresses` (as the lookup placed it, or as `UNRESOLVED` if the lookup has never seen it). The app's log records it as "Added a home address".
 3. Reads the business back from the database, and the engine checks its lines again. If the business has moved, the employer's rules run and settle what they can.
 
 An address the lookup knows settles the line by rule; one it has never seen is kept, and the line stays with an expert as `address_unresolved`. Added addresses are kept in the browser and applied again whenever the database is rebuilt.

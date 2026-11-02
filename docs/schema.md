@@ -2,50 +2,52 @@
 
 *Generated from the schema the app runs (`npm run schema`). The SQL is in [schema.sql](schema.sql).*
 
+## In one line
+
+**Seven tables, one database per migration.** Four come from the business's Desktop file, two from Intuit's address and tax lookup, and one holds our result.
+
+| Group | Tables | In plain words |
+| --- | --- | --- |
+| From the Desktop file | `company`, `employees`, `payroll_items`, `desktop_lines` | Who the business is, its people, its payroll items, and which person has which item |
+| From Intuit's lookup | `addresses`, `taxes` | Which school district and city each address is in, and the exact local taxes with their rates |
+| Our result | `results` | Where each Desktop line went, the Online tax, and who decided |
+
+![The seven tables and how they link](../web/schema-diagram.svg)
+
 ## What a schema is
 
-The schema is the blueprint of the database: which tables exist, their columns, the **primary key** that identifies each row, the **foreign keys** that link tables, and the **rules** the data must follow.
+The schema is the blueprint of the database: the tables, their columns, the **primary key** that identifies each row, the **foreign keys** that link tables, and the **rules** the data must follow. Think of a workbook: each table is a sheet, the primary key is an ID column that never repeats, and a foreign key is a column that must match an ID on another sheet. A database refuses a row that breaks a rule.
 
-Think of a workbook: each table is a sheet, the columns are its headings, the primary key is an ID column that never repeats, and a foreign key is a column that must match an ID on another sheet. The difference: a database refuses a row that breaks a rule.
+## The story in four steps
 
-## One database per migration
+1. **Desktop gives us lines.** `desktop_lines` has one row per employee per payroll item, for example *Maya Perez* has *"Lancaster Schools"*. The label only says roughly what kind of tax it is.
+2. **The address says which tax.** The employee's `home_address_id` leads to `addresses`, which holds the school district code (2305). That code matches `taxes.code`: *Lancaster City School District, 1.5%*.
+3. **The engine writes the result.** `results` gets one row per Desktop line: the route (local tax, not a tax, or an expert), the `tax_id` it becomes in Online payroll, and who decided (a rule, the employer or an expert).
+4. **Nothing in the Desktop file is changed.** Results live in their own table, so what Desktop said stays next to what happened.
 
-A migration moves one business from Desktop to Online payroll, so the database holds that one business: **11 tables in three groups**, and no table needs a company id. Moving another business means a new database with the same tables.
+The Data page query **Desktop label to Online tax** runs exactly this join.
 
-| Group | Who it comes from | Tables |
+## Why one database per migration
+
+A migration moves one business, so the database holds that one business and no table needs a company id. Moving another business means a new database with the same seven tables.
+
+## Keys and rules
+
+| Table | Primary key | Must match (foreign key) |
 | --- | --- | --- |
-| 1. Desktop file | The business | `company`, `worksites`, `employees`, `home_addresses`, `payroll_items`, `desktop_lines` |
-| 2. Tax lookup | Intuit | `addresses`, `taxes` |
-| 3. Migration results | Engine and people | `expected_taxes`, `line_results`, `decision_log` |
+| `company` | `company_id` | - |
+| `employees` | `employee_id` | `work_address_id` → `addresses`<br>`home_address_id` → `addresses`<br>`new_home_address_id` → `addresses` |
+| `payroll_items` | `item_id` | `system_tax_id` → `taxes` |
+| `desktop_lines` | `employee_id, item_id` | `employee_id` → `employees`<br>`item_id` → `payroll_items` |
+| `addresses` | `address_id` | - |
+| `taxes` | `tax_id` | - |
+| `results` | `employee_id, item_id` | `tax_id` → `taxes`<br>`employee_id, item_id` → `desktop_lines` |
 
-Data moves one way: the Desktop file is copied into group 1 and never edited; the engine reads it with group 2 and writes what it finds, and what people decide, to group 3.
-
-![The tables and how they link](../web/schema-diagram.svg)
-
-## One Desktop line, followed through the keys
-
-1. `desktop_lines` has one row per employee per payroll item: (`employee_id`, `item_id`).
-2. `employee_id` leads to `employees`, and `home_addresses` gives where that person lives.
-3. The address's `school_district` in `addresses` is the same code as a school-district tax in `taxes`. **The address decides the exact tax**; the Desktop label only says what kind of tax it is.
-4. `expected_taxes` lists what the addresses say each person owes; `gap = 1` means nothing in Desktop withholds it.
-5. `line_results` says where the line ended up: its route, the Online tax, and who settled it. `decision_log` records every step.
-
-The Data page's example query **One line across the keys** runs this join.
-
-## Design choices
-
-- **One fact in one place.** A tax's rate is stored once, in `taxes`; everything else points to it.
-- **Home addresses have their own table** because people move. A move is a second row with the month it starts.
-- **The Desktop file is never edited.** Results and decisions go to their own tables, so what Desktop said stays next to what happened.
-- **Keys the database enforces.** The same item twice for one person, or a line for an item that does not exist, is refused when the file is loaded.
-
-## Rules the database enforces
-
-Every table has a primary key; foreign keys and CHECK rules are on. The Data page has five buttons that each try to break a rule. The database refuses every one, and nothing changes:
+The Data page has five buttons that each try to break a rule. The database refuses every one, and nothing changes:
 
 | Try to | The database answers |
 | --- | --- |
-| Add an employee at a work site that does not exist | FOREIGN KEY constraint failed |
+| Add an employee who works at an address that does not exist | FOREIGN KEY constraint failed |
 | Add the same employee twice | UNIQUE constraint failed: employees.employee_id |
 | Set the move month to 13 | CHECK constraint failed: month_1_to_12 |
 | Give a tax a rate of 150% | CHECK constraint failed: rate_0_to_100 |
@@ -53,40 +55,41 @@ Every table has a primary key; foreign keys and CHECK rules are on. The Data pag
 
 ## Every table
 
-### 1. Desktop file (The business)
+### 1. From the Desktop file
 
-| Table | What it holds | Primary key | Links to |
-| --- | --- | --- | --- |
-| `company` | The business being moved: one row. | `company_id` | - |
-| `worksites` | Where its people work. | `site_id` | `address_id` → `addresses` |
-| `employees` | The people on the payroll. | `employee_id` | `site_id` → `worksites` |
-| `home_addresses` | Where each employee lives; a move adds a row from the month it starts. | `employee_id, from_month` | `address_id` → `addresses`<br>`employee_id` → `employees` |
-| `payroll_items` | Payroll items as set up in Desktop, with the label exactly as typed. | `item_id` | `system_tax_id` → `taxes` |
-| `desktop_lines` | One row per employee per payroll item: a Desktop local tax line. | `employee_id, item_id` | `item_id` → `payroll_items`<br>`employee_id` → `employees` |
+| Table | What it holds | Columns |
+| --- | --- | --- |
+| `company` | The business being moved: one row. | `company_id`, `name`, `plan`, `migration_month` |
+| `employees` | The people: where they work, where they live, and where they moved to. | `employee_id`, `name`, `monthly_wages`, `work_site`, `work_address_id`, `home_address_id`, `new_home_address_id`, `moved_month`, `remote`, `hired_month`, `left_month` |
+| `payroll_items` | Payroll items as set up in Desktop, with the label exactly as typed. | `item_id`, `label`, `law_id`, `item_type`, `tracking_type`, `rate_percent`, `annual_amount`, `agency`, `agency_account`, `deposit_frequency`, `system_tax_id` |
+| `desktop_lines` | Which employee has which payroll item: one row per Desktop local tax line. | `employee_id`, `item_id` |
 
-### 2. Tax lookup (Intuit)
+### 2. From Intuit's lookup
 
-| Table | What it holds | Primary key | Links to |
-| --- | --- | --- | --- |
-| `addresses` | The addresses this business uses, with the school district and city the lookup places them in. | `address_id` | - |
-| `taxes` | The local taxes Online payroll knows: rate, basis and agency. | `tax_id` | - |
+| Table | What it holds | Columns |
+| --- | --- | --- |
+| `addresses` | Each address, with the school district and city the lookup places it in. | `address_id`, `street`, `city`, `state`, `zip`, `school_district`, `tax_city` |
+| `taxes` | The local taxes Online payroll knows, with their rates. | `tax_id`, `name`, `type`, `code`, `rate`, `agency` |
 
-### 3. Migration results (Engine and people)
+### 3. Our result
 
-| Table | What it holds | Primary key | Links to |
-| --- | --- | --- | --- |
-| `expected_taxes` | What each employee's addresses say they owe. gap = 1: owed, but nothing withholds it. | `employee_id, tax_id` | `tax_id` → `taxes`<br>`employee_id` → `employees` |
-| `line_results` | Where each Desktop line stands: route, Online tax, and who settled it. | `employee_id, item_id` | `employee_id, item_id` → `desktop_lines` |
-| `decision_log` | Who did what and when. | `log_id` | - |
+| Table | What it holds | Columns |
+| --- | --- | --- |
+| `results` | Where each Desktop line went, the Online tax, and who decided. | `employee_id`, `item_id`, `route`, `tax_id`, `status`, `reason`, `decided_by`, `rule` |
 
-## Where it runs
+## Questions you may be asked
 
-SQLite inside the web page (sql.js, compiled to WebAssembly): no server, no account, no key. It is rebuilt every time the page opens. The tax catalogue, the address lookup and the model's labelled examples are Intuit's reference data; only the parts this business uses go into the database. In production the tables would live in a server database such as PostgreSQL.
+- **Why is the address in its own table?** Many employees share an address's district, and the lookup is Intuit's data. Each fact is stored once; employees point to it.
+- **Why a separate desktop_lines table?** One employee has many payroll items and one item is on many employees (many-to-many). `desktop_lines` is the link table between them.
+- **Why is results separate from desktop_lines?** The Desktop file is never edited. The result can change as people decide; the source cannot.
+- **What if someone moved?** `employees` keeps the new address and the month (`new_home_address_id`, `moved_month`). The prototype keeps one move a year.
+- **Where is the audit trail?** `results` says who decided each line and by which rule; the app's Log page keeps every step with its time.
+- **Where does it run?** SQLite inside the web page (sql.js): no server, no key, rebuilt on every visit. In production the same tables would run on a server database such as PostgreSQL.
 
 ## How to show it
 
 1. Sign in as the admin and open **Data**. Click any table for its columns and keys.
 2. Open **Diagram of the tables**.
 3. Click **Try all** under "The database checks the data itself".
-4. Run **One line across the keys**.
+4. Run **Desktop label to Online tax** and **The address picks the tax**.
 5. Click **Download the database** and open it in DB Browser for SQLite (free).

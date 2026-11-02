@@ -1,84 +1,83 @@
 import { effectiveAll } from './engine/workflow.mjs';
-import { monthSpan } from './engine/util.mjs';
 
 // The demo's database: SQLite (sql.js, compiled to WebAssembly) running inside the page.
 // No server, no account and no keys. It is rebuilt every time the page opens.
 //
-// One database per migration: it holds the one business being moved, so no table needs a company id.
-// Three groups of tables (SCHEMA below, also in docs/schema.sql):
-//   Desktop file      what the business brings: company, work sites, employees, home addresses, items, lines
-//   Tax lookup        Intuit's data, only what this business needs: its addresses and the taxes
-//   Migration results what the engine found and what people decided
-// Every table has a primary key; foreign keys and CHECK rules are on, so the database itself refuses
-// a row that points at nothing or holds an impossible value.
-//
+// One database per migration, seven tables (SCHEMA below, also in docs/schema.sql):
+//   From the Desktop file  company, employees, payroll_items, desktop_lines
+//   From Intuit's lookup   addresses, taxes
+//   Our result             results
+// Every table has a primary key; foreign keys and CHECK rules are on, so the database itself
+// refuses a row that points at nothing or holds an impossible value.
 // The engine reads the business back from these tables (readData), so the screens show what is in them.
 
-export const SCHEMA = `-- Local Tax Migration: the database schema.
--- SQLite, in standard SQL: the same tables run on PostgreSQL with small type changes.
---
--- One database per migration. It holds the one business being moved, so no table needs a company id.
---   1. Desktop file       what the business brings (copied in, never edited)
---   2. Tax lookup         Intuit's data, only what this business needs
---   3. Migration results  what the engine found and what people decided
---
--- Every table has a primary key. Foreign keys link the tables, and CHECK rules refuse impossible values.
+export const SCHEMA = `-- Local Tax Migration: the database schema. Seven tables, one database per migration.
+--   From the Desktop file:  company, employees, payroll_items, desktop_lines
+--   From Intuit's lookup:   addresses, taxes
+--   Our result:             results
+-- Every table has a primary key. Foreign keys link the tables; CHECK rules refuse impossible values.
 
 PRAGMA foreign_keys = ON;
-
--- =====================================================================
--- 1. DESKTOP FILE
--- =====================================================================
 
 -- The business being moved: one row.
 CREATE TABLE company (
   company_id       TEXT PRIMARY KEY,
   name             TEXT NOT NULL,
   plan             TEXT NOT NULL CHECK (plan IN ('Core', 'Premium', 'Elite')),
-  migration_month  INTEGER NOT NULL CONSTRAINT month_1_to_12 CHECK (migration_month BETWEEN 1 AND 12),
-  description      TEXT
+  migration_month  INTEGER NOT NULL CONSTRAINT month_1_to_12 CHECK (migration_month BETWEEN 1 AND 12)
 );
 
-CREATE TABLE worksites (
-  site_id     TEXT PRIMARY KEY,
-  name        TEXT,
-  address_id  TEXT NOT NULL REFERENCES addresses (address_id)
+-- An address, and the school district and city the lookup places it in.
+-- school_district matches taxes.code; UNRESOLVED when the lookup cannot place the address.
+CREATE TABLE addresses (
+  address_id       TEXT PRIMARY KEY,
+  street           TEXT,
+  city             TEXT,
+  state            TEXT,
+  zip              TEXT,
+  school_district  TEXT,
+  tax_city         TEXT                              -- the city whose income tax applies, if any
 );
 
+-- The people. Where they work, where they live, and where they moved to if they moved this year.
 CREATE TABLE employees (
-  employee_id    TEXT PRIMARY KEY,
-  name           TEXT NOT NULL,
-  site_id        TEXT NOT NULL REFERENCES worksites (site_id),
-  monthly_wages  REAL NOT NULL CONSTRAINT wages_not_negative CHECK (monthly_wages >= 0),
-  remote         INTEGER CHECK (remote IN (0, 1)),
-  hired_month    INTEGER CHECK (hired_month BETWEEN 1 AND 12),
-  left_month     INTEGER CHECK (left_month BETWEEN 1 AND 12)
+  employee_id          TEXT PRIMARY KEY,
+  name                 TEXT NOT NULL,
+  monthly_wages        REAL NOT NULL CONSTRAINT wages_not_negative CHECK (monthly_wages >= 0),
+  work_site            TEXT NOT NULL,
+  work_address_id      TEXT NOT NULL REFERENCES addresses (address_id),
+  home_address_id      TEXT REFERENCES addresses (address_id),          -- empty: Desktop has no home address
+  new_home_address_id  TEXT REFERENCES addresses (address_id),          -- after a move
+  moved_month          INTEGER CHECK (moved_month BETWEEN 2 AND 12),
+  remote               INTEGER CHECK (remote IN (0, 1)),
+  hired_month          INTEGER CHECK (hired_month BETWEEN 1 AND 12),
+  left_month           INTEGER CHECK (left_month BETWEEN 1 AND 12)
 );
 
--- Where each employee lives. A move adds a second row from the month it starts.
-CREATE TABLE home_addresses (
-  employee_id  TEXT NOT NULL REFERENCES employees (employee_id),
-  from_month   INTEGER NOT NULL CHECK (from_month BETWEEN 1 AND 12),
-  address_id   TEXT NOT NULL REFERENCES addresses (address_id),
-  PRIMARY KEY (employee_id, from_month)
+-- The local taxes Online payroll knows. code: the school-district number, or the city for a city tax.
+CREATE TABLE taxes (
+  tax_id  TEXT PRIMARY KEY,                          -- OH-SD-2305
+  name    TEXT NOT NULL,
+  type    TEXT NOT NULL CHECK (type IN ('school_district', 'municipal', 'earned_income', 'local_services')),
+  code    TEXT,
+  rate    REAL NOT NULL CONSTRAINT rate_0_to_100 CHECK (rate BETWEEN 0 AND 100),   -- percent
+  agency  TEXT
 );
 
--- A payroll item as set up in Desktop, with the label exactly as someone typed it.
--- Law ID 177 or 0 = an item the employer created.
+-- Payroll items as set up in Desktop, with the label exactly as someone typed it.
+-- Law ID 177 or 0: an item the employer created.
 CREATE TABLE payroll_items (
   item_id            TEXT PRIMARY KEY,
   label              TEXT,
   law_id             INTEGER,
-  origin             TEXT NOT NULL CHECK (origin IN ('custom', 'system')),
   item_type          TEXT,
-  tracking_type      TEXT,                           -- None = Desktop treats it as an after-tax deduction
-  calc_kind          TEXT NOT NULL CHECK (calc_kind IN ('percent', 'flat_annual')),
-  calc_rate          REAL CONSTRAINT item_rate_0_to_100 CHECK (calc_rate BETWEEN 0 AND 100),
-  calc_amount        REAL CHECK (calc_amount >= 0),
+  tracking_type      TEXT,                           -- None: Desktop treats it as an after-tax deduction
+  rate_percent       REAL CHECK (rate_percent BETWEEN 0 AND 100),
+  annual_amount      REAL CHECK (annual_amount >= 0),
   agency             TEXT,
   agency_account     TEXT,
   deposit_frequency  TEXT,
-  system_tax_id      TEXT REFERENCES taxes (tax_id)  -- system items only: the tax Desktop already knows
+  system_tax_id      TEXT REFERENCES taxes (tax_id)  -- for an item Desktop already knows as a tax
 );
 
 -- One row per employee per payroll item: a Desktop local tax line.
@@ -88,95 +87,37 @@ CREATE TABLE desktop_lines (
   PRIMARY KEY (employee_id, item_id)
 );
 
--- =====================================================================
--- 2. TAX LOOKUP (Intuit)
--- =====================================================================
-
--- The addresses this business uses, with the school district and city the lookup places them in.
--- source = employer: typed by the employer and unknown to the lookup (school_district UNRESOLVED).
-CREATE TABLE addresses (
-  address_id       TEXT PRIMARY KEY,
-  line1            TEXT,
-  city             TEXT,
-  state            TEXT,
-  zip              TEXT,
-  school_district  TEXT,                             -- the same code as taxes.code
-  municipality     TEXT,
-  source           TEXT NOT NULL CHECK (source IN ('lookup', 'employer'))
-);
-
--- The local taxes Online payroll knows.
-CREATE TABLE taxes (
-  tax_id             TEXT PRIMARY KEY,               -- OH-SD-2305
-  state              TEXT NOT NULL,
-  type               TEXT NOT NULL CHECK (type IN ('school_district', 'municipal', 'earned_income', 'local_services')),
-  code               TEXT,                           -- school-district number
-  name               TEXT NOT NULL,
-  rate               REAL NOT NULL CONSTRAINT rate_0_to_100 CHECK (rate BETWEEN 0 AND 100),   -- percent
-  basis              TEXT NOT NULL CHECK (basis IN ('home', 'work', 'higher')),
-  agency             TEXT,
-  qb_pays_and_files  INTEGER NOT NULL CHECK (qb_pays_and_files IN (0, 1))
-);
-
--- =====================================================================
--- 3. MIGRATION RESULTS
--- =====================================================================
-
--- What each employee's addresses say they owe. gap = 1: owed, but no Desktop line withholds it.
-CREATE TABLE expected_taxes (
-  employee_id  TEXT NOT NULL REFERENCES employees (employee_id),
-  tax_id       TEXT NOT NULL REFERENCES taxes (tax_id),
-  months       TEXT NOT NULL,
-  required     INTEGER NOT NULL CHECK (required IN (0, 1)),   -- 0 = optional courtesy withholding
-  gap          INTEGER NOT NULL CHECK (gap IN (0, 1)),
-  PRIMARY KEY (employee_id, tax_id)
-);
-
--- Where each Desktop line stands now: its route, why, the Online tax, and who settled it.
-CREATE TABLE line_results (
+-- Where each Desktop line went: the route, the tax it becomes in Online payroll, and who decided.
+CREATE TABLE results (
   employee_id  TEXT NOT NULL,
   item_id      TEXT NOT NULL,
   route        TEXT NOT NULL CONSTRAINT route_value CHECK (route IN ('local_tax', 'not_a_tax', 'not_in_database', 'custom_entry', 'stop')),
+  tax_id       TEXT REFERENCES taxes (tax_id),       -- the Online payroll tax from the first Online payroll
+  status       TEXT NOT NULL CHECK (status IN ('awaiting_employer', 'with_expert', 'confirmed', 'moved_to_deduction', 'employer_managed', 'stopped')),
   reason       TEXT,                                 -- why it needs a person: weak_signal, no_address ...
-  stage        TEXT NOT NULL CHECK (stage IN ('awaiting_employer', 'with_expert', 'confirmed', 'moved_to_deduction', 'employer_managed', 'stopped')),
-  online_tax   TEXT,
   decided_by   TEXT CHECK (decided_by IN ('rule', 'employer', 'expert')),
   rule         TEXT,
   PRIMARY KEY (employee_id, item_id),
   FOREIGN KEY (employee_id, item_id) REFERENCES desktop_lines (employee_id, item_id)
 );
-
--- Who did what and when: every rule, employer and expert decision.
-CREATE TABLE decision_log (
-  log_id  INTEGER PRIMARY KEY,
-  at      TEXT NOT NULL,
-  who     TEXT NOT NULL,                             -- Automation, Employer, Expert, Admin
-  action  TEXT NOT NULL,
-  line    TEXT,                                      -- the employee and Desktop item it is about
-  detail  TEXT
-);
 `;
 
 // The three groups, for the Data page.
 export const TABLE_GROUPS = [
-  { id: 'desktop', title: 'Desktop file', owner: 'The business', tables: ['company', 'worksites', 'employees', 'home_addresses', 'payroll_items', 'desktop_lines'] },
-  { id: 'lookup', title: 'Tax lookup', owner: 'Intuit', tables: ['addresses', 'taxes'] },
-  { id: 'results', title: 'Migration results', owner: 'Engine and people', tables: ['expected_taxes', 'line_results', 'decision_log'] },
+  { id: 'desktop', title: 'From the Desktop file', owner: 'The business', tables: ['company', 'employees', 'payroll_items', 'desktop_lines'] },
+  { id: 'lookup', title: 'From Intuit\'s lookup', owner: 'Intuit', tables: ['addresses', 'taxes'] },
+  { id: 'results', title: 'Our result', owner: 'Engine and people', tables: ['results'] },
 ];
 
 // What each table holds, in one line.
 export const TABLE_NOTES = {
   company: 'The business being moved: one row.',
-  worksites: 'Where its people work.',
-  employees: 'The people on the payroll.',
-  home_addresses: 'Where each employee lives; a move adds a row from the month it starts.',
+  employees: 'The people: where they work, where they live, and where they moved to.',
   payroll_items: 'Payroll items as set up in Desktop, with the label exactly as typed.',
-  desktop_lines: 'One row per employee per payroll item: a Desktop local tax line.',
-  addresses: 'The addresses this business uses, with the school district and city the lookup places them in.',
-  taxes: 'The local taxes Online payroll knows: rate, basis and agency.',
-  expected_taxes: 'What each employee\'s addresses say they owe. gap = 1: owed, but nothing withholds it.',
-  line_results: 'Where each Desktop line stands: route, Online tax, and who settled it.',
-  decision_log: 'Who did what and when.',
+  desktop_lines: 'Which employee has which payroll item: one row per Desktop local tax line.',
+  addresses: 'Each address, with the school district and city the lookup places it in.',
+  taxes: 'The local taxes Online payroll knows, with their rates.',
+  results: 'Where each Desktop line went, the Online tax, and who decided.',
 };
 
 // ---------- loading sql.js ----------
@@ -216,10 +157,10 @@ export function all(db, sql, params = []) {
   stmt.free();
   return out;
 }
-// Put a value back only when the row has it, so the business reads back exactly as it was written.
+// Put a value back only when the row has it, so the business reads back as it was written.
 const opt = (o, k, v) => { if (v !== null && v !== undefined) o[k] = v; return o; };
-const lookupRow = (a) => ({ address_id: a.address_id, line1: a.line1, city: a.city, state: a.state, zip: a.zip, school_district: a.school_district, municipality: a.municipality, source: 'lookup' });
-const employerRow = (a) => ({ address_id: a.address_id, line1: a.line1, city: a.city, state: a.state, zip: a.zip, school_district: 'UNRESOLVED', municipality: null, source: 'employer' });
+const addressRow = (a, unplaced = false) => ({ address_id: a.address_id, street: a.line1, city: a.city, state: a.state, zip: a.zip, school_district: unplaced ? 'UNRESOLVED' : a.school_district, tax_city: unplaced ? null : a.municipality });
+const fromRow = (r) => ({ address_id: r.address_id, line1: r.street, city: r.city, state: r.state, zip: r.zip, school_district: r.school_district, municipality: r.tax_city });
 
 // ---------- writing ----------
 
@@ -228,18 +169,17 @@ const employerRow = (a) => ({ address_id: a.address_id, line1: a.line1, city: a.
 //   lookup      the address lookup (Intuit's service in production); only the addresses the business uses go in
 //   catalog     the tax catalogue
 //   addresses   addresses in the file the lookup does not know (kept, and the lookup cannot place them)
-// A row that breaks a key (an item that does not exist, the same item twice) stops the load with the
-// database's own message, so a broken file never gets in.
+// A file that breaks a key (an item that does not exist, the same item twice) is refused with the database's message.
 export function createDatabase(SQL, { company, lookup, catalog, addresses = [] }) {
   const db = new SQL.Database();
   db.run(SCHEMA);
   db.run('BEGIN');
   try {
-    insert(db, 'taxes', Object.entries(catalog.states).flatMap(([st, s]) => s.taxes.map((t) => ({ tax_id: t.tax_id, state: st, type: t.type, code: t.code, name: t.name, rate: t.rate, basis: t.basis, agency: t.agency, qb_pays_and_files: t.qb_pays_and_files }))));
+    insert(db, 'taxes', Object.values(catalog.states).flatMap((st) => st.taxes.map((t) => ({ tax_id: t.tax_id, name: t.name, type: t.type, code: t.code ?? t.place ?? null, rate: t.rate, agency: t.agency }))));
     const byId = new Map(lookup.map((a) => [a.address_id, a]));
     const fromFile = new Map(addresses.map((a) => [a.address_id, a]));
     const used = [...new Set([...company.worksites.map((w) => w.address_id), ...company.employees.flatMap((e) => e.addresses.map((a) => a.address_id))])];
-    insert(db, 'addresses', used.map((id) => (byId.has(id) ? lookupRow(byId.get(id)) : fromFile.has(id) ? employerRow(fromFile.get(id)) : null)).filter(Boolean));
+    insert(db, 'addresses', used.map((id) => (byId.has(id) ? addressRow(byId.get(id)) : fromFile.has(id) ? addressRow(fromFile.get(id), true) : null)).filter(Boolean));
     insertCompany(db, company);
     db.run('COMMIT');
   } catch (err) {
@@ -251,55 +191,71 @@ export function createDatabase(SQL, { company, lookup, catalog, addresses = [] }
 }
 
 function insertCompany(db, c) {
-  insert(db, 'company', [{ company_id: c.company_id, name: c.name, plan: c.plan, migration_month: c.migration_month, description: c.description }]);
-  insert(db, 'worksites', c.worksites.map((w) => ({ site_id: w.site_id, name: w.name, address_id: w.address_id })));
+  insert(db, 'company', [{ company_id: c.company_id, name: c.name, plan: c.plan, migration_month: c.migration_month }]);
   insert(db, 'payroll_items', c.items.map((it) => ({
-    item_id: it.item_id, label: it.label, law_id: it.law_id, origin: it.origin, item_type: it.item_type, tracking_type: it.tracking_type,
-    calc_kind: it.calc?.kind, calc_rate: it.calc?.rate, calc_amount: it.calc?.amount, agency: it.agency, agency_account: it.agency_account,
-    deposit_frequency: it.deposit_frequency, system_tax_id: it.system_tax_id,
+    item_id: it.item_id, label: it.label, law_id: it.law_id, item_type: it.item_type, tracking_type: it.tracking_type,
+    rate_percent: it.calc?.kind === 'flat_annual' ? null : it.calc?.rate, annual_amount: it.calc?.kind === 'flat_annual' ? it.calc.amount : null,
+    agency: it.agency, agency_account: it.agency_account, deposit_frequency: it.deposit_frequency, system_tax_id: it.system_tax_id,
   })));
-  insert(db, 'employees', c.employees.map((e) => ({ employee_id: e.employee_id, name: e.name, site_id: e.site_id, monthly_wages: e.monthly_wages, remote: has(e, 'remote') ? e.remote : null, hired_month: e.hired_month, left_month: e.left_month })));
-  insert(db, 'home_addresses', c.employees.flatMap((e) => e.addresses.map((a) => ({ employee_id: e.employee_id, from_month: a.from_month, address_id: a.address_id }))));
+  const sites = new Map(c.worksites.map((w) => [w.site_id, w]));
+  insert(db, 'employees', c.employees.map((e) => {
+    if (e.addresses.length > 2) throw new Error(`${e.name} has ${e.addresses.length} home addresses; this prototype keeps one move a year.`);
+    const [home, moved] = e.addresses;
+    const site = sites.get(e.site_id);
+    return {
+      employee_id: e.employee_id, name: e.name, monthly_wages: e.monthly_wages, work_site: site?.name ?? e.site_id, work_address_id: site?.address_id ?? null,
+      home_address_id: home?.address_id ?? null, new_home_address_id: moved?.address_id ?? null, moved_month: moved?.from_month ?? null,
+      remote: has(e, 'remote') ? e.remote : null, hired_month: e.hired_month, left_month: e.left_month,
+    };
+  }));
   insert(db, 'desktop_lines', c.employees.flatMap((e) => e.items.map((it) => ({ employee_id: e.employee_id, item_id: it }))));
 }
 
 // ---------- reading: the engine's input, rebuilt from SQL ----------
 
 // The business comes back from the database. The tax catalogue, the label pool and the address lookup are
-// reference files (Intuit's services in production); addresses the employer typed come from the database.
+// reference files (Intuit's services in production); an address the lookup cannot place comes from the database.
 export function readData(db, { catalog, lookup, pools, lookupMeta = null }) {
-  const typed = all(db, "SELECT address_id, line1, city, state, zip, school_district, municipality FROM addresses WHERE source = 'employer' ORDER BY rowid");
+  const known = new Set(lookup.map((a) => a.address_id));
+  const typed = all(db, "SELECT * FROM addresses WHERE school_district = 'UNRESOLVED' ORDER BY rowid").filter((r) => !known.has(r.address_id)).map(fromRow);
   return { catalog, geocoder: { metadata: lookupMeta, addresses: [...lookup, ...typed] }, pools, companies: [readCompany(db)] };
 }
 
 const groupBy = (rows, key) => { const m = new Map(); for (const r of rows) { const list = m.get(r[key]); if (list) list.push(r); else m.set(r[key], [r]); } return m; };
 
+// The business in the engine's shape. A work site is named by its name, so site_id is the site's name.
 export function readCompany(db) {
   const c = all(db, 'SELECT * FROM company')[0];
-  const out = { company_id: c.company_id, name: c.name, plan: c.plan, migration_month: c.migration_month };
-  out.worksites = all(db, 'SELECT site_id, name, address_id FROM worksites ORDER BY rowid');
-  out.items = all(db, 'SELECT * FROM payroll_items ORDER BY rowid').map((r) => {
-    const it = { item_id: r.item_id, label: r.label, law_id: r.law_id, origin: r.origin, item_type: r.item_type, tracking_type: r.tracking_type };
-    it.calc = r.calc_kind === 'flat_annual' ? { kind: r.calc_kind, amount: r.calc_amount } : { kind: r.calc_kind, rate: r.calc_rate };
-    it.agency = r.agency;
-    opt(it, 'agency_account', r.agency_account);
-    opt(it, 'deposit_frequency', r.deposit_frequency);
-    opt(it, 'system_tax_id', r.system_tax_id);
-    return it;
-  });
-  const homes = groupBy(all(db, 'SELECT employee_id, address_id, from_month FROM home_addresses ORDER BY rowid'), 'employee_id');
+  const rows = all(db, 'SELECT * FROM employees ORDER BY rowid');
+  const sites = new Map();
+  for (const r of rows) if (!sites.has(r.work_site)) sites.set(r.work_site, { site_id: r.work_site, name: r.work_site, address_id: r.work_address_id });
   const lines = groupBy(all(db, 'SELECT employee_id, item_id FROM desktop_lines ORDER BY rowid'), 'employee_id');
-  out.employees = all(db, 'SELECT * FROM employees ORDER BY rowid').map((r) => {
-    const e = { employee_id: r.employee_id, name: r.name, site_id: r.site_id, monthly_wages: r.monthly_wages };
-    e.addresses = (homes.get(r.employee_id) ?? []).map((a) => ({ address_id: a.address_id, from_month: a.from_month }));
-    e.items = (lines.get(r.employee_id) ?? []).map((l) => l.item_id);
-    if (r.remote !== null) e.remote = Boolean(r.remote);
-    opt(e, 'hired_month', r.hired_month);
-    opt(e, 'left_month', r.left_month);
-    return e;
-  });
-  opt(out, 'description', c.description);
-  return out;
+  return {
+    company_id: c.company_id,
+    name: c.name,
+    plan: c.plan,
+    migration_month: c.migration_month,
+    worksites: [...sites.values()],
+    items: all(db, 'SELECT * FROM payroll_items ORDER BY rowid').map((r) => {
+      const it = { item_id: r.item_id, label: r.label, law_id: r.law_id, origin: r.law_id === 177 || r.law_id === 0 ? 'custom' : 'system', item_type: r.item_type, tracking_type: r.tracking_type };
+      it.calc = r.annual_amount !== null ? { kind: 'flat_annual', amount: r.annual_amount } : { kind: 'percent', rate: r.rate_percent };
+      it.agency = r.agency;
+      opt(it, 'agency_account', r.agency_account);
+      opt(it, 'deposit_frequency', r.deposit_frequency);
+      opt(it, 'system_tax_id', r.system_tax_id);
+      return it;
+    }),
+    employees: rows.map((r) => {
+      const e = { employee_id: r.employee_id, name: r.name, site_id: r.work_site, monthly_wages: r.monthly_wages };
+      e.addresses = r.home_address_id ? [{ address_id: r.home_address_id, from_month: 1 }] : [];
+      if (r.new_home_address_id) e.addresses.push({ address_id: r.new_home_address_id, from_month: r.moved_month });
+      e.items = (lines.get(r.employee_id) ?? []).map((l) => l.item_id);
+      if (r.remote !== null) e.remote = Boolean(r.remote);
+      opt(e, 'hired_month', r.hired_month);
+      opt(e, 'left_month', r.left_month);
+      return e;
+    }),
+  };
 }
 
 // ---------- the employer adds a missing or unplaceable home address ----------
@@ -310,22 +266,18 @@ export function lookupIndex(addresses) {
 }
 
 // The new address replaces the employee's home address for the whole year. If the lookup knows it, it
-// goes in as a lookup address the engine can place; if not, it is kept as one the lookup cannot place.
+// goes in as the lookup placed it; if not, it is kept as an address the lookup cannot place.
 export function applyCorrection(db, c, index, lookup) {
   const found = index.get(addressKey(c.line1, c.zip));
   const addressId = found ?? `${c.company_id}-C-${c.employee_id}`;
   db.run('SAVEPOINT correction');
   try {
-    if (found) {
-      const a = lookup.find((x) => x.address_id === found);
-      insert(db, 'addresses', all(db, 'SELECT 1 FROM addresses WHERE address_id = ?', [found]).length ? [] : [lookupRow(a)]);
-    } else {
-      db.run(`INSERT INTO addresses (address_id, line1, city, state, zip, school_district, municipality, source)
-        VALUES (?, ?, ?, ?, ?, 'UNRESOLVED', NULL, 'employer')
-        ON CONFLICT (address_id) DO UPDATE SET line1 = excluded.line1, city = excluded.city, state = excluded.state, zip = excluded.zip`, [addressId, c.line1, c.city, c.state, c.zip]);
+    if (!all(db, 'SELECT 1 FROM addresses WHERE address_id = ?', [addressId]).length) {
+      insert(db, 'addresses', [found ? addressRow(lookup.find((x) => x.address_id === found)) : addressRow({ address_id: addressId, line1: c.line1, city: c.city, state: c.state, zip: c.zip }, true)]);
+    } else if (!found) {
+      db.run('UPDATE addresses SET street = ?, city = ?, state = ?, zip = ? WHERE address_id = ?', [c.line1, c.city, c.state, c.zip, addressId]);
     }
-    db.run('DELETE FROM home_addresses WHERE employee_id = ?', [c.employee_id]);
-    insert(db, 'home_addresses', [{ employee_id: c.employee_id, from_month: 1, address_id: addressId }]);
+    db.run('UPDATE employees SET home_address_id = ?, new_home_address_id = NULL, moved_month = NULL WHERE employee_id = ?', [addressId, c.employee_id]);
     db.run('RELEASE correction');
   } catch (err) {
     db.run('ROLLBACK TO correction');
@@ -337,37 +289,27 @@ export function applyCorrection(db, c, index, lookup) {
 
 // ---------- results, written by the app ----------
 
-export const RESULT_TABLES = ['expected_taxes', 'line_results', 'decision_log'];
-
-// The engine's analysis of the business, the decisions so far, and the log, as rows.
-// analysis is null for a file the engine stops on; then only the log is written.
-export function resultRows({ analysis: a, decisions: d, log = [] }) {
-  const rows = { expected_taxes: [], line_results: [], decision_log: [] };
-  if (a) {
-    const gaps = new Set(a.gaps.map((g) => `${g.employee_id}|${g.tax_id}`));
-    for (const e of a.employees) {
-      for (const x of e.expected.list) rows.expected_taxes.push({ employee_id: e.employee_id, tax_id: x.tax_id, months: monthSpan(x.months) || 'none', required: x.required ? 1 : 0, gap: gaps.has(`${e.employee_id}|${x.tax_id}`) ? 1 : 0 });
-    }
-    for (const k of effectiveAll(a, d)) {
-      const e = k.decision.employer;
-      const x = k.decision.expert;
-      rows.line_results.push({
-        employee_id: k.employee_id, item_id: k.item.item_id, route: k.route, reason: k.reason ?? null, stage: k.stage,
-        online_tax: k.route === 'local_tax' ? k.proposal.map((p) => p.tax.name).join(' + ') : k.route === 'custom_entry' ? k.entry?.name ?? null : null,
-        decided_by: e ? (e.auto ? 'rule' : 'employer') : x ? (x.auto ? 'rule' : 'expert') : null,
-        rule: e?.rule ?? x?.rule ?? null,
-      });
-    }
-  }
-  // The log is kept newest first in the app; the table holds it in the order it happened.
-  rows.decision_log = [...log].reverse().map((x) => ({ at: x.at, who: x.actor, action: x.action, line: x.target ?? null, detail: x.detail ?? null }));
-  return rows;
+// One row per Desktop line: where it went and who decided. analysis is null for a file the engine stops on.
+export function resultRows({ analysis: a, decisions: d }) {
+  if (!a) return [];
+  const first = a.company.migration_month;
+  return effectiveAll(a, d).map((k) => {
+    const e = k.decision.employer;
+    const x = k.decision.expert;
+    // A line can cover two districts when someone moved; the tax that goes live is the one for the first Online payroll.
+    const live = k.route === 'local_tax' ? k.proposal.find((p) => p.months?.includes(first)) ?? k.proposal.at(-1) : null;
+    return {
+      employee_id: k.employee_id, item_id: k.item.item_id, route: k.route, tax_id: live?.tax_id ?? null, status: k.stage, reason: k.reason ?? null,
+      decided_by: e ? (e.auto ? 'rule' : 'employer') : x ? (x.auto ? 'rule' : 'expert') : null,
+      rule: e?.rule ?? x?.rule ?? null,
+    };
+  });
 }
 export function writeResults(db, rows) {
   db.run('BEGIN');
   try {
-    for (const t of RESULT_TABLES) db.run(`DELETE FROM ${t}`);
-    for (const t of RESULT_TABLES) insert(db, t, rows[t] ?? []);
+    db.run('DELETE FROM results');
+    insert(db, 'results', rows);
     db.run('COMMIT');
   } catch (err) {
     db.run('ROLLBACK');
@@ -393,7 +335,8 @@ export function describeTable(db, name) {
   if (!TABLE_GROUPS.some((g) => g.tables.includes(name))) return null;
   // A foreign key over two columns comes back as two rows with the same id: put them together.
   const fkRows = all(db, `PRAGMA foreign_key_list(${name})`);
-  const foreignKeys = [...new Set(fkRows.map((f) => f.id))].map((id) => {
+  // SQLite numbers foreign keys from the last one written, so count down to list them in the order they were written.
+  const foreignKeys = [...new Set(fkRows.map((f) => f.id))].sort((a, b) => b - a).map((id) => {
     const parts = fkRows.filter((f) => f.id === id).sort((a, b) => a.seq - b.seq);
     return { table: parts[0].table, from: parts.map((f) => f.from), to: parts.map((f) => f.to ?? f.from) };
   });
@@ -414,10 +357,10 @@ export function describeTable(db, name) {
 // Proof that the rules live in the database: each statement breaks one rule. tryRule runs it inside a
 // savepoint and always rolls back, so the data never changes; the database's own error comes back.
 export const RULE_CHECKS = [
-  { id: 'fk', label: 'Add an employee at a work site that does not exist', rule: 'Foreign key',
-    sql: "INSERT INTO employees (employee_id, name, site_id, monthly_wages) VALUES ('E999', 'Test Person', 'NO-SUCH-SITE', 3000)" },
+  { id: 'fk', label: 'Add an employee who works at an address that does not exist', rule: 'Foreign key',
+    sql: "INSERT INTO employees (employee_id, name, monthly_wages, work_site, work_address_id) VALUES ('E999', 'Test Person', 3000, 'Nowhere', 'NO-SUCH-ADDRESS')" },
   { id: 'pk', label: 'Add the same employee twice', rule: 'Primary key',
-    sql: 'INSERT INTO employees (employee_id, name, site_id, monthly_wages) SELECT employee_id, name, site_id, monthly_wages FROM employees LIMIT 1' },
+    sql: 'INSERT INTO employees (employee_id, name, monthly_wages, work_site, work_address_id) SELECT employee_id, name, monthly_wages, work_site, work_address_id FROM employees LIMIT 1' },
   { id: 'month', label: 'Set the move month to 13', rule: 'Check',
     sql: 'UPDATE company SET migration_month = 13' },
   { id: 'rate', label: 'Give a tax a rate of 150%', rule: 'Check',

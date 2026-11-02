@@ -58,17 +58,19 @@ Desktop payroll file
 
 The data lives in a **SQLite database inside the page** (sql.js, compiled to WebAssembly; no server, no account, no keys), with primary keys, foreign keys and CHECK rules switched on. It is rebuilt on every visit. The engine reads the business back from the database with SQL, and a test checks that this equals the file exactly.
 
-**One database per migration: 11 tables in three groups**, and no table needs a company id (full explanation: [docs/schema.md](docs/schema.md); the SQL: [docs/schema.sql](docs/schema.sql)):
+**Seven tables, one database per migration** (full explanation and likely viva questions: [docs/schema.md](docs/schema.md); the SQL: [docs/schema.sql](docs/schema.sql)):
 
-| Group | Who it comes from | Tables |
+| Group | Tables | In plain words |
 | --- | --- | --- |
-| 1. Desktop file | The business | `company`, `worksites`, `employees`, `home_addresses`, `payroll_items`, `desktop_lines` |
-| 2. Tax lookup | Intuit (only what this business needs) | `addresses`, `taxes` |
-| 3. Migration results | Engine and people | `expected_taxes`, `line_results`, `decision_log` |
+| From the Desktop file | `company`, `employees`, `payroll_items`, `desktop_lines` | The business, its people, its payroll items, and which person has which item |
+| From Intuit's lookup | `addresses`, `taxes` | Which school district and city each address is in; the exact taxes and rates |
+| Our result | `results` | Where each Desktop line went, the Online tax, and who decided |
 
-![The tables and how they link](web/schema-diagram.svg)
+The story in one line: a **Desktop line** (employee × item) → the employee's **address** gives the school district → that matches a **tax** → the engine writes the **result**.
 
-The admin's **Data** page shows the schema read from the database itself: click a table for its columns and keys. **The database checks the data itself** has five buttons that each try to break a rule (a work site that does not exist, a duplicate employee, month 13, a 150% rate, an item that was never set up); the database refuses each one. **Download the database** gives the whole thing as a `.sqlite` file. The page also runs read-only SQL queries (with examples) and accepts **your own Desktop file as CSV**: it replaces Buckeye until you go back, and goes through the same file checks, database keys and engine. A file with missing columns or an unknown work site is refused with the reason, and so is one the database refuses (the same item twice for one person); a home address the lookup has never seen goes to an expert. See [the data contract](docs/data-contract.md) for the columns.
+![The seven tables and how they link](web/schema-diagram.svg)
+
+The admin's **Data** page shows the schema read from the database itself: click a table for its columns and keys. **The database checks the data itself** has five buttons that each try to break a rule (a work address that does not exist, a duplicate employee, month 13, a 150% rate, an item that was never set up); the database refuses each one. **Download the database** gives the whole thing as a `.sqlite` file. The page also runs read-only SQL queries (with examples) and accepts **your own Desktop file as CSV**: it replaces Buckeye until you go back, and goes through the same file checks, database keys and engine. A file with missing columns or an unknown work site is refused with the reason, and so is one the database refuses (the same item twice for one person); a home address the lookup has never seen goes to an expert. See [the data contract](docs/data-contract.md) for the columns.
 
 Customer payroll data stays fictional on purpose: real payroll files hold social security numbers and wages. Real companies demo the same way: invented people, real tax rules.
 
@@ -126,7 +128,7 @@ It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, 
    - **Engine**: what each step found for Buckeye: 289 expected taxes, 274 custom lines clustered, 266 local tax, 34 not a tax, 13 to an expert, 5 owed but not withheld.
    - **Model**: Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
-   - **Data**: the schema (11 tables in 3 groups), the five rule checks, "Added addresses" to see step 2's addresses, and **Download the database**.
+   - **Data**: the schema (7 tables), the five rule checks, **Desktop label to Online tax** and **The address picks the tax**, and **Download the database**.
    - **Scenarios**: 76 of 76 pass.
 
 ## Scenario coverage

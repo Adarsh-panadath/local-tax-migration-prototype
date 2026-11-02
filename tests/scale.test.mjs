@@ -65,13 +65,12 @@ test('every generated business goes through the engine, and most lines settle by
   for (const r of ['no_address', 'address_unresolved', 'weak_signal']) assert.ok(reasons.has(r), `expected some ${r}`);
 });
 
-// An empty field (null) reads back as absent; everything else must come back exactly.
-const dropEmpty = (v) => JSON.parse(JSON.stringify(v, (k, x) => (x === null ? undefined : x)));
+import { asStored } from './helpers.mjs';
 
 test('every generated business round-trips through its own database exactly', () => {
   for (const c of generated.companies) {
     const db = dbFor(c);
-    assert.deepStrictEqual(readData(db, ref).companies, [dropEmpty(c)], c.company_id);
+    assert.deepStrictEqual(readData(db, ref).companies, [asStored(c)], c.company_id);
     db.close();
   }
 });

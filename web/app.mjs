@@ -46,7 +46,7 @@ let db = null;              // the in-browser SQLite database (null if it could 
 let dbError = null;
 let uploads = loadUploads(); // a Desktop file uploaded on the Data page, which then replaces the demo business: [] or [{ company, addresses, file }]
 let uploadMsg = null;       // the last upload's result: { tone, title, items }
-let query = { sql: 'SELECT route, COUNT(*) AS lines\nFROM line_results\nGROUP BY route\nORDER BY lines DESC', result: null, error: null };
+let query = { sql: 'SELECT route, COUNT(*) AS lines\nFROM results\nGROUP BY route\nORDER BY lines DESC', result: null, error: null };
 let generated = null;       // the demo business (152 employees), made from a fixed seed on every visit
 let lookupIdx = null;       // address lookup by street and ZIP, for addresses the employer adds
 let outcomesKey = null;     // the state the outcome tables were last written for
@@ -1801,13 +1801,14 @@ function viewAudit(s) {
 // ---------- data (admin): the database, a query box and uploads ----------
 
 const EXAMPLES = [
-  ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM line_results\nGROUP BY route\nORDER BY lines DESC'],
-  ['Who decided', 'SELECT COALESCE(decided_by, \'nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM line_results\nGROUP BY 1\nORDER BY lines DESC'],
-  ['One line across the keys', 'SELECT e.name AS employee, p.label AS desktop_item, a.city, a.school_district, r.route, r.online_tax\nFROM desktop_lines l\nJOIN employees e ON e.employee_id = l.employee_id\nJOIN payroll_items p ON p.item_id = l.item_id\nJOIN home_addresses h ON h.employee_id = l.employee_id\nJOIN addresses a ON a.address_id = h.address_id\nLEFT JOIN line_results r ON r.employee_id = l.employee_id AND r.item_id = l.item_id\nLIMIT 50'],
-  ['Owed, not withheld', 'SELECT e.name AS employee, t.name AS tax, x.months\nFROM expected_taxes x\nJOIN employees e ON e.employee_id = x.employee_id\nJOIN taxes t ON t.tax_id = x.tax_id\nWHERE x.gap = 1\nORDER BY e.name'],
-  ['Open lines by reason', 'SELECT reason, COUNT(*) AS lines\nFROM line_results\nWHERE stage = \'with_expert\'\nGROUP BY reason\nORDER BY lines DESC'],
-  ['Desktop items', 'SELECT p.label, p.law_id, p.origin, COUNT(l.employee_id) AS employees\nFROM payroll_items p LEFT JOIN desktop_lines l ON l.item_id = p.item_id\nGROUP BY p.item_id\nORDER BY employees DESC'],
-  ['Added addresses', 'SELECT at, line AS employee, detail\nFROM decision_log\nWHERE action = \'Added a home address\'\nORDER BY at DESC'],
+  ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM results\nGROUP BY route\nORDER BY lines DESC'],
+  ['Who decided', 'SELECT COALESCE(decided_by, \'nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM results\nGROUP BY 1\nORDER BY lines DESC'],
+  ['Desktop label to Online tax', 'SELECT e.name AS employee, p.label AS desktop_item, a.school_district, t.name AS online_tax, r.decided_by\nFROM desktop_lines l\nJOIN employees e ON e.employee_id = l.employee_id\nJOIN payroll_items p ON p.item_id = l.item_id\nLEFT JOIN addresses a ON a.address_id = e.home_address_id\nJOIN results r ON r.employee_id = l.employee_id AND r.item_id = l.item_id\nLEFT JOIN taxes t ON t.tax_id = r.tax_id\nLIMIT 50'],
+  ['The address picks the tax', 'SELECT a.street, a.city, a.school_district, t.name AS school_tax, t.rate\nFROM addresses a\nJOIN taxes t ON t.code = a.school_district\nLIMIT 50'],
+  ['Open lines by reason', 'SELECT reason, COUNT(*) AS lines\nFROM results\nWHERE status = \'with_expert\'\nGROUP BY reason\nORDER BY lines DESC'],
+  ['Desktop items', 'SELECT p.label, p.law_id, COUNT(l.employee_id) AS employees\nFROM payroll_items p\nLEFT JOIN desktop_lines l ON l.item_id = p.item_id\nGROUP BY p.item_id\nORDER BY employees DESC'],
+  ['Who moved', 'SELECT name, moved_month, home_address_id, new_home_address_id\nFROM employees\nWHERE new_home_address_id IS NOT NULL'],
+  ['No home address', 'SELECT employee_id, name\nFROM employees\nWHERE home_address_id IS NULL'],
 ];
 const LAYER_NO = { desktop: 1, lookup: 2, results: 3 };
 let schemaSel = 'employees';  // the table open in the schema view
@@ -1842,7 +1843,7 @@ function schemaCard(groups) {
       </div>
       <label class="sr-only" for="schema-box">schema.sql</label><textarea class="copy-box" id="schema-box" readonly hidden></textarea>
     </div>
-    ${fold('layers', 'Diagram of the tables', '<img class="erd" src="./schema-diagram.svg" alt="Entity-relationship diagram of the tables: company, worksites, employees, home addresses, addresses, payroll items, Desktop lines, taxes, expected taxes, line results and the decision log, with their keys." loading="lazy" width="1312" height="1146">')}
+    ${fold('layers', 'Diagram of the tables', '<img class="erd" src="./schema-diagram.svg" alt="Entity-relationship diagram of the seven tables: company, employees, addresses, payroll items, Desktop lines, taxes and results, with their keys." loading="lazy" width="949" height="1011">')}
   </section>`;
 }
 
@@ -2491,7 +2492,7 @@ function syncWork() {
   if (key === outcomesKey) return;
   let analysis = null;
   try { analysis = analysisFor(); } catch (err) { if (err.name !== 'DataError') throw err; }
-  writeResults(db, resultRows({ analysis, decisions: peekDecisions(state.companyId), log: state.audit.filter((a) => a.company_id === state.companyId) }));
+  writeResults(db, resultRows({ analysis, decisions: peekDecisions(state.companyId) }));
   outcomesKey = key;
 }
 
