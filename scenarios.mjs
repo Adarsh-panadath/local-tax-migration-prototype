@@ -1,9 +1,9 @@
 // Every scenario the BRD v3 design has to handle, with a live check against the demo data.
 // The website's Scenario coverage page and the automated tests both run this list.
-import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=ce70b5a061';
-import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=ce70b5a061';
-import { monthSpan, rateCheck } from './engine/util.mjs?v=ce70b5a061';
-import { buildReport, casesCSV } from './report.mjs?v=ce70b5a061';
+import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=93cbd9ba74';
+import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=93cbd9ba74';
+import { monthSpan, rateCheck } from './engine/util.mjs?v=93cbd9ba74';
+import { buildReport, casesCSV } from './report.mjs?v=93cbd9ba74';
 
 export const GROUPS = [
   { id: 'data', title: 'Before step 1: check the Desktop file' },
@@ -678,7 +678,7 @@ export const SCENARIOS = [
     },
   },
   {
-    id: 'auto-person-only', group: 'auto', title: 'Automation never guesses where the BRD wants a person',
+    id: 'auto-person-only', group: 'auto', title: 'Automation never guesses where a person must decide',
     where: { company: 'C-HHF', view: 'expert' },
     expect: 'Across every client, what is left is only a weak or missing signal, a conflict, a bad address, a wrong state, shadow mode, or a missing account number.',
     check: (x) => {

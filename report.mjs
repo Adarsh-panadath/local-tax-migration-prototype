@@ -1,14 +1,14 @@
 // A complete migration report: every Desktop line, its route, its outcome, and the evidence behind it.
-import { MODEL_VERSION } from './engine/cluster.mjs?v=ce70b5a061';
-import { effectiveAll, gapStage, readiness, w2Preview, reconcile, STAGE_LABEL } from './engine/workflow.mjs?v=ce70b5a061';
-import { monthSpan } from './engine/util.mjs?v=ce70b5a061';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=93cbd9ba74';
+import { effectiveAll, gapStage, readiness, w2Preview, reconcile, STAGE_LABEL } from './engine/workflow.mjs?v=93cbd9ba74';
+import { monthSpan } from './engine/util.mjs?v=93cbd9ba74';
 
 export function buildReport(analysis, decisions, audit) {
   const cases = effectiveAll(analysis, decisions);
   const ready = readiness(analysis, decisions);
   return {
     generated_at: new Date().toISOString(),
-    prototype: 'BRD v3 local-tax migration prototype (academic demo; fictional people and companies)',
+    prototype: 'Local tax migration prototype (academic demo; fictional people and companies)',
     model_version: MODEL_VERSION,
     company: { id: analysis.company.company_id, name: analysis.company.name, plan: analysis.company.plan },
     data_issues: (analysis.dataIssues ?? []).map((i) => i.text),

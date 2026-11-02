@@ -5,9 +5,9 @@
 //   3. fit the clusters on the other 80% (no expert answers are used to fit; they only grade),
 //   4. score every held-back label exactly as the engine scores a new company's label,
 //   5. compare with simple keyword rules, and draw the clusters on a 2D map.
-import { clusterLabels, assignLabel } from './engine/cluster.mjs?v=ce70b5a061';
-import { cosine, normalize } from './engine/text.mjs?v=ce70b5a061';
-import { labelSet, rng, SEED, LAB_MIX } from './generate.mjs?v=ce70b5a061';
+import { clusterLabels, assignLabel } from './engine/cluster.mjs?v=93cbd9ba74';
+import { cosine, normalize } from './engine/text.mjs?v=93cbd9ba74';
+import { labelSet, rng, SEED, LAB_MIX } from './generate.mjs?v=93cbd9ba74';
 
 const keyOf = (entry) => (entry ? (entry.kind === 'tax' ? entry.tax_type : `non_tax:${entry.entry_id}`) : null);
 

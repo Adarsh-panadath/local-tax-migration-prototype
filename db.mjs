@@ -1,155 +1,73 @@
-import { effectiveAll } from './engine/workflow.mjs?v=ce70b5a061';
-import { monthSpan } from './engine/util.mjs?v=ce70b5a061';
+import { effectiveAll } from './engine/workflow.mjs?v=93cbd9ba74';
+import { monthSpan } from './engine/util.mjs?v=93cbd9ba74';
 
 // The demo's database: SQLite (sql.js, compiled to WebAssembly) running inside the page.
-// No server, no account and no keys. It is rebuilt every time the page opens, so each visitor gets
-// a private copy; uploaded Desktop files and added addresses are kept in that visitor's browser.
+// No server, no account and no keys. It is rebuilt every time the page opens.
 //
-// The schema (SCHEMA below, also in docs/schema.sql) has four layers:
-//   tax reference - Intuit's data: states, taxes, defined entries, addresses, the expert-labelled pool
-//   source        - the customer's Desktop file: companies, work sites, items, employees, lines
-//   work          - what the engine found and what people decided
-//   audit         - the decision log and the label model's scores
-// Every table has a primary key; foreign keys and CHECK rules are switched on, so the database itself
-// refuses a row that points at nothing or holds an impossible value.
+// One database per migration: it holds the one business being moved, so no table needs a company id.
+// Three groups of tables (SCHEMA below, also in docs/schema.sql):
+//   Desktop file      what the business brings: company, work sites, employees, home addresses, items, lines
+//   Tax lookup        Intuit's data, only what this business needs: its addresses and the taxes
+//   Migration results what the engine found and what people decided
+// Every table has a primary key; foreign keys and CHECK rules are on, so the database itself refuses
+// a row that points at nothing or holds an impossible value.
 //
-// The engine never reads the JSON files directly when the database is available: readData() rebuilds
-// its input from SQL queries, so what the screens show is what is in the tables.
+// The engine reads the business back from these tables (readData), so the screens show what is in them.
 
 export const SCHEMA = `-- Local Tax Migration: the database schema.
--- SQLite, written in standard SQL: the same tables run on PostgreSQL with small type changes.
+-- SQLite, in standard SQL: the same tables run on PostgreSQL with small type changes.
 --
--- Four layers, each with one owner:
---   1. Tax reference  Intuit's data, the same for every business
---   2. Source         the customer's Desktop file, copied in and never edited
---   3. Work           what the engine found and what people decided
---   4. Audit          who did what and when, and how the model scored
+-- One database per migration. It holds the one business being moved, so no table needs a company id.
+--   1. Desktop file       what the business brings (copied in, never edited)
+--   2. Tax lookup         Intuit's data, only what this business needs
+--   3. Migration results  what the engine found and what people decided
 --
--- Every table has a primary key. Foreign keys link the tables, and CHECK rules refuse impossible
--- values, so bad data is stopped by the database itself, not only by the app.
+-- Every table has a primary key. Foreign keys link the tables, and CHECK rules refuse impossible values.
 
 PRAGMA foreign_keys = ON;
 
--- Where each demo file came from (sources, dates). Not part of the four layers.
-CREATE TABLE dataset_info (
-  dataset    TEXT PRIMARY KEY,
-  info_json  TEXT NOT NULL
-);
-
 -- =====================================================================
--- 1. TAX REFERENCE (Intuit)
+-- 1. DESKTOP FILE
 -- =====================================================================
 
-CREATE TABLE states (
-  state_code  TEXT PRIMARY KEY,                      -- OH, PA
-  name        TEXT NOT NULL,
-  rollout     TEXT NOT NULL CONSTRAINT rollout_value CHECK (rollout IN ('enabled', 'not_yet_enabled')),
-  sort        INTEGER
-);
-
-CREATE TABLE taxes (
-  tax_id             TEXT PRIMARY KEY,               -- OH-SD-2305
-  state_code         TEXT NOT NULL REFERENCES states (state_code),
-  type               TEXT NOT NULL CONSTRAINT tax_type_value CHECK (type IN ('school_district', 'municipal', 'earned_income', 'local_services')),
-  code               TEXT,                           -- school-district number; addresses.school_district holds the same code
-  name               TEXT NOT NULL,
-  place              TEXT,
-  rate               REAL NOT NULL CONSTRAINT rate_0_to_100 CHECK (rate BETWEEN 0 AND 100),   -- percent
-  base               TEXT,
-  basis              TEXT NOT NULL CONSTRAINT basis_value CHECK (basis IN ('home', 'work', 'higher')),
-  agency             TEXT,
-  qb_pays_and_files  INTEGER NOT NULL CHECK (qb_pays_and_files IN (0, 1)),
-  sort               INTEGER
-);
-
-CREATE TABLE no_tax_districts (
-  state_code  TEXT NOT NULL REFERENCES states (state_code),
-  name        TEXT NOT NULL,
-  place       TEXT,
-  note        TEXT,
-  sort        INTEGER,
-  PRIMARY KEY (state_code, name)
-);
-
--- Place names removed from labels before clustering ("Lancaster SD" and "Bremen SD" look alike).
-CREATE TABLE state_place_names (
-  state_code  TEXT NOT NULL REFERENCES states (state_code),
-  place_name  TEXT NOT NULL,
-  sort        INTEGER,
-  PRIMARY KEY (state_code, place_name)
-);
-
--- The names a label cluster can take: a kind of tax, or a known non-tax item such as union dues.
-CREATE TABLE defined_entries (
-  entry_id  TEXT PRIMARY KEY,                        -- T-SD, N-DUES
-  kind      TEXT NOT NULL CHECK (kind IN ('tax', 'non_tax')),
-  tax_type  TEXT,
-  label     TEXT NOT NULL,
-  text      TEXT NOT NULL,                           -- the words a cluster is compared with
-  sort      INTEGER,
-  CONSTRAINT tax_entry_has_type CHECK (kind = 'non_tax' OR tax_type IS NOT NULL)
-);
-
-CREATE TABLE defined_entry_states (
-  entry_id    TEXT NOT NULL REFERENCES defined_entries (entry_id),
-  state_code  TEXT NOT NULL REFERENCES states (state_code),
-  sort        INTEGER,
-  PRIMARY KEY (entry_id, state_code)
-);
-
--- Every street address: from Intuit's address lookup, or typed by an employer and unknown to it.
--- school_district is the district code (a taxes.code), NO-TAX-..., or UNRESOLVED when the lookup cannot place it.
-CREATE TABLE addresses (
-  address_id       TEXT PRIMARY KEY,
-  line1            TEXT,
-  city             TEXT,
-  state            TEXT,
-  zip              TEXT,
-  school_district  TEXT,
-  municipality     TEXT,
-  source           TEXT NOT NULL CHECK (source IN ('lookup', 'customer')),
-  company_id       TEXT REFERENCES companies (company_id),   -- the business that typed it (customer addresses only)
-  sort             INTEGER,
-  CONSTRAINT customer_address_has_company CHECK ((source = 'customer') = (company_id IS NOT NULL))
-);
-
--- Desktop labels an expert has already classified: what the clustering gates are measured on.
-CREATE TABLE label_pool (
-  label_id      INTEGER PRIMARY KEY,
-  state_code    TEXT NOT NULL REFERENCES states (state_code),
-  label         TEXT NOT NULL,
-  expert_label  TEXT NOT NULL,                       -- school_district, municipal, non_tax:N-DUES, ambiguous ...
-  sort          INTEGER
-);
-
--- =====================================================================
--- 2. SOURCE: the customer's Desktop file, copied in and never edited
--- =====================================================================
-
-CREATE TABLE companies (
+-- The business being moved: one row.
+CREATE TABLE company (
   company_id       TEXT PRIMARY KEY,
   name             TEXT NOT NULL,
-  plan             TEXT NOT NULL CONSTRAINT plan_value CHECK (plan IN ('Core', 'Premium', 'Elite')),
+  plan             TEXT NOT NULL CHECK (plan IN ('Core', 'Premium', 'Elite')),
   migration_month  INTEGER NOT NULL CONSTRAINT month_1_to_12 CHECK (migration_month BETWEEN 1 AND 12),
-  description      TEXT,
-  source           TEXT NOT NULL CHECK (source IN ('demo', 'generated', 'upload')),
-  sort             INTEGER
+  description      TEXT
 );
 
 CREATE TABLE worksites (
-  company_id  TEXT NOT NULL REFERENCES companies (company_id),
-  site_id     TEXT NOT NULL,
+  site_id     TEXT PRIMARY KEY,
   name        TEXT,
-  address_id  TEXT NOT NULL REFERENCES addresses (address_id),
-  sort        INTEGER,
-  PRIMARY KEY (company_id, site_id)
+  address_id  TEXT NOT NULL REFERENCES addresses (address_id)
 );
 
--- A payroll item as set up in Desktop. Law ID 177 or 0 = an employer-created item with a free-text label.
+CREATE TABLE employees (
+  employee_id    TEXT PRIMARY KEY,
+  name           TEXT NOT NULL,
+  site_id        TEXT NOT NULL REFERENCES worksites (site_id),
+  monthly_wages  REAL NOT NULL CONSTRAINT wages_not_negative CHECK (monthly_wages >= 0),
+  remote         INTEGER CHECK (remote IN (0, 1)),
+  hired_month    INTEGER CHECK (hired_month BETWEEN 1 AND 12),
+  left_month     INTEGER CHECK (left_month BETWEEN 1 AND 12)
+);
+
+-- Where each employee lives. A move adds a second row from the month it starts.
+CREATE TABLE home_addresses (
+  employee_id  TEXT NOT NULL REFERENCES employees (employee_id),
+  from_month   INTEGER NOT NULL CHECK (from_month BETWEEN 1 AND 12),
+  address_id   TEXT NOT NULL REFERENCES addresses (address_id),
+  PRIMARY KEY (employee_id, from_month)
+);
+
+-- A payroll item as set up in Desktop, with the label exactly as someone typed it.
+-- Law ID 177 or 0 = an item the employer created.
 CREATE TABLE payroll_items (
-  company_id         TEXT NOT NULL REFERENCES companies (company_id),
-  item_id            TEXT NOT NULL,
-  label              TEXT,                           -- free text, exactly as typed
+  item_id            TEXT PRIMARY KEY,
+  label              TEXT,
   law_id             INTEGER,
   origin             TEXT NOT NULL CHECK (origin IN ('custom', 'system')),
   item_type          TEXT,
@@ -160,187 +78,105 @@ CREATE TABLE payroll_items (
   agency             TEXT,
   agency_account     TEXT,
   deposit_frequency  TEXT,
-  system_tax_id      TEXT REFERENCES taxes (tax_id), -- system items only: the tax Desktop already knows
-  null_fields        TEXT,                           -- fields the file had as an explicit null
-  sort               INTEGER,
-  PRIMARY KEY (company_id, item_id)
-);
-
-CREATE TABLE employees (
-  company_id     TEXT NOT NULL REFERENCES companies (company_id),
-  employee_id    TEXT NOT NULL,
-  name           TEXT NOT NULL,
-  site_id        TEXT NOT NULL,
-  monthly_wages  REAL NOT NULL CONSTRAINT wages_not_negative CHECK (monthly_wages >= 0),
-  remote         INTEGER CHECK (remote IN (0, 1)),
-  hired_month    INTEGER CHECK (hired_month BETWEEN 1 AND 12),
-  left_month     INTEGER CHECK (left_month BETWEEN 1 AND 12),
-  sort           INTEGER,
-  PRIMARY KEY (company_id, employee_id),
-  FOREIGN KEY (company_id, site_id) REFERENCES worksites (company_id, site_id)
-);
-
--- Home addresses over the year: a move adds a row with the month it starts.
-CREATE TABLE employee_addresses (
-  company_id   TEXT NOT NULL,
-  employee_id  TEXT NOT NULL,
-  from_month   INTEGER NOT NULL CHECK (from_month BETWEEN 1 AND 12),
-  address_id   TEXT NOT NULL REFERENCES addresses (address_id),
-  sort         INTEGER,
-  PRIMARY KEY (company_id, employee_id, from_month),
-  FOREIGN KEY (company_id, employee_id) REFERENCES employees (company_id, employee_id)
+  system_tax_id      TEXT REFERENCES taxes (tax_id)  -- system items only: the tax Desktop already knows
 );
 
 -- One row per employee per payroll item: a Desktop local tax line.
 CREATE TABLE desktop_lines (
-  company_id   TEXT NOT NULL,
-  employee_id  TEXT NOT NULL,
-  item_id      TEXT NOT NULL,
-  sort         INTEGER,
-  PRIMARY KEY (company_id, employee_id, item_id),
-  FOREIGN KEY (company_id, employee_id) REFERENCES employees (company_id, employee_id),
-  FOREIGN KEY (company_id, item_id) REFERENCES payroll_items (company_id, item_id)
-);
-
--- Rows in the Desktop file that break a key: an item that does not exist, the same item twice,
--- an address nobody knows. Kept here so nothing in the file is lost; the engine reports each one.
-CREATE TABLE import_issues (
-  issue_id     INTEGER PRIMARY KEY,
-  company_id   TEXT NOT NULL,
-  employee_id  TEXT NOT NULL,
-  kind         TEXT NOT NULL CHECK (kind IN ('unknown_item', 'repeated_item', 'unknown_address')),
-  value        TEXT NOT NULL,                        -- the item or address id the file gave
-  from_month   INTEGER,                              -- for an address
-  position     INTEGER NOT NULL,                     -- where it was in the employee's list
-  FOREIGN KEY (company_id, employee_id) REFERENCES employees (company_id, employee_id)
+  employee_id  TEXT NOT NULL REFERENCES employees (employee_id),
+  item_id      TEXT NOT NULL REFERENCES payroll_items (item_id),
+  PRIMARY KEY (employee_id, item_id)
 );
 
 -- =====================================================================
--- 3. WORK: what the engine found and what people decided
+-- 2. TAX LOOKUP (Intuit)
 -- =====================================================================
 
--- Home addresses the employer added because Desktop had none, or one the lookup could not place.
-CREATE TABLE corrections (
-  correction_id    INTEGER PRIMARY KEY,
-  company_id       TEXT NOT NULL,
-  employee_id      TEXT NOT NULL,
-  value            TEXT NOT NULL,                    -- the address as typed
-  address_id       TEXT NOT NULL REFERENCES addresses (address_id),
-  found_in_lookup  INTEGER NOT NULL CHECK (found_in_lookup IN (0, 1)),
-  at               TEXT NOT NULL,
-  FOREIGN KEY (company_id, employee_id) REFERENCES employees (company_id, employee_id)
+-- The addresses this business uses, with the school district and city the lookup places them in.
+-- source = employer: typed by the employer and unknown to the lookup (school_district UNRESOLVED).
+CREATE TABLE addresses (
+  address_id       TEXT PRIMARY KEY,
+  line1            TEXT,
+  city             TEXT,
+  state            TEXT,
+  zip              TEXT,
+  school_district  TEXT,                             -- the same code as taxes.code
+  municipality     TEXT,
+  source           TEXT NOT NULL CHECK (source IN ('lookup', 'employer'))
 );
 
--- What each employee's addresses say they owe. gap = 1: owed in some months, but no Desktop line withholds it.
+-- The local taxes Online payroll knows.
+CREATE TABLE taxes (
+  tax_id             TEXT PRIMARY KEY,               -- OH-SD-2305
+  state              TEXT NOT NULL,
+  type               TEXT NOT NULL CHECK (type IN ('school_district', 'municipal', 'earned_income', 'local_services')),
+  code               TEXT,                           -- school-district number
+  name               TEXT NOT NULL,
+  rate               REAL NOT NULL CONSTRAINT rate_0_to_100 CHECK (rate BETWEEN 0 AND 100),   -- percent
+  basis              TEXT NOT NULL CHECK (basis IN ('home', 'work', 'higher')),
+  agency             TEXT,
+  qb_pays_and_files  INTEGER NOT NULL CHECK (qb_pays_and_files IN (0, 1))
+);
+
+-- =====================================================================
+-- 3. MIGRATION RESULTS
+-- =====================================================================
+
+-- What each employee's addresses say they owe. gap = 1: owed, but no Desktop line withholds it.
 CREATE TABLE expected_taxes (
-  company_id   TEXT NOT NULL,
-  employee_id  TEXT NOT NULL,
+  employee_id  TEXT NOT NULL REFERENCES employees (employee_id),
   tax_id       TEXT NOT NULL REFERENCES taxes (tax_id),
-  required     INTEGER NOT NULL CHECK (required IN (0, 1)),   -- 0 = optional courtesy withholding
   months       TEXT NOT NULL,
+  required     INTEGER NOT NULL CHECK (required IN (0, 1)),   -- 0 = optional courtesy withholding
   gap          INTEGER NOT NULL CHECK (gap IN (0, 1)),
-  PRIMARY KEY (company_id, employee_id, tax_id),
-  FOREIGN KEY (company_id, employee_id) REFERENCES employees (company_id, employee_id)
+  PRIMARY KEY (employee_id, tax_id)
 );
 
--- Where each Desktop line stands now: its route, why, and who settled it.
+-- Where each Desktop line stands now: its route, why, the Online tax, and who settled it.
 CREATE TABLE line_results (
-  company_id   TEXT NOT NULL,
   employee_id  TEXT NOT NULL,
   item_id      TEXT NOT NULL,
-  state        TEXT,
   route        TEXT NOT NULL CONSTRAINT route_value CHECK (route IN ('local_tax', 'not_a_tax', 'not_in_database', 'custom_entry', 'stop')),
   reason       TEXT,                                 -- why it needs a person: weak_signal, no_address ...
   stage        TEXT NOT NULL CHECK (stage IN ('awaiting_employer', 'with_expert', 'confirmed', 'moved_to_deduction', 'employer_managed', 'stopped')),
-  online_tax   TEXT,                                 -- the Online payroll tax(es) it maps to
+  online_tax   TEXT,
   decided_by   TEXT CHECK (decided_by IN ('rule', 'employer', 'expert')),
-  rule         TEXT,                                 -- the automation rule, when a rule settled it
-  PRIMARY KEY (company_id, employee_id, item_id),
-  FOREIGN KEY (company_id, employee_id, item_id) REFERENCES desktop_lines (company_id, employee_id, item_id)
-);
-
--- Every decision, one row each. A line has no item when the decision adds a tax nobody withheld.
-CREATE TABLE decisions (
-  decision_id  INTEGER PRIMARY KEY,
-  company_id   TEXT NOT NULL,
-  employee_id  TEXT NOT NULL,
-  item_id      TEXT,
-  tax_id       TEXT REFERENCES taxes (tax_id),       -- the tax it maps to or adds
-  decided_by   TEXT NOT NULL CHECK (decided_by IN ('rule', 'employer', 'expert')),
-  action       TEXT NOT NULL,
   rule         TEXT,
-  at           TEXT,
-  FOREIGN KEY (company_id, employee_id) REFERENCES employees (company_id, employee_id),
-  FOREIGN KEY (company_id, employee_id, item_id) REFERENCES desktop_lines (company_id, employee_id, item_id)
+  PRIMARY KEY (employee_id, item_id),
+  FOREIGN KEY (employee_id, item_id) REFERENCES desktop_lines (employee_id, item_id)
 );
 
--- One row per business: how far its move has got, and any rule the employer switched off.
-CREATE TABLE migrations (
-  company_id  TEXT PRIMARY KEY REFERENCES companies (company_id),
-  status      TEXT NOT NULL CHECK (status IN ('not_moved', 'moved', 'live', 'reconciled')),
-  rules_off   TEXT
-);
-
--- =====================================================================
--- 4. AUDIT
--- =====================================================================
-
-CREATE TABLE audit_log (
-  log_id      INTEGER PRIMARY KEY,
-  at          TEXT NOT NULL,
-  company_id  TEXT REFERENCES companies (company_id),
-  actor       TEXT NOT NULL,                         -- Employer, Expert, Automation, Admin ...
-  action      TEXT NOT NULL,
-  target      TEXT,
-  detail      TEXT
-);
-
--- The label model per state: its quality and whether its suggestions are shown.
-CREATE TABLE model_runs (
-  state_code       TEXT NOT NULL REFERENCES states (state_code),
-  model_version    TEXT NOT NULL,
-  labels           INTEGER NOT NULL,               -- expert-labelled labels it was measured on
-  k                INTEGER,                        -- number of clusters
-  silhouette       REAL,
-  precision_score  REAL,
-  coverage         REAL,
-  mode             TEXT NOT NULL CHECK (mode IN ('assisted', 'shadow')),
-  PRIMARY KEY (state_code, model_version)
+-- Who did what and when: every rule, employer and expert decision.
+CREATE TABLE decision_log (
+  log_id  INTEGER PRIMARY KEY,
+  at      TEXT NOT NULL,
+  who     TEXT NOT NULL,                             -- Automation, Employer, Expert, Admin
+  action  TEXT NOT NULL,
+  line    TEXT,                                      -- the employee and Desktop item it is about
+  detail  TEXT
 );
 `;
 
-// The four layers, for the Data page.
+// The three groups, for the Data page.
 export const TABLE_GROUPS = [
-  { id: 'reference', title: 'Tax reference', owner: 'Intuit', note: 'The same for every business. Ohio codes and rates are real; the address lookup stands in for Intuit\'s tax service.', tables: ['states', 'taxes', 'no_tax_districts', 'state_place_names', 'defined_entries', 'defined_entry_states', 'addresses', 'label_pool'] },
-  { id: 'source', title: 'Source', owner: 'Customer', note: 'The Desktop file, copied in and never edited. Fictional people.', tables: ['companies', 'worksites', 'payroll_items', 'employees', 'employee_addresses', 'desktop_lines', 'import_issues'] },
-  { id: 'work', title: 'Work', owner: 'Engine and people', note: 'What the engine found and what people decided.', tables: ['expected_taxes', 'line_results', 'decisions', 'corrections', 'migrations'] },
-  { id: 'audit', title: 'Audit', owner: 'System', note: 'Who did what and when, and how the label model scored.', tables: ['audit_log', 'model_runs'] },
+  { id: 'desktop', title: 'Desktop file', owner: 'The business', tables: ['company', 'worksites', 'employees', 'home_addresses', 'payroll_items', 'desktop_lines'] },
+  { id: 'lookup', title: 'Tax lookup', owner: 'Intuit', tables: ['addresses', 'taxes'] },
+  { id: 'results', title: 'Migration results', owner: 'Engine and people', tables: ['expected_taxes', 'line_results', 'decision_log'] },
 ];
 
-// What each table holds, in one line: the data dictionary on the Data page.
+// What each table holds, in one line.
 export const TABLE_NOTES = {
-  states: 'A state, and whether migration is switched on there.',
-  taxes: 'Each local tax Online payroll knows: its rate, what it is based on and the agency.',
-  no_tax_districts: 'School districts with no income tax, such as Columbus City Schools.',
-  state_place_names: 'Place names taken out of labels before clustering, so "Lancaster SD" and "Bremen SD" look alike.',
-  defined_entries: 'The names a label cluster can take: a kind of tax, or a known non-tax item like union dues.',
-  defined_entry_states: 'Which states each defined entry applies in.',
-  addresses: 'Every street address, from Intuit\'s address lookup or typed by an employer, with its school district and city.',
-  label_pool: 'Desktop labels an expert has already classified; the clustering gates are measured on them.',
-  companies: 'One row per business moving to Online payroll.',
-  worksites: 'Where each business\'s people work.',
-  payroll_items: 'Payroll items as set up in Desktop, with the label exactly as someone typed it.',
-  employees: 'The people on each payroll.',
-  employee_addresses: 'Home addresses over the year; a move adds a row from the month it starts.',
+  company: 'The business being moved: one row.',
+  worksites: 'Where its people work.',
+  employees: 'The people on the payroll.',
+  home_addresses: 'Where each employee lives; a move adds a row from the month it starts.',
+  payroll_items: 'Payroll items as set up in Desktop, with the label exactly as typed.',
   desktop_lines: 'One row per employee per payroll item: a Desktop local tax line.',
-  import_issues: 'Rows in a Desktop file that break a key, kept so nothing is lost; the engine reports each one.',
-  expected_taxes: 'What each employee\'s addresses say they owe. gap = 1 means owed, but no Desktop line withholds it.',
-  line_results: 'Where each Desktop line stands now: its route, why, and who settled it.',
-  decisions: 'Every decision, one row each: by a rule, the employer or an expert.',
-  corrections: 'Home addresses the employer added, and whether the lookup could place them.',
-  migrations: 'One row per business: how far its move has got.',
-  audit_log: 'Who did what and when.',
-  model_runs: 'The label model per state: its scores, and whether its suggestions are shown.',
+  addresses: 'The addresses this business uses, with the school district and city the lookup places them in.',
+  taxes: 'The local taxes Online payroll knows: rate, basis and agency.',
+  expected_taxes: 'What each employee\'s addresses say they owe. gap = 1: owed, but nothing withholds it.',
+  line_results: 'Where each Desktop line stands: route, Online tax, and who settled it.',
+  decision_log: 'Who did what and when.',
 };
 
 // ---------- loading sql.js ----------
@@ -380,173 +216,83 @@ export function all(db, sql, params = []) {
   stmt.free();
   return out;
 }
-// Put a value back only when the source row had it, so the rebuilt objects match the files exactly.
+// Put a value back only when the row has it, so the business reads back exactly as it was written.
 const opt = (o, k, v) => { if (v !== null && v !== undefined) o[k] = v; return o; };
-const addressRow = (a, source, sort, companyId = null) => ({ address_id: a.address_id, line1: a.line1, city: a.city, state: a.state, zip: a.zip, school_district: source === 'customer' ? 'UNRESOLVED' : a.school_district, municipality: source === 'customer' ? null : a.municipality, source, company_id: companyId, sort });
+const lookupRow = (a) => ({ address_id: a.address_id, line1: a.line1, city: a.city, state: a.state, zip: a.zip, school_district: a.school_district, municipality: a.municipality, source: 'lookup' });
+const employerRow = (a) => ({ address_id: a.address_id, line1: a.line1, city: a.city, state: a.state, zip: a.zip, school_district: 'UNRESOLVED', municipality: null, source: 'employer' });
 
 // ---------- writing ----------
 
-export function createDatabase(SQL, data, uploads = [], generated = null) {
+// The database for one migration: the business, the addresses it uses, the taxes, and empty results.
+//   company     the business, in the same shape as the demo files
+//   lookup      the address lookup (Intuit's service in production); only the addresses the business uses go in
+//   catalog     the tax catalogue
+//   addresses   addresses in the file the lookup does not know (kept, and the lookup cannot place them)
+// A row that breaks a key (an item that does not exist, the same item twice) stops the load with the
+// database's own message, so a broken file never gets in.
+export function createDatabase(SQL, { company, lookup, catalog, addresses = [] }) {
   const db = new SQL.Database();
   db.run(SCHEMA);
-  // Bulk load with the key checks paused, then check every key at once, then switch checks on for
-  // everything that follows. Same guarantee, much faster than checking 50,000 rows one at a time.
-  db.run('PRAGMA foreign_keys = OFF');
   db.run('BEGIN');
   try {
-    insert(db, 'dataset_info', [
-      { dataset: 'catalog', info_json: JSON.stringify(data.catalog.metadata ?? null) },
-      { dataset: 'geocoder', info_json: JSON.stringify(data.geocoder.metadata ?? null) },
-      { dataset: 'label_pool', info_json: JSON.stringify(data.poolMeta ?? null) },
-      { dataset: 'companies', info_json: JSON.stringify(data.companiesMeta ?? null) },
-    ]);
-    const states = Object.entries(data.catalog.states);
-    insert(db, 'states', states.map(([code, s], i) => ({ state_code: code, name: s.name, rollout: s.rollout, sort: i })));
-    insert(db, 'state_place_names', states.flatMap(([code, s]) => (s.place_names ?? []).map((p, i) => ({ state_code: code, place_name: p, sort: i }))));
-    insert(db, 'no_tax_districts', states.flatMap(([code, s]) => (s.no_tax_districts ?? []).map((d, i) => ({ state_code: code, name: d.name, place: d.place, note: d.note, sort: i }))));
-    insert(db, 'taxes', states.flatMap(([code, s]) => s.taxes.map((t, i) => ({ tax_id: t.tax_id, state_code: code, type: t.type, code: t.code, name: t.name, place: t.place, rate: t.rate, base: t.base, basis: t.basis, agency: t.agency, qb_pays_and_files: t.qb_pays_and_files, sort: i }))));
-    insert(db, 'defined_entries', data.catalog.defined_entries.map((e, i) => ({ entry_id: e.entry_id, kind: e.kind, tax_type: e.tax_type, label: e.label, text: e.text, sort: i })));
-    insert(db, 'defined_entry_states', data.catalog.defined_entries.flatMap((e) => (e.states ?? []).map((s, i) => ({ entry_id: e.entry_id, state_code: s, sort: i }))));
-    insert(db, 'addresses', data.geocoder.addresses.map((a, i) => addressRow(a, 'lookup', i)));
-    // Generated addresses are ones the lookup service knows, like the demo ones.
-    if (generated) insert(db, 'addresses', generated.addresses.map((a, i) => addressRow(a, 'lookup', 100000 + i)));
-    insert(db, 'label_pool', Object.entries(data.pools).flatMap(([code, list]) => list.map((p, i) => ({ state_code: code, label: p.label, expert_label: p.expert_label, sort: i }))));
-    data.companies.forEach((c, i) => insertCompany(db, c, 'demo', i));
-    if (generated) generated.companies.forEach((c, i) => insertCompany(db, c, 'generated', 100 + i));
-    uploads.forEach((u, i) => insertCompany(db, u.company, 'upload', 10000 + i, u.addresses));
-    const broken = all(db, 'PRAGMA foreign_key_check');
-    if (broken.length) throw new Error(`${broken.length} rows point at nothing, first in ${broken[0].table}`);
+    insert(db, 'taxes', Object.entries(catalog.states).flatMap(([st, s]) => s.taxes.map((t) => ({ tax_id: t.tax_id, state: st, type: t.type, code: t.code, name: t.name, rate: t.rate, basis: t.basis, agency: t.agency, qb_pays_and_files: t.qb_pays_and_files }))));
+    const byId = new Map(lookup.map((a) => [a.address_id, a]));
+    const fromFile = new Map(addresses.map((a) => [a.address_id, a]));
+    const used = [...new Set([...company.worksites.map((w) => w.address_id), ...company.employees.flatMap((e) => e.addresses.map((a) => a.address_id))])];
+    insert(db, 'addresses', used.map((id) => (byId.has(id) ? lookupRow(byId.get(id)) : fromFile.has(id) ? employerRow(fromFile.get(id)) : null)).filter(Boolean));
+    insertCompany(db, company);
     db.run('COMMIT');
   } catch (err) {
     db.run('ROLLBACK');
     db.close();
     throw err;
   }
-  db.run('PRAGMA foreign_keys = ON');
   return db;
 }
 
-// One Desktop file into the source tables. Rows that would break a key (an item that does not exist,
-// the same item twice for one person, an address nobody knows) go to import_issues instead.
-export function insertCompany(db, c, source, sort, addresses = []) {
-  const id = c.company_id;
-  insert(db, 'companies', [{ company_id: id, name: c.name, plan: c.plan, migration_month: c.migration_month, description: c.description, source, sort }]);
-  // Addresses from an uploaded file that the lookup has never seen: kept, and the lookup cannot place them.
-  insert(db, 'addresses', addresses.map((a) => addressRow(a, 'customer', null, id)));
-  insert(db, 'worksites', c.worksites.map((w, i) => ({ company_id: id, site_id: w.site_id, name: w.name, address_id: w.address_id, sort: i })));
-  insert(db, 'payroll_items', c.items.map((it, i) => ({
-    company_id: id, item_id: it.item_id, label: it.label, law_id: it.law_id, origin: it.origin, item_type: it.item_type, tracking_type: it.tracking_type,
+function insertCompany(db, c) {
+  insert(db, 'company', [{ company_id: c.company_id, name: c.name, plan: c.plan, migration_month: c.migration_month, description: c.description }]);
+  insert(db, 'worksites', c.worksites.map((w) => ({ site_id: w.site_id, name: w.name, address_id: w.address_id })));
+  insert(db, 'payroll_items', c.items.map((it) => ({
+    item_id: it.item_id, label: it.label, law_id: it.law_id, origin: it.origin, item_type: it.item_type, tracking_type: it.tracking_type,
     calc_kind: it.calc?.kind, calc_rate: it.calc?.rate, calc_amount: it.calc?.amount, agency: it.agency, agency_account: it.agency_account,
     deposit_frequency: it.deposit_frequency, system_tax_id: it.system_tax_id,
-    // Desktop exports some empty fields as an explicit null; keep that, so the file reads back exactly.
-    null_fields: Object.keys(it).filter((k) => it[k] === null).join(',') || null, sort: i,
   })));
-  insert(db, 'employees', c.employees.map((e, i) => ({ company_id: id, employee_id: e.employee_id, name: e.name, site_id: e.site_id, monthly_wages: e.monthly_wages, remote: has(e, 'remote') ? e.remote : null, hired_month: e.hired_month, left_month: e.left_month, sort: i })));
-  const itemIds = new Set(c.items.map((it) => it.item_id));
-  // Which of this file's home addresses the database knows: one query per 500 ids.
-  const wanted = [...new Set(c.employees.flatMap((e) => e.addresses.map((a) => a.address_id)))];
-  const knownIds = new Set();
-  for (let i = 0; i < wanted.length; i += 500) {
-    const part = wanted.slice(i, i + 500);
-    for (const r of all(db, `SELECT address_id FROM addresses WHERE address_id IN (${part.map(() => '?').join(',')})`, part)) knownIds.add(r.address_id);
-  }
-  const known = (addressId) => knownIds.has(addressId);
-  const homes = [];
-  const lines = [];
-  const issues = [];
-  for (const e of c.employees) {
-    e.addresses.forEach((a, i) => {
-      if (known(a.address_id)) homes.push({ company_id: id, employee_id: e.employee_id, from_month: a.from_month, address_id: a.address_id, sort: i });
-      else issues.push({ company_id: id, employee_id: e.employee_id, kind: 'unknown_address', value: a.address_id, from_month: a.from_month, position: i });
-    });
-    const seen = new Set();
-    e.items.forEach((it, i) => {
-      if (!itemIds.has(it)) issues.push({ company_id: id, employee_id: e.employee_id, kind: 'unknown_item', value: it, from_month: null, position: i });
-      else if (seen.has(it)) issues.push({ company_id: id, employee_id: e.employee_id, kind: 'repeated_item', value: it, from_month: null, position: i });
-      else { seen.add(it); lines.push({ company_id: id, employee_id: e.employee_id, item_id: it, sort: i }); }
-    });
-  }
-  insert(db, 'employee_addresses', homes);
-  insert(db, 'desktop_lines', lines);
-  insert(db, 'import_issues', issues);
+  insert(db, 'employees', c.employees.map((e) => ({ employee_id: e.employee_id, name: e.name, site_id: e.site_id, monthly_wages: e.monthly_wages, remote: has(e, 'remote') ? e.remote : null, hired_month: e.hired_month, left_month: e.left_month })));
+  insert(db, 'home_addresses', c.employees.flatMap((e) => e.addresses.map((a) => ({ employee_id: e.employee_id, from_month: a.from_month, address_id: a.address_id }))));
+  insert(db, 'desktop_lines', c.employees.flatMap((e) => e.items.map((it) => ({ employee_id: e.employee_id, item_id: it }))));
 }
 
 // ---------- reading: the engine's input, rebuilt from SQL ----------
 
-export function readData(db) {
-  // Read everything once and group in memory: one query per table, however many companies there are.
-  const info = Object.fromEntries(all(db, 'SELECT dataset, info_json FROM dataset_info').map((r) => [r.dataset, JSON.parse(r.info_json)]));
-  const states = {};
-  for (const s of all(db, 'SELECT * FROM states ORDER BY sort')) {
-    states[s.state_code] = {
-      name: s.name,
-      rollout: s.rollout,
-      taxes: all(db, 'SELECT * FROM taxes WHERE state_code = ? ORDER BY sort', [s.state_code]).map((t) => ({
-        tax_id: t.tax_id, type: t.type, code: t.code, name: t.name, place: t.place, rate: t.rate, base: t.base, basis: t.basis, agency: t.agency, qb_pays_and_files: Boolean(t.qb_pays_and_files),
-      })),
-      no_tax_districts: all(db, 'SELECT name, place, note FROM no_tax_districts WHERE state_code = ? ORDER BY sort', [s.state_code]),
-      place_names: all(db, 'SELECT place_name FROM state_place_names WHERE state_code = ? ORDER BY sort', [s.state_code]).map((r) => r.place_name),
-    };
-  }
-  const catalog = {
-    metadata: info.catalog,
-    states,
-    defined_entries: all(db, 'SELECT * FROM defined_entries ORDER BY sort').map((e) => ({
-      ...opt({ entry_id: e.entry_id, kind: e.kind }, 'tax_type', e.tax_type),
-      states: all(db, 'SELECT state_code FROM defined_entry_states WHERE entry_id = ? ORDER BY sort', [e.entry_id]).map((r) => r.state_code),
-      label: e.label, text: e.text,
-    })),
-  };
-  // The lookup's addresses first, then the ones customers typed that it cannot place.
-  const addresses = all(db, "SELECT address_id, line1, city, state, zip, school_district, municipality FROM addresses ORDER BY source = 'customer', sort, rowid");
-  const geocoder = { metadata: info.geocoder, addresses };
-  const pools = {};
-  for (const r of all(db, 'SELECT state_code, label, expert_label FROM label_pool ORDER BY state_code, sort')) (pools[r.state_code] ??= []).push({ label: r.label, expert_label: r.expert_label });
-  const companies = readCompanies(db);
-  return { catalog, geocoder, pools, poolMeta: info.label_pool, companies, companiesMeta: info.companies };
+// The business comes back from the database. The tax catalogue, the label pool and the address lookup are
+// reference files (Intuit's services in production); addresses the employer typed come from the database.
+export function readData(db, { catalog, lookup, pools, lookupMeta = null }) {
+  const typed = all(db, "SELECT address_id, line1, city, state, zip, school_district, municipality FROM addresses WHERE source = 'employer' ORDER BY rowid");
+  return { catalog, geocoder: { metadata: lookupMeta, addresses: [...lookup, ...typed] }, pools, companies: [readCompany(db)] };
 }
 
-const groupBy = (rows, key = 'company_id') => { const m = new Map(); for (const r of rows) { const list = m.get(r[key]); if (list) list.push(r); else m.set(r[key], [r]); } return m; };
+const groupBy = (rows, key) => { const m = new Map(); for (const r of rows) { const list = m.get(r[key]); if (list) list.push(r); else m.set(r[key], [r]); } return m; };
 
-// All companies, or just one (after a correction), rebuilt from the source tables.
-export function readCompanies(db, onlyId = null) {
-  const where = onlyId ? ' WHERE company_id = ?' : '';
-  const args = onlyId ? [onlyId] : [];
-  const sites = groupBy(all(db, `SELECT company_id, site_id, name, address_id FROM worksites${where} ORDER BY company_id, sort`, args));
-  const items = groupBy(all(db, `SELECT * FROM payroll_items${where} ORDER BY company_id, sort`, args));
-  const emps = groupBy(all(db, `SELECT * FROM employees${where} ORDER BY company_id, sort`, args));
-  const addrs = groupBy(all(db, `SELECT company_id, employee_id, address_id, from_month, sort FROM employee_addresses${where} ORDER BY company_id, sort`, args));
-  const lines = groupBy(all(db, `SELECT company_id, employee_id, item_id, sort FROM desktop_lines${where} ORDER BY company_id, sort`, args));
-  const issues = groupBy(all(db, `SELECT * FROM import_issues${where} ORDER BY company_id, position`, args));
-  const of = (m, c) => m.get(c.company_id) ?? [];
-  return all(db, `SELECT * FROM companies${where} ORDER BY sort`, args).map((c) => readCompany(c, of(sites, c), of(items, c), of(emps, c), of(addrs, c), of(lines, c), of(issues, c)));
-}
-
-function readCompany(c, siteRows, itemRows, empRows, addrRows, lineRows, issueRows) {
+export function readCompany(db) {
+  const c = all(db, 'SELECT * FROM company')[0];
   const out = { company_id: c.company_id, name: c.name, plan: c.plan, migration_month: c.migration_month };
-  out.worksites = siteRows.map((w) => ({ site_id: w.site_id, name: w.name, address_id: w.address_id }));
-  out.items = itemRows.map((r) => {
+  out.worksites = all(db, 'SELECT site_id, name, address_id FROM worksites ORDER BY rowid');
+  out.items = all(db, 'SELECT * FROM payroll_items ORDER BY rowid').map((r) => {
     const it = { item_id: r.item_id, label: r.label, law_id: r.law_id, origin: r.origin, item_type: r.item_type, tracking_type: r.tracking_type };
     it.calc = r.calc_kind === 'flat_annual' ? { kind: r.calc_kind, amount: r.calc_amount } : { kind: r.calc_kind, rate: r.calc_rate };
     it.agency = r.agency;
     opt(it, 'agency_account', r.agency_account);
     opt(it, 'deposit_frequency', r.deposit_frequency);
     opt(it, 'system_tax_id', r.system_tax_id);
-    for (const k of (r.null_fields ?? '').split(',').filter(Boolean)) it[k] = null;
     return it;
   });
-  const addrBy = groupBy(addrRows, 'employee_id');
-  const lineBy = groupBy(lineRows, 'employee_id');
-  const issueBy = groupBy(issueRows, 'employee_id');
-  // The engine sees the file as it was: rows from import_issues go back where they were in each list,
-  // so its own file checks report them ("an item reference that does not exist", and so on).
-  const inOrder = (rows, extra) => [...rows.map((r) => ({ at: r.sort, r })), ...extra.map((x) => ({ at: x.position, x }))].sort((a, b) => a.at - b.at);
-  out.employees = empRows.map((r) => {
+  const homes = groupBy(all(db, 'SELECT employee_id, address_id, from_month FROM home_addresses ORDER BY rowid'), 'employee_id');
+  const lines = groupBy(all(db, 'SELECT employee_id, item_id FROM desktop_lines ORDER BY rowid'), 'employee_id');
+  out.employees = all(db, 'SELECT * FROM employees ORDER BY rowid').map((r) => {
     const e = { employee_id: r.employee_id, name: r.name, site_id: r.site_id, monthly_wages: r.monthly_wages };
-    const iss = issueBy.get(r.employee_id) ?? [];
-    e.addresses = inOrder(addrBy.get(r.employee_id) ?? [], iss.filter((x) => x.kind === 'unknown_address'))
-      .map(({ r: a, x }) => (a ? { address_id: a.address_id, from_month: a.from_month } : { address_id: x.value, from_month: x.from_month }));
-    e.items = inOrder(lineBy.get(r.employee_id) ?? [], iss.filter((x) => x.kind !== 'unknown_address')).map(({ r: l, x }) => (l ? l.item_id : x.value));
+    e.addresses = (homes.get(r.employee_id) ?? []).map((a) => ({ address_id: a.address_id, from_month: a.from_month }));
+    e.items = (lines.get(r.employee_id) ?? []).map((l) => l.item_id);
     if (r.remote !== null) e.remote = Boolean(r.remote);
     opt(e, 'hired_month', r.hired_month);
     opt(e, 'left_month', r.left_month);
@@ -556,29 +302,30 @@ function readCompany(c, siteRows, itemRows, empRows, addrRows, lineRows, issueRo
   return out;
 }
 
-// ---------- corrections: the employer adds a missing or unplaceable home address ----------
+// ---------- the employer adds a missing or unplaceable home address ----------
 
 export const addressKey = (line1, zip) => `${norm(line1)}|${norm(zip)}`;
 export function lookupIndex(addresses) {
   return new Map(addresses.filter((a) => !a.missing && a.school_district !== 'UNRESOLVED').map((a) => [addressKey(a.line1, a.zip), a.address_id]));
 }
 
-// A corrected address replaces the employee's home address for the whole year. If the lookup knows it,
-// the engine can place it; if not, it is kept as a customer address that the lookup cannot place.
-export function applyCorrection(db, c, index) {
+// The new address replaces the employee's home address for the whole year. If the lookup knows it, it
+// goes in as a lookup address the engine can place; if not, it is kept as one the lookup cannot place.
+export function applyCorrection(db, c, index, lookup) {
   const found = index.get(addressKey(c.line1, c.zip));
   const addressId = found ?? `${c.company_id}-C-${c.employee_id}`;
   db.run('SAVEPOINT correction');
   try {
-    if (!found) {
-      db.run(`INSERT INTO addresses (address_id, line1, city, state, zip, school_district, municipality, source, company_id)
-        VALUES (?, ?, ?, ?, ?, 'UNRESOLVED', NULL, 'customer', ?)
-        ON CONFLICT (address_id) DO UPDATE SET line1 = excluded.line1, city = excluded.city, state = excluded.state, zip = excluded.zip`, [addressId, c.line1, c.city, c.state, c.zip, c.company_id]);
+    if (found) {
+      const a = lookup.find((x) => x.address_id === found);
+      insert(db, 'addresses', all(db, 'SELECT 1 FROM addresses WHERE address_id = ?', [found]).length ? [] : [lookupRow(a)]);
+    } else {
+      db.run(`INSERT INTO addresses (address_id, line1, city, state, zip, school_district, municipality, source)
+        VALUES (?, ?, ?, ?, ?, 'UNRESOLVED', NULL, 'employer')
+        ON CONFLICT (address_id) DO UPDATE SET line1 = excluded.line1, city = excluded.city, state = excluded.state, zip = excluded.zip`, [addressId, c.line1, c.city, c.state, c.zip]);
     }
-    db.run('DELETE FROM employee_addresses WHERE company_id = ? AND employee_id = ?', [c.company_id, c.employee_id]);
-    db.run("DELETE FROM import_issues WHERE company_id = ? AND employee_id = ? AND kind = 'unknown_address'", [c.company_id, c.employee_id]);
-    insert(db, 'employee_addresses', [{ company_id: c.company_id, employee_id: c.employee_id, from_month: 1, address_id: addressId, sort: 0 }]);
-    insert(db, 'corrections', [{ company_id: c.company_id, employee_id: c.employee_id, value: [c.line1, c.city, c.state, c.zip].filter(Boolean).join(', '), address_id: addressId, found_in_lookup: found ? 1 : 0, at: c.at }]);
+    db.run('DELETE FROM home_addresses WHERE employee_id = ?', [c.employee_id]);
+    insert(db, 'home_addresses', [{ employee_id: c.employee_id, from_month: 1, address_id: addressId }]);
     db.run('RELEASE correction');
   } catch (err) {
     db.run('ROLLBACK TO correction');
@@ -588,67 +335,39 @@ export function applyCorrection(db, c, index) {
   return { addressId, found: Boolean(found) };
 }
 
-// ---------- work and audit tables, written by the app ----------
+// ---------- results, written by the app ----------
 
-export const WORK_TABLES = ['expected_taxes', 'line_results', 'decisions', 'migrations', 'audit_log', 'model_runs'];
+export const RESULT_TABLES = ['expected_taxes', 'line_results', 'decision_log'];
 
-// The work and audit rows, from the engine's analysis of each business and the decisions made so far.
-// analysisOf(id) may throw for a file the engine stops on; that business then has no work rows.
-export function workRows({ companies, analysisOf, decisionsOf, audit = [], modelVersion = '' }) {
-  const rows = Object.fromEntries(WORK_TABLES.map((t) => [t, []]));
-  const known = new Set(companies.map((c) => c.company_id));
-  let models = null;
-  const by = (x) => (x.auto ? 'rule' : null);
-  for (const c of companies) {
-    const id = c.company_id;
-    let a;
-    try { a = analysisOf(id); } catch { continue; }
-    models ??= a.models;
-    const d = decisionsOf(id);
+// The engine's analysis of the business, the decisions so far, and the log, as rows.
+// analysis is null for a file the engine stops on; then only the log is written.
+export function resultRows({ analysis: a, decisions: d, log = [] }) {
+  const rows = { expected_taxes: [], line_results: [], decision_log: [] };
+  if (a) {
     const gaps = new Set(a.gaps.map((g) => `${g.employee_id}|${g.tax_id}`));
     for (const e of a.employees) {
-      for (const x of e.expected.list) {
-        rows.expected_taxes.push({ company_id: id, employee_id: e.employee_id, tax_id: x.tax_id, required: x.required ? 1 : 0, months: monthSpan(x.months) || 'none', gap: gaps.has(`${e.employee_id}|${x.tax_id}`) ? 1 : 0 });
-      }
+      for (const x of e.expected.list) rows.expected_taxes.push({ employee_id: e.employee_id, tax_id: x.tax_id, months: monthSpan(x.months) || 'none', required: x.required ? 1 : 0, gap: gaps.has(`${e.employee_id}|${x.tax_id}`) ? 1 : 0 });
     }
-    const lines = new Set();
     for (const k of effectiveAll(a, d)) {
       const e = k.decision.employer;
       const x = k.decision.expert;
-      lines.add(k.case_id);
       rows.line_results.push({
-        company_id: id, employee_id: k.employee_id, item_id: k.item.item_id, state: k.state ?? null,
-        route: k.route, reason: k.reason ?? null, stage: k.stage,
+        employee_id: k.employee_id, item_id: k.item.item_id, route: k.route, reason: k.reason ?? null, stage: k.stage,
         online_tax: k.route === 'local_tax' ? k.proposal.map((p) => p.tax.name).join(' + ') : k.route === 'custom_entry' ? k.entry?.name ?? null : null,
         decided_by: e ? (e.auto ? 'rule' : 'employer') : x ? (x.auto ? 'rule' : 'expert') : null,
         rule: e?.rule ?? x?.rule ?? null,
       });
     }
-    for (const [caseId, rec] of Object.entries(d.cases ?? {})) {
-      if (!lines.has(caseId)) continue;
-      const [, employeeId, itemId] = caseId.split(':');
-      const row = (who, r, action) => ({ company_id: id, employee_id: employeeId, item_id: itemId, tax_id: r.tax_id ?? null, decided_by: who, action, rule: r.rule ?? null, at: r.at ?? null });
-      if (rec.sentToExpert) rows.decisions.push(row('employer', rec.sentToExpert, 'sent_to_expert'));
-      if (rec.expert) rows.decisions.push(row(by(rec.expert) ?? 'expert', rec.expert, rec.expert.action));
-      if (rec.employer) rows.decisions.push(row(by(rec.employer) ?? 'employer', rec.employer, rec.employer.action));
-    }
-    for (const [gapId, rec] of Object.entries(d.gaps ?? {})) {
-      const [, employeeId, taxId] = gapId.split(':');
-      if (!a.gaps.some((g) => g.gap_id === gapId)) continue;
-      rows.decisions.push({ company_id: id, employee_id: employeeId, item_id: null, tax_id: taxId, decided_by: by(rec) ?? 'employer', action: rec.action === 'add' ? 'add_tax' : rec.action, rule: rec.rule ?? null, at: rec.at ?? null });
-    }
-    const off = Object.entries(d.policy ?? {}).filter(([, on]) => !on).map(([rule]) => rule);
-    rows.migrations.push({ company_id: id, status: d.reconciled ? 'reconciled' : d.live ? 'live' : d.autoRun ? 'moved' : 'not_moved', rules_off: off.join(', ') || null });
   }
-  rows.audit_log = audit.filter((x) => !x.company_id || known.has(x.company_id)).map((x) => ({ at: x.at, company_id: x.company_id ?? null, actor: x.actor, action: x.action, target: x.target ?? null, detail: x.detail ?? null }));
-  rows.model_runs = Object.values(models ?? {}).map((m) => ({ state_code: m.state, model_version: modelVersion || m.version, labels: m.poolSize, k: m.k ?? null, silhouette: m.silhouette ?? null, precision_score: m.precision ?? null, coverage: m.coverage ?? null, mode: m.mode }));
+  // The log is kept newest first in the app; the table holds it in the order it happened.
+  rows.decision_log = [...log].reverse().map((x) => ({ at: x.at, who: x.actor, action: x.action, line: x.target ?? null, detail: x.detail ?? null }));
   return rows;
 }
-export function writeWork(db, rows) {
+export function writeResults(db, rows) {
   db.run('BEGIN');
   try {
-    for (const t of [...WORK_TABLES].reverse()) db.run(`DELETE FROM ${t}`);
-    for (const t of WORK_TABLES) insert(db, t, rows[t] ?? []);
+    for (const t of RESULT_TABLES) db.run(`DELETE FROM ${t}`);
+    for (const t of RESULT_TABLES) insert(db, t, rows[t] ?? []);
     db.run('COMMIT');
   } catch (err) {
     db.run('ROLLBACK');
@@ -664,7 +383,7 @@ export function tableSummary(db) {
     tables: g.tables.map((name) => ({
       name,
       rows: all(db, `SELECT COUNT(*) AS n FROM ${name}`)[0].n,
-      columns: all(db, `PRAGMA table_info(${name})`).filter((c) => c.name !== 'sort').map((c) => c.name),
+      columns: all(db, `PRAGMA table_info(${name})`).map((c) => c.name),
     })),
   }));
 }
@@ -678,7 +397,7 @@ export function describeTable(db, name) {
     const parts = fkRows.filter((f) => f.id === id).sort((a, b) => a.seq - b.seq);
     return { table: parts[0].table, from: parts.map((f) => f.from), to: parts.map((f) => f.to ?? f.from) };
   });
-  const columns = all(db, `PRAGMA table_info(${name})`).filter((c) => c.name !== 'sort' && c.name !== 'null_fields').map((c) => ({
+  const columns = all(db, `PRAGMA table_info(${name})`).map((c) => ({
     name: c.name,
     type: c.type,
     pk: c.pk > 0,
@@ -693,18 +412,18 @@ export function describeTable(db, name) {
 }
 
 // Proof that the rules live in the database: each statement breaks one rule. tryRule runs it inside a
-// savepoint and always rolls back, so the demo data never changes; the database's own error comes back.
+// savepoint and always rolls back, so the data never changes; the database's own error comes back.
 export const RULE_CHECKS = [
-  { id: 'fk', label: 'Add an employee to a business that does not exist', rule: 'Foreign key',
-    sql: "INSERT INTO employees (company_id, employee_id, name, site_id, monthly_wages) VALUES ('NO-SUCH-BUSINESS', 'E999', 'Test Person', 'S1', 3000)" },
+  { id: 'fk', label: 'Add an employee at a work site that does not exist', rule: 'Foreign key',
+    sql: "INSERT INTO employees (employee_id, name, site_id, monthly_wages) VALUES ('E999', 'Test Person', 'NO-SUCH-SITE', 3000)" },
   { id: 'pk', label: 'Add the same employee twice', rule: 'Primary key',
-    sql: "INSERT INTO employees (company_id, employee_id, name, site_id, monthly_wages) SELECT company_id, employee_id, name, site_id, monthly_wages FROM employees LIMIT 1" },
-  { id: 'month', label: 'Set a move month of 13', rule: 'Check',
-    sql: "UPDATE companies SET migration_month = 13 WHERE company_id = (SELECT company_id FROM companies ORDER BY sort LIMIT 1)" },
+    sql: 'INSERT INTO employees (employee_id, name, site_id, monthly_wages) SELECT employee_id, name, site_id, monthly_wages FROM employees LIMIT 1' },
+  { id: 'month', label: 'Set the move month to 13', rule: 'Check',
+    sql: 'UPDATE company SET migration_month = 13' },
   { id: 'rate', label: 'Give a tax a rate of 150%', rule: 'Check',
-    sql: "UPDATE taxes SET rate = 150 WHERE tax_id = 'OH-SD-2305'" },
+    sql: 'UPDATE taxes SET rate = 150 WHERE tax_id = (SELECT tax_id FROM taxes LIMIT 1)' },
   { id: 'line', label: 'Record a Desktop line for an item the business never set up', rule: 'Foreign key',
-    sql: "INSERT INTO desktop_lines (company_id, employee_id, item_id) SELECT company_id, employee_id, 'NO-SUCH-ITEM' FROM employees LIMIT 1" },
+    sql: "INSERT INTO desktop_lines (employee_id, item_id) SELECT employee_id, 'NO-SUCH-ITEM' FROM employees LIMIT 1" },
 ];
 export function tryRule(db, id) {
   const check = RULE_CHECKS.find((c) => c.id === id);
