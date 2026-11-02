@@ -2,6 +2,8 @@
 
 A working prototype of the BRD v3 design for moving local payroll taxes from QuickBooks Desktop Payroll to QuickBooks Online Payroll. Built for SPJIMR BDA (INF501), Group Exam Case 19.
 
+**One business, start to finish.** The demo moves one business, **Buckeye Supply Co.** (152 employees, 313 Desktop local tax lines), from Desktop to Online payroll. A migration is always one business at a time; the same screens and tables would serve every customer.
+
 **Model suggests, person decides.** The prototype finds the right local tax for every employee from their addresses, groups free-text Desktop labels with clustering, and routes every Desktop line to one of three places. Rules the employer approves settle most lines; people handle only the exceptions; nothing switches on until the employer confirms it.
 
 ## Open it
@@ -25,9 +27,9 @@ npm run schema  # rewrites docs/schema.* from the schema the app runs
 | --- | --- | --- |
 | **Business owner** (customer) | Move their own business, give the information only they have, confirm what is theirs | **Move** (start, check, summary), **To do** (with **Missing information**), **Go live** (with reconcile and W-2) |
 | **Payroll tax expert** (Intuit) | Decide the lines the rules leave, one label at a time | **Queue** |
-| **Admin** (Intuit) | Watch every business, keep the model safe and the data right | **Portfolio**, **Model** (gates and thresholds), **ML Lab**, **Engine**, **Data**, **Scenarios**, **Log** |
+| **Admin** (Intuit) | See how the engine read the file, keep the model safe and the data right | **Engine**, **Model** (gates and thresholds), **ML Lab**, **Data**, **Scenarios**, **Log** |
 
-Each business runs its own move with the rules it approved; nobody runs automation for other people's businesses. Intuit's view across all of them is the admin's Portfolio, which only reads.
+All three work on the same business. The business runs its own move with the rules it approved; nobody runs automation for it.
 
 The sign-in is a demo: in a real product customers would use their Intuit account and staff the company sign-in, and the role would decide the screens. A public static site cannot keep a password secret, so it does not pretend to.
 
@@ -66,25 +68,18 @@ The data lives in a **SQLite database inside the page** (sql.js, compiled to Web
 
 ![The main tables and how they link](web/schema-diagram.svg)
 
-The admin's **Data** page shows the schema read from the database itself: click a table for its columns, keys, rules and links. **The database checks the data itself** has five buttons that each try to break a rule (a business that does not exist, a duplicate employee, month 13, a 150% rate, an item that was never set up); the database refuses each one. **Download the database** gives the whole thing as a `.sqlite` file to open in any SQLite tool. The page also runs read-only SQL queries (with examples) and accepts a **Desktop file as CSV**: download the template, upload it, and the new company goes through the same file checks and engine as the demo clients. A file with missing columns or an unknown work site is refused with the reason; a home address the lookup has never seen goes to an expert. Uploads stay in your browser. See [the data contract](docs/data-contract.md) for the columns.
+The admin's **Data** page shows the schema read from the database itself: click a table for its columns, keys, rules and links. **The database checks the data itself** has five buttons that each try to break a rule (a business that does not exist, a duplicate employee, month 13, a 150% rate, an item that was never set up); the database refuses each one. **Download the database** gives the whole thing as a `.sqlite` file to open in any SQLite tool. The page also runs read-only SQL queries (with examples) and accepts a **Desktop file as CSV**: download the template, upload it, and that business goes through the same file checks and engine as Buckeye (a business picker appears once there are two). A file with missing columns or an unknown work site is refused with the reason; a home address the lookup has never seen goes to an expert. Uploads stay in your browser. See [the data contract](docs/data-contract.md) for the columns.
 
 Customer payroll data stays fictional on purpose: real payroll files hold social security numbers and wages. Real companies demo the same way: invented people, real tax rules.
 
 ## The demo data
 
-**66 businesses, 11,330 employees, 20,269 Desktop local tax lines.**
+**One business: Buckeye Supply Co.**, 152 employees at two sites (Lancaster and Columbus, Ohio), 12 Desktop payroll items, 313 Desktop local tax lines, moving to Online payroll in October. It is generated from a fixed seed, so every visit sees the same people. Names, people, wages and labels are synthetic; the towns, ZIP codes, school districts and rates are real. Like a real Desktop file it is messy: free-text labels ("Schl Dist W/H", "school_district_wh_ohio", "Other Tax"), two missing home addresses and one the lookup cannot place, people who moved, wrong rates, school tax withheld where none is owed, and taxes owed that nobody withheld.
 
-- **60 generated businesses**, 100 to 280 employees each, made from a fixed seed so every visit sees the same data. Names, people and labels are synthetic; the towns, ZIP codes, school districts and rates are real. Each has its own mix of messy data: missing or unplaceable home addresses, moves, wrong rates, items nobody set up, ambiguous labels. **Buckeye Supply Co.** (152 employees) is the default.
-- **6 story clients**, small and hand-made, one BRD case each:
+Two other sets of data exist only for testing, not as businesses in the app:
 
-| Client | What it shows |
-| --- | --- |
-| Fairfield Hardware Supply | The main demo: one of each route, a move, a gap, an over-withheld rate |
-| Hocking Valley Dental | Core plan (the employer pays and files); a missing account number blocks go-live |
-| Keystone Freight | Two states; Pennsylvania is still in shadow mode |
-| Hocking Hills Fabrication | Boundary cases: moves in the migration month, remote work, duplicates, joiners and leavers, conflicting labels |
-| Lakeview Bakery | Moves in January, so there is no Desktop history to relabel |
-| Ridgeview Print Shop | A messy Desktop file: blank item name, unknown address, missing and duplicate items, 0% rate, a move to another state |
+- **Six small test files** (`data/companies.json`), one BRD case each, behind the **Scenarios** page (see below).
+- **59 more generated businesses** in `tests/scale.test.mjs`, to check the engine and the database at 9,000+ employees.
 
 ## Automatic migration
 
@@ -102,19 +97,9 @@ The employer approves seven rules once, on the Move page's check step:
 
 Only the cases the BRD reserves for people are left: a weak or missing label signal, conflicting evidence, a missing or unplaceable address, a label naming another state, a state in shadow mode, or a missing agency account number. After a person decides one, the rules run again and finish the rest.
 
-| Client | Settled automatically | Left for a person |
-| --- | --- | --- |
-| Fairfield Hardware Supply | 16 of 18 (89%) | Tom Reed's "Local Tax" (weak signal), Kevin O'Neil's garnishment (conflict) |
-| Hocking Valley Dental | 6 of 6 | The Lancaster account number |
-| Keystone Freight | 2 of 4 | Two Pennsylvania lines (shadow mode) |
-| Hocking Hills Fabrication | 30 of 35 | 5 exceptions |
-| Lakeview Bakery | 4 of 4 | Nothing: live and reconciled |
-| Ridgeview Print Shop | 9 of 11 | A blank item name, an unknown address |
-| **Six story clients** | **67 of 78 (86%)** | **12** |
-| Buckeye Supply Co. (152 employees) | 313 of 318 (98%) | 3 home addresses (employer), 2 "Other Tax" lines (expert) |
-| **All 66 businesses** | **20,413 of 21,125 (96.6%)** | **714**: 609 with an expert, 105 with employers |
+For Buckeye Supply Co., the rules settle **313 of 318 items (98%)**: 313 Desktop lines plus 5 taxes the addresses say are owed but nobody withheld. Five are left for a person: 3 home addresses only the employer has, and 2 "Other Tax" lines (a weak label) for an expert. Once the employer adds the addresses and the expert decides "Other Tax" once, the rules finish the rest, go live and reconcile: 318 of 318.
 
-Most of what is left at scale is one kind: an unclear label on a Desktop item that many employees share. The expert decides what such a label means once, and each employee's address picks the exact tax (see the demo script).
+When an unclear label sits on a Desktop item many employees share, the expert decides what it means once, and each employee's address picks the exact tax.
 
 ## Missing information
 
@@ -133,21 +118,31 @@ It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, 
 
 ## Demo script (about six minutes)
 
-1. **Sign in as the business owner** of Buckeye Supply Co. (152 employees). **Move**: Get started; the check says 313 of 318 items settle by rule, 3 need an address from the employer and 2 need an expert. Click **Move to Online payroll**.
-2. On the summary, click **Add address** next to Gabriel Bell. On To do, click **Fill a demo address**, then **Save**: the engine checks his line again and the rules settle it. (Type an address the lookup does not know, and the line stays with an expert.)
-3. **Sign in as the payroll tax expert.** Buckeye's queue has two "Other Tax" lines. Then pick **Licking Pharmacy**: one unclear label is open on 151 lines; decide what it means once and every employee's address picks the exact tax.
-4. **Sign in as the admin**:
-   - **Portfolio**: 66 businesses, 11,330 employees, 96.6% settled by rule, and what is left by reason.
+1. **Sign in as the business owner.** **Move**: Get started; the check says 313 of 318 items settle by rule, 3 need an address from the employer and 2 need an expert. Click **Move to Online payroll**.
+2. On the summary, click **Add address** next to Gabriel Bell. On To do, click **Fill a demo address**, then **Save**: the engine checks his line again and the rules settle it. Do the same for Imani Price and Kenji Lewis. (Type an address the lookup does not know, and the line stays with an expert.)
+3. **Sign in as the payroll tax expert.** Two "Other Tax" lines are open. Decide once that the label means a school-district tax: each employee's address picks the exact district, and the rules go live and reconcile.
+4. **Sign in as the owner again.** **Go live**: every check passes; all $255,817.53 withheld in Desktop this year has a destination; the reconcile shows 9 local taxes on Online paychecks and groups the 200 notes by kind (wrong past rates, tax withheld but not owed). The W-2 cards show the local boxes.
+5. **Sign in as the admin**:
+   - **Engine**: what each step found for Buckeye: 289 expected taxes, 274 custom lines clustered, 266 local tax, 34 not a tax, 13 to an expert, 5 owed but not withheld.
+   - **Model**: Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
-   - **Model**: Ohio passes every gate on the demo pool (silhouette 0.53, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode (its score is 0.528).
-   - **Data**: run "Added addresses" to see the address saved in step 2; download the template and upload it as a new business.
-   - **Scenarios**: 76 of 76 pass; each row opens the case.
-
-The story clients show single cases in detail. For example, Fairfield Hardware Supply settles 16 of 18 by rule; the expert marks Kevin O'Neil's garnishment as not a tax and maps Tom Reed's "Local Tax" to Lancaster CSD; the rules then pass the four go-live checks ($12,063.60 tie-out), go live and reconcile.
+   - **Data**: the schema (22 tables, 4 layers), the five rule checks, "Added addresses" to see step 2's addresses, and **Download the database**.
+   - **Scenarios**: 76 of 76 pass.
 
 ## Scenario coverage
 
-The admin's **Scenarios** page lists 76 scenarios, grouped by BRD step, and runs a live check for each one. The same checks run in `npm test`, together with exact boundaries: a gate value equal to its threshold passes (silhouette 0.50, precision 98%, sample 40, label confidence 0.25), and a rate of 1.4999% against 1.5% counts as under-withheld.
+The admin's **Scenarios** page lists 76 scenarios, grouped by BRD step, and runs a live check for each one on a small test file made for that case:
+
+| Test file | What it covers |
+| --- | --- |
+| Fairfield Hardware Supply | One of each route, a move, a gap, an over-withheld rate |
+| Hocking Valley Dental | Core plan (the employer pays and files); a missing account number blocks go-live |
+| Keystone Freight | Two states; Pennsylvania is still in shadow mode |
+| Hocking Hills Fabrication | Moves in the migration month, remote work, duplicates, joiners and leavers, conflicting labels |
+| Lakeview Bakery | Moves in January, so there is no Desktop history to relabel |
+| Ridgeview Print Shop | A messy file: blank item name, unknown address, missing and duplicate items, 0% rate, a move to another state |
+
+The same checks run in `npm test`, together with exact boundaries: a gate value equal to its threshold passes (silhouette 0.50, precision 98%, sample 40, label confidence 0.25), and a rate of 1.4999% against 1.5% counts as under-withheld.
 
 ## The screens
 
@@ -164,11 +159,11 @@ The admin's **Scenarios** page lists 76 scenarios, grouped by BRD step, and runs
 | Lancaster 2.3% and Columbus 2.5% city rates | Real, from the city websites |
 | Clustering, silhouette, precision gates | Implemented and tested; the gates use a 53-label pool written for this demo |
 | ML Lab | Real computation with the engine's code, on 1,200 synthetic labels written from real label patterns |
-| Generated businesses | Synthetic, from a fixed seed; real towns, ZIP codes, districts and rates |
+| Buckeye Supply Co. | Synthetic, from a fixed seed; real towns, ZIP codes, districts and rates |
 | Address lookup | A hand-made table of fictional addresses mapped to real districts. In production this is Intuit's tax applicability service |
-| Database | Real SQLite, in the browser; rebuilt from the demo files on each visit |
+| Database | Real SQLite, in the browser; rebuilt on each visit |
 | Sign-in | Demo accounts without passwords |
-| Businesses, employees, wages, account numbers | Fictional |
+| The business, employees, wages, account numbers | Fictional |
 | Copying employees, pay items and totals in the Move step | Simulated; the local tax checks are real |
 | Which taxes QuickBooks pays and files | A demo assumption, not an Intuit statement |
 | Connection to QuickBooks | None |
@@ -184,13 +179,13 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/engine/analysis.mjs` | File checks, expected taxes, rollout gates, routing, rate checks, gaps |
 | `web/engine/workflow.mjs` | Decisions, automation rules, go-live checks, dollar tie-out, W-2, reconciliation |
 | `web/db.mjs` | The database: schema, loading, reading the engine's input with SQL, queries, CSV import, added addresses |
-| `web/generate.mjs` | The 60 generated businesses and the ML Lab's labelled set, from a fixed seed |
+| `web/generate.mjs` | Buckeye Supply Co. (and, for the scale test, 59 more), and the ML Lab's labelled set, from a fixed seed |
 | `web/mllab.mjs` | The ML Lab: hold-out split, fit, scoring, baseline, confusion matrix, 2D map |
 | `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |
 | `web/scenarios.mjs` | The 76 scenarios and their live checks |
 | `web/report.mjs` | JSON report and CSV export |
 | `web/app.mjs`, `web/styles.css` | The app |
-| `data/` | Catalog, address lookup, six companies, expert-labelled label pool |
+| `data/` | Catalog, address lookup, the six scenario test files, expert-labelled label pool |
 | `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, and scale (generated data, added addresses, ML Lab) |
 | `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |

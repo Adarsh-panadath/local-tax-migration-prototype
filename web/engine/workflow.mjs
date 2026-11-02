@@ -274,18 +274,18 @@ export function reconcile(analysis, decisions) {
     for (const x of e.expected.list) {
       const due = x.months.filter((m) => cm.includes(m));
       if (!due.length || liveKeys.has(`${e.employee_id}:${x.tax_id}`)) continue;
-      if (x.required) flags.push({ tone: 'fail', text: `${e.name}: ${x.tax.name} is expected from ${monthSpan(due)} but nothing was withheld.` });
-      else flags.push({ tone: 'info', text: `${e.name}: optional ${x.tax.name} withholding for the home city is not set up. Allowed, but the employee may owe it directly.` });
+      if (x.required) flags.push({ kind: 'missing', tone: 'fail', text: `${e.name}: ${x.tax.name} is expected from ${monthSpan(due)} but nothing was withheld.` });
+      else flags.push({ kind: 'optional_off', tone: 'info', text: `${e.name}: optional ${x.tax.name} withholding for the home city is not set up. Allowed, but the employee may owe it directly.` });
     }
   }
   for (const c of effectiveAll(analysis, decisions)) {
-    if (c.stage === 'with_expert') flags.push({ tone: 'warn', text: `${c.employee_name}: "${c.item.label}" is still with an expert, so nothing is withheld for it.` });
-    if (c.stage === 'stopped' && c.ytd) flags.push({ tone: 'warn', text: `${c.employee_name}: ${usd(c.ytd)} withheld in Desktop under "${c.item.label}" needs a correction with the agency.` });
-    if (c.stage === 'employer_managed') flags.push({ tone: 'info', text: `${c.employee_name}: "${c.entry?.name}" is employer-managed. Confirm you paid and filed it.` });
+    if (c.stage === 'with_expert') flags.push({ kind: 'with_expert', tone: 'warn', text: `${c.employee_name}: "${c.item.label}" is still with an expert, so nothing is withheld for it.` });
+    if (c.stage === 'stopped' && c.ytd) flags.push({ kind: 'not_owed', amount: c.ytd, tone: 'warn', text: `${c.employee_name}: ${usd(c.ytd)} withheld in Desktop under "${c.item.label}" needs a correction with the agency.` });
+    if (c.stage === 'employer_managed') flags.push({ kind: 'employer_managed', tone: 'info', text: `${c.employee_name}: "${c.entry?.name}" is employer-managed. Confirm you paid and filed it.` });
     if (c.stage === 'confirmed') {
-      for (const p of c.proposal) if (p.rate.status === 'over' || p.rate.status === 'under') flags.push({ tone: 'warn', text: `${c.employee_name}: past ${p.tax.name} withholding was ${p.rate.status === 'over' ? 'over' : 'under'} by ${usd(Math.abs(p.rate.difference))}. New paychecks use the official ${p.rate.official}.` });
-      if (c.unowed?.amount) flags.push({ tone: 'warn', text: `${c.employee_name}: ${usd(c.unowed.amount)} withheld in ${monthSpan(c.unowed.months)} under "${c.item.label}" was not owed and needs a correction with the agency.` });
-      for (const p of c.proposal) if (p.optional) flags.push({ tone: 'info', text: `${c.employee_name}: optional ${p.tax.name} courtesy withholding kept at the employer's choice.` });
+      for (const p of c.proposal) if (p.rate.status === 'over' || p.rate.status === 'under') flags.push({ kind: p.rate.status === 'over' ? 'rate_over' : 'rate_under', amount: Math.abs(p.rate.difference), tone: 'warn', text: `${c.employee_name}: past ${p.tax.name} withholding was ${p.rate.status === 'over' ? 'over' : 'under'} by ${usd(Math.abs(p.rate.difference))}. New paychecks use the official ${p.rate.official}.` });
+      if (c.unowed?.amount) flags.push({ kind: 'not_owed', amount: c.unowed.amount, tone: 'warn', text: `${c.employee_name}: ${usd(c.unowed.amount)} withheld in ${monthSpan(c.unowed.months)} under "${c.item.label}" was not owed and needs a correction with the agency.` });
+      for (const p of c.proposal) if (p.optional) flags.push({ kind: 'optional_kept', tone: 'info', text: `${c.employee_name}: optional ${p.tax.name} courtesy withholding kept at the employer's choice.` });
     }
   }
   return {

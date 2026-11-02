@@ -88,9 +88,13 @@ Think of a workbook: each table is a sheet, the columns are its headings, the pr
 
 ## Where it runs
 
-The prototype uses **SQLite** inside the web page (sql.js, compiled to WebAssembly), so it needs no server, account or key. It is rebuilt every time the page opens: from the demo files, the 60 generated businesses, and anything uploaded or corrected in that browser. Foreign keys and CHECK rules are switched on.
+The prototype uses **SQLite** inside the web page (sql.js, compiled to WebAssembly), so it needs no server, account or key. It is rebuilt every time the page opens: from the Ohio tax reference, the demo business's Desktop file (Buckeye Supply Co., 152 employees), and anything uploaded or corrected in that browser. Foreign keys and CHECK rules are switched on.
 
-In production the same tables would live in a server database such as **PostgreSQL**, shared by every employer, expert and admin, with access limited to each person's own business.
+## One business at a time
+
+A migration moves one business from Desktop to Online payroll, and the prototype loads one: **one database, one row in \`companies\`**. Every customer table still carries \`company_id\` in its key, because in production the same tables would hold every customer moving over (each employer seeing only their own rows). Nothing in the schema changes between one business and many.
+
+In production the tables would live in a server database such as **PostgreSQL**, shared by the employer, the experts and the admins, with access limited to each person's own business.
 
 ## Four layers
 

@@ -1,4 +1,5 @@
 // Scale: 60 generated businesses (each with 100+ employees), address corrections, and the ML Lab.
+// The app itself loads one of them, Buckeye Supply Co.; the other 59 exist only here, to test the engine at scale.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -32,6 +33,16 @@ test('the generator makes the same 60 businesses every time, each with at least 
   assert.equal(generated.companies[0].name, 'Buckeye Supply Co.');
   const employees = generated.companies.reduce((n, c) => n + c.employees.length, 0);
   assert.ok(employees > 9000, `${employees} employees`);
+});
+
+test('the app\'s one business is the same Buckeye Supply Co. the scale run starts with', () => {
+  const one = generateBusinesses(catalog, { count: 1 });
+  assert.equal(one.companies.length, 1);
+  assert.deepStrictEqual(one.companies[0], generated.companies[0]);
+  assert.equal(one.companies[0].employees.length, 152);
+  const ids = new Set(one.companies[0].worksites.map((w) => w.address_id).concat(one.companies[0].employees.flatMap((e) => e.addresses.map((a) => a.address_id))));
+  const known = new Set(one.addresses.map((a) => a.address_id));
+  for (const id of ids) assert.ok(known.has(id) || geocoder.addresses.some((a) => a.address_id === id), `address ${id} is in the one-business lookup`);
 });
 
 test('every generated business goes through the engine, and most lines settle by rule', () => {

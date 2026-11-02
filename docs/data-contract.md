@@ -66,7 +66,7 @@ When the page opens, the files above are loaded into a SQLite database in the br
 | Group | Tables |
 | --- | --- |
 | Tax reference | `states`, `taxes`, `no_tax_districts`, `state_place_names`, `defined_entries`, `defined_entry_states`, `addresses` (the lookup's, and ones customers typed: `source`), `label_pool` |
-| Source (the Desktop file) | `companies` (`source`: `demo`, `generated` or `upload`), `worksites`, `payroll_items`, `employees`, `employee_addresses`, `desktop_lines`, `import_issues` |
+| Source (the Desktop file) | `companies` (`source`: `generated` for Buckeye, `upload` for a CSV; `demo` for the scenario test files in the tests), `worksites`, `payroll_items`, `employees`, `employee_addresses`, `desktop_lines`, `import_issues` |
 | Work | `expected_taxes`, `line_results`, `decisions`, `corrections`, `migrations` |
 | Audit | `audit_log`, `model_runs` |
 
@@ -74,16 +74,16 @@ Every table has a primary key; foreign keys and CHECK rules are on. A row in a D
 
 The Data page runs one read-only `SELECT` at a time.
 
-## Generated businesses
+## The business being moved
 
-`web/generate.mjs` makes 60 more businesses from a fixed seed (2026) on every visit, so every visitor sees the same data. They are synthetic: names, people, street addresses, wages and Desktop labels are made up. Each has 100 to 280 employees; the first, **Buckeye Supply Co.** (`G-001`), has 152 and is the default business.
+The app moves one business, **Buckeye Supply Co.** (`G-001`, 152 employees), made by `web/generate.mjs` from a fixed seed (2026) on every visit, so every visitor sees the same data. It is synthetic: names, people, street addresses, wages and Desktop labels are made up. `companies.json` holds six small test files behind the Scenarios page; they are not loaded as businesses. The scale test asks the same generator for 60 businesses (Buckeye first, then 59 more of 100 to 280 employees each).
 
 - Towns are real Ohio places (Lancaster, Pickerington, Columbus, Carroll, Bremen, Baltimore, Millersport, Ashville) with their real ZIP codes, school districts and city taxes. People live where commuters to each work site plausibly live.
 - Desktop labels are written the way people type them: abbreviations, typos, place names, upper and lower case.
-- Each business has its own mix of problems: missing home addresses, addresses the lookup cannot place, people who moved, wrong rates, Columbus residents with a school tax withheld, items nobody set up, ambiguous labels, union dues, garnishments, joiners and leavers.
+- Each generated business has its own mix of problems: missing home addresses, addresses the lookup cannot place, people who moved, wrong rates, Columbus residents with a school tax withheld, items nobody set up, ambiguous labels, union dues, garnishments, joiners and leavers.
 - Their addresses join the demo lookup (`addresses`, `G-A00001` onward).
 
-A test (`tests/scale.test.mjs`) checks that the generator gives the same businesses every time, that each has at least 100 employees, that every one goes through the engine, and that they round-trip through the database exactly.
+A test (`tests/scale.test.mjs`) checks that the generator gives the same businesses every time, that the app's one business equals the first of them, that each has at least 100 employees, that every one goes through the engine, and that they round-trip through the database exactly.
 
 ## Addresses the employer adds
 
