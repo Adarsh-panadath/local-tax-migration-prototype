@@ -61,16 +61,15 @@ The report is a review record. It is not a QuickBooks import file and not permis
 
 ## The database
 
-When the page opens, the files above are loaded into a SQLite database in the browser (sql.js, `web/vendor/`), and the engine's input is read back from it with SQL (`web/db.mjs`). A test (`tests/db.test.mjs`) checks that what comes back equals the files exactly and that the engine gives the same answers either way. If a viewer blocks WebAssembly, the app reads the files directly and the Data page says so.
+One database per migration. When the page opens, the business being moved is loaded into a SQLite database in the browser (sql.js, `web/vendor/`), with the addresses it uses and the taxes, and the engine reads the business back with SQL (`web/db.mjs`). The tax catalogue, the address lookup and the label pool stay reference files (Intuit's services in production). A test (`tests/db.test.mjs`) checks that what comes back equals the file and that the engine gives the same answers either way. If a viewer blocks WebAssembly, the app reads the files directly and the Data page says so.
 
 | Group | Tables |
 | --- | --- |
-| Tax reference | `states`, `taxes`, `no_tax_districts`, `state_place_names`, `defined_entries`, `defined_entry_states`, `addresses` (the lookup's, and ones customers typed: `source`), `label_pool` |
-| Source (the Desktop file) | `companies` (`source`: `generated` for Buckeye, `upload` for a CSV; `demo` for the scenario test files in the tests), `worksites`, `payroll_items`, `employees`, `employee_addresses`, `desktop_lines`, `import_issues` |
-| Work | `expected_taxes`, `line_results`, `decisions`, `corrections`, `migrations` |
-| Audit | `audit_log`, `model_runs` |
+| Desktop file | `company` (one row), `worksites`, `employees`, `home_addresses`, `payroll_items`, `desktop_lines` |
+| Tax lookup | `addresses` (only the ones this business uses; `source` = `lookup`, or `employer` for one the lookup cannot place), `taxes` |
+| Migration results | `expected_taxes`, `line_results`, `decision_log` |
 
-Every table has a primary key; foreign keys and CHECK rules are on. A row in a Desktop file that breaks a key (an item that does not exist, the same item twice, an address nobody knows) goes to `import_issues`, and the engine still reports it. The full schema, with every table's keys and rules, is in [schema.md](schema.md).
+Every table has a primary key; foreign keys and CHECK rules are on. A Desktop file that breaks a key (an item that does not exist, the same item twice for one person, an address nobody knows) is refused when it is loaded, with the database's own message. The full schema is in [schema.md](schema.md).
 
 The Data page runs one read-only `SELECT` at a time.
 
@@ -90,8 +89,8 @@ A test (`tests/scale.test.mjs`) checks that the generator gives the same busines
 A line that needs a home address (`no_address`, or `address_unresolved` when the lookup cannot place it) waits for the employer: the owner's **To do** lists it under **Missing information**. Saving an address:
 
 1. Looks it up by street and ZIP in the address lookup.
-2. Writes it to the database: `employee_addresses` (for the whole year), `addresses` (as a customer address) if the lookup has never seen it, and a row in `corrections` (`company_id`, `employee_id`, `value`, `address_id`, `found_in_lookup`, `at`).
-3. Reads that business back from the database, and the engine checks its lines again. If the business has moved, the employer's rules run and settle what they can.
+2. Writes it to the database: `home_addresses` (for the whole year), and `addresses` (as the lookup placed it, or with `source` = `employer` if the lookup has never seen it). The log records it as "Added a home address".
+3. Reads the business back from the database, and the engine checks its lines again. If the business has moved, the employer's rules run and settle what they can.
 
 An address the lookup knows settles the line by rule; one it has never seen is kept, and the line stays with an expert as `address_unresolved`. Added addresses are kept in the browser and applied again whenever the database is rebuilt.
 
@@ -119,4 +118,4 @@ One file is one company, with one row per employee per payroll item (an employee
 | `item_label`, `law_id`, `item_type`, `tracking_type`, `rate_percent`, `agency` | No | `law_id` defaults to 177 (custom) |
 | `agency_account`, `deposit_frequency` | No | |
 
-Addresses are matched to `geocoder.json` on street line and ZIP. A home address it has never seen is kept as customer data and its lines go to an expert ("address not placed"); a work address it has never seen stops the file. Rows with the same label, type, tracking, rate and agency become one Desktop item. After the format checks, the engine's own file checks run exactly as for the demo companies. Moves within the year cannot be expressed in the CSV yet.
+Addresses are matched to `geocoder.json` on street line and ZIP. A home address it has never seen is kept as customer data and its lines go to an expert ("address not placed"); a work address it has never seen stops the file. Rows with the same label, type, tracking, rate and agency become one Desktop item. After the format checks, the engine's own file checks and the database's keys run. The file then replaces the demo business until the admin goes back to it. Moves within the year cannot be expressed in the CSV yet.

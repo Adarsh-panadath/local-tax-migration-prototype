@@ -1,11 +1,11 @@
-// Browser app for the BRD v3 local-tax migration prototype. No framework, no build step.
+// Browser app for the local-tax migration prototype. No framework, no build step.
 import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs';
 import { MODEL_VERSION } from './engine/cluster.mjs';
 import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_ADDRESS } from './engine/workflow.mjs';
 import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs';
 import { buildReport, casesCSV } from './report.mjs';
 import { GROUPS, runScenarios } from './scenarios.mjs';
-import { loadSqlJs, createDatabase, readData, readCompanies, insertCompany, writeWork, workRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs';
+import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs';
 import { generateBusinesses, SEED } from './generate.mjs';
 import { runLab, KEY_NAMES } from './mllab.mjs';
 
@@ -44,7 +44,7 @@ let moving = null;          // the short "moving" sequence after Move to Online 
 let files = null;           // the demo files as loaded, the database's seed
 let db = null;              // the in-browser SQLite database (null if it could not start)
 let dbError = null;
-let uploads = loadUploads(); // Desktop files uploaded on the Data page: [{ company, addresses }]
+let uploads = loadUploads(); // a Desktop file uploaded on the Data page, which then replaces the demo business: [] or [{ company, addresses, file }]
 let uploadMsg = null;       // the last upload's result: { tone, title, items }
 let query = { sql: 'SELECT route, COUNT(*) AS lines\nFROM line_results\nGROUP BY route\nORDER BY lines DESC', result: null, error: null };
 let generated = null;       // the demo business (152 employees), made from a fixed seed on every visit
@@ -59,7 +59,7 @@ function freshState() {
   return { role: null, companyId: 'G-001', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filters: { review: 'todo', expert: 'open' }, sel: {}, selIndex: {}, query: {}, moveStep: {}, detailOpen: false, corrections: [] };
 }
 function loadUploads() {
-  try { return JSON.parse(localStorage.getItem(UPLOADS) ?? '[]'); } catch { return []; }
+  try { return JSON.parse(localStorage.getItem(UPLOADS) ?? '[]').slice(-1); } catch { return []; }
 }
 function saveUploads() {
   try { localStorage.setItem(UPLOADS, JSON.stringify(uploads)); } catch { /* the upload still works for this visit */ }
@@ -238,11 +238,11 @@ function render() {
   } catch (err) {
     if (err.name !== 'DataError') throw err;
     // A Desktop file that cannot be analysed: say what is wrong instead of showing a broken page.
-    const other = data.companies.find((c) => c.company_id !== state.companyId);
+    const other = uploads.length ? generated.companies[0] : null;
     app.innerHTML = `<main class="main" id="main" tabindex="-1"><div class="page"><div class="page-head"><h1>${esc(companyById().name)}: the Desktop file cannot be analysed</h1>
       <p class="lede">Fix these problems in the file first. Nothing has been mapped.</p></div>
       <ul class="marks">${err.issues.map((i) => `<li>${mark('fail')}<span>${esc(i.text)}</span></li>`).join('')}</ul>
-      ${other ? `<p><button class="btn" type="button" data-action="company-switch" data-id="${esc(other.company_id)}">Open ${esc(other.name)}</button></p>` : ''}${footnote()}</div></main>`;
+      ${other ? `<p><button class="btn" type="button" data-action="remove-upload">Back to ${esc(other.name)}</button></p>` : ''}${footnote()}</div></main>`;
     return;
   }
   const wide = view === 'review' || view === 'expert';
@@ -310,11 +310,6 @@ function scenarios() {
 const COMPANY_VIEWS = new Set(['move', 'review', 'expert', 'golive', 'analysis']);
 const GLOBAL_VIEWS = new Set(['lab', 'data', 'scenarios']);
 
-// The demo moves one business. A picker appears only after a Desktop file is uploaded on the Data page.
-const oneBusiness = () => data.companies.length <= 1;
-function companyOptions() {
-  return data.companies.map((c) => `<option value="${esc(c.company_id)}"${c.company_id === state.companyId ? ' selected' : ''}>${esc(c.name)}${c.company_id.startsWith('U-') ? ' (uploaded)' : ''}</option>`).join('');
-}
 
 function appbar(view, s) {
   const co = s.a.company;
@@ -329,10 +324,8 @@ function appbar(view, s) {
     const mark = steps ? `<span class="step">${done ? `${icon('tick')}<span class="sr-only">Done:</span>` : i + 1}</span>` : '';
     return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}${done ? ' class="done"' : ''}>${mark}${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}${id === 'scenarios' ? `<span class="count ok">${scenarioCount()}</span>` : ''}</a>`;
   };
-  const company = state.role === 'owner' || oneBusiness()
-    ? `<span class="company-box static">${icon('building')}<span class="co-name">${esc(co.name)}</span><span class="plan">${esc(co.plan)}</span></span>`
-    : GLOBAL_VIEWS.has(view) ? ''
-      : `<label class="company-box"><span class="sr-only">Business</span>${icon('building')}<select id="company" data-action="company">${companyOptions()}</select><span class="plan">${esc(co.plan)}</span></label>`;
+  // One business per migration: its name is shown, never picked.
+  const company = `<span class="company-box static">${icon('building')}<span class="co-name">${esc(co.name)}</span><span class="plan">${esc(co.plan)}</span></span>`;
   const user = `<span class="user-chip"><span class="avatar role-ic">${icon(role.icon)}</span><span class="user-text"><strong>${esc(role.label)}</strong><small>${esc(role.side)}</small></span></span>
     <button class="btn quiet signout" type="button" data-action="sign-out">Sign out</button>`;
   const total = s.cases.length;
@@ -369,9 +362,7 @@ function signIn() {
     const r = ROLES[id];
     return `<div class="acct"><span class="avatar lg role-ic">${icon(r.icon)}</span><div class="acct-text"><strong>${esc(r.label)}</strong><span>${esc(r.blurb)}</span>${extra}</div><button class="btn primary" type="button" data-action="sign-in" data-role="${id}">Sign in</button></div>`;
   };
-  const pick = oneBusiness()
-    ? `<span class="acct-biz">${icon('building')}${esc(companyById().name)}, ${plural(companyById().employees.length, 'employee')}</span>`
-    : `<label class="acct-pick"><span class="sr-only">Business</span><select id="signin-company">${companyOptions()}</select></label>`;
+  const pick = `<span class="acct-biz">${icon('building')}${esc(companyById().name)}, ${plural(companyById().employees.length, 'employee')}</span>`;
   return `<main class="signin" id="main" tabindex="-1">
     <section class="signin-brand">
       <span class="logo-tile">${icon('landmark')}</span>
@@ -387,7 +378,6 @@ function signIn() {
       <div><h2 id="signin-h">Sign in</h2><p class="card-sub">Demo accounts, no passwords.</p></div>
       <div class="signin-group"><h3>Customer</h3>${account('owner', pick)}</div>
       <div class="signin-group"><h3>Intuit staff</h3>${account('expert')}${account('admin')}</div>
-      <p class="small muted">In a real product, customers would use their Intuit account and staff the company sign-in.</p>
     </section>
     ${footnote()}
   </main>`;
@@ -399,7 +389,7 @@ function scenarioCount() {
 }
 
 function footnote() {
-  return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. The business, its people and wages are fictional; Ohio school-district and city tax rates are real (2026). Not affiliated with Intuit.</p>`;
+  return `<p class="footnote">Academic prototype for the BDA group exam, Case 19. Copying to Online payroll is simulated; the local tax checks are real. The business, its people and wages are fictional; Ohio tax rates are real (2026). Not affiliated with Intuit.</p>`;
 }
 
 // ---------- automation ----------
@@ -451,16 +441,12 @@ function moveStepper(at) {
 function moveFacts(s) {
   const a = s.a;
   const co = a.company;
-  const taxes = new Map();
-  for (const e of a.employees) for (const x of e.expected.list) taxes.set(x.tax.tax_id, x.tax);
   return {
     employees: co.employees.length,
     items: co.items.length,
     lines: a.cases.length,
     custom: a.cases.filter((c) => c.item.origin === 'custom').length,
     expected: a.employees.reduce((n, e) => n + e.expected.list.length, 0),
-    labels: [...new Set(co.items.map((i) => labelOf(i.label)))],
-    taxes: [...taxes.values()],
     names: co.employees.map((e) => e.name),
     desktop: desktopMonths(co),
     first: MONTH_NAMES[co.migration_month - 1],
@@ -474,19 +460,6 @@ function viewMove(s) {
   return state.moveStep[id] === 'check' ? moveCheck(s) : moveStart(s);
 }
 
-// Loose Desktop labels on one side, the exact taxes the addresses call for on the other.
-function transferFigure(f) {
-  const more = (n) => (n > 0 ? `<li class="more-n">and ${n} more</li>` : '');
-  const labels = f.labels.slice(0, 4).map((l) => `<li class="loose">${esc(l)}</li>`).join('') + more(f.labels.length - 4);
-  const taxes = f.taxes.slice(0, 4).map((t) => `<li class="exact">${icon('tick')}<span>${esc(taxShort(t))}</span>${typeof t.rate === 'number' ? `<b>${esc(rateFmt(t.rate))}</b>` : ''}</li>`).join('') + more(f.taxes.length - 4);
-  return `<figure class="xfer">
-    <div class="xfer-col desk"><span class="xfer-h">${icon('monitor')}On Desktop: labels</span><ul>${labels}</ul></div>
-    <span class="xfer-arrow" aria-hidden="true">${icon('arrow')}</span>
-    <div class="xfer-col online"><span class="xfer-h">${icon('cloud')}In Online payroll: exact taxes</span><ul>${taxes || '<li class="more-n">None expected at these addresses</li>'}</ul></div>
-    <figcaption>Desktop knows local taxes by whatever name someone typed. Online payroll needs the exact tax for each address.</figcaption>
-  </figure>`;
-}
-
 function moveStart(s) {
   const f = moveFacts(s);
   const co = s.a.company;
@@ -495,7 +468,7 @@ function moveStart(s) {
     <section class="move-hero" aria-labelledby="move-h">
       <div class="move-copy">
         <h1 id="move-h" class="move-h" tabindex="-1">Move ${esc(co.name)} <span class="soft">to Online payroll</span></h1>
-        <p class="lede">Employees, pay items and year-to-date totals move as they are. Local taxes get checked first, line by line, so each one lands on the exact tax for that person's address.</p>
+        <p class="lede">Employees, pay items and totals copy across. Local taxes are checked line by line first.</p>
         <div class="move-facts">
           <span class="with-stack">${avatarStack(f.names, 3)}${plural(f.employees, 'employee')}</span>
           <span>${icon('calendar')}First Online payroll in ${esc(f.first)}</span>
@@ -503,16 +476,15 @@ function moveStart(s) {
         </div>
         <div class="row move-cta"><button class="btn primary lg" type="button" data-action="move-next">Get started${icon('arrow')}</button></div>
       </div>
-      ${transferFigure(f)}
-    </section>
-    <section class="section" aria-labelledby="what-h">
-      <div class="section-head"><h2 id="what-h">What moves</h2><p>In this demo the copying is simulated. The local tax checks run for real on the demo data.</p></div>
-      <ul class="moves">
-        <li><span class="mv-ic">${icon('users')}</span><div><strong>Employees and addresses</strong><span>${plural(f.employees, 'employee')}, with home and work addresses</span></div><span class="mv-how">Copied</span></li>
-        <li><span class="mv-ic">${icon('layers')}</span><div><strong>Pay items and deductions</strong><span>${plural(f.items, 'Desktop item')} on file</span></div><span class="mv-how">Copied</span></li>
-        <li><span class="mv-ic">${icon('calendar')}</span><div><strong>Year-to-date totals</strong><span>${esc(ytd)}</span></div><span class="mv-how">Copied</span></li>
-        <li class="key"><span class="mv-ic">${icon('pin')}</span><div><strong>Local taxes</strong><span>${plural(f.lines, 'Desktop line')}, one per employee per item, checked against ${plural(f.expected, 'expected tax', 'expected taxes')}</span></div><span class="mv-how">Checked line by line</span></li>
-      </ul>
+      <div class="move-side">
+        <h2 id="what-h">What moves</h2>
+        <ul class="moves" aria-labelledby="what-h">
+          <li><span class="mv-ic">${icon('users')}</span><div><strong>Employees and addresses</strong><span>${plural(f.employees, 'employee')}</span></div><span class="mv-how">Copied</span></li>
+          <li><span class="mv-ic">${icon('layers')}</span><div><strong>Pay items and deductions</strong><span>${plural(f.items, 'Desktop item')}</span></div><span class="mv-how">Copied</span></li>
+          <li><span class="mv-ic">${icon('calendar')}</span><div><strong>Year-to-date totals</strong><span>${esc(ytd)}</span></div><span class="mv-how">Copied</span></li>
+          <li class="key"><span class="mv-ic">${icon('pin')}</span><div><strong>Local taxes</strong><span>${plural(f.lines, 'Desktop line')}</span></div><span class="mv-how">Checked</span></li>
+        </ul>
+      </div>
     </section>`;
 }
 
@@ -536,26 +508,26 @@ function moveCheck(s) {
   const issues = s.a.dataIssues;
   return `${moveStepper(1)}
     <div class="page-head"><h1 id="move-h" class="move-h" tabindex="-1">Check before you move</h1>
-      <p class="lede">Every Desktop local tax line was checked against each employee's addresses. This is what your rules will settle, and what stays for a person to decide.</p></div>
+      <p class="lede">What your rules will settle, and what stays for a person.</p></div>
     <div class="check-grid">
       <section class="panel check-result" aria-labelledby="res-h">
         <h2 id="res-h">Local taxes after the move</h2>
         <div class="auto-score flat">
           <span class="ring" role="img" aria-label="${share} can be settled by rule" style="--p:${(st.share * 100).toFixed(1)}"><span>${share}</span></span>
-          <div><p class="auto-line"><b>${st.auto}</b> of ${plural(st.total, 'item')} can be settled by rule</p><p class="auto-sub">Desktop lines plus expected taxes nobody withheld. Lines that need judgement are never guessed.</p></div>
+          <div><p class="auto-line"><b>${st.auto}</b> of ${plural(st.total, 'item')} can be settled by rule</p></div>
         </div>
         <div class="chips">${chips}</div>
         <div class="check-left"><span class="label">${left.length ? `Will stay for a person (${left.length})` : 'Will stay for a person'}</span>${leftList}</div>
       </section>
       <section class="panel check-rules" aria-labelledby="rules-h">
-        <div class="section-head"><h2 id="rules-h">Rules you approve</h2><p>Each rule settles one kind of line. Switch one off to decide those lines yourself.</p></div>
+        <div class="section-head"><h2 id="rules-h">Rules you approve</h2><p>Switch one off to decide those lines yourself.</p></div>
         <div class="rules-list">${rules}</div>
       </section>
     </div>
     ${issues.length ? `<section class="panel section" aria-labelledby="dq-h"><h2 id="dq-h">Problems found in the Desktop file</h2><p class="small muted">These were cleaned up so the check could run. Fix them in the file as well.</p><ul class="marks">${issues.map((i) => `<li>${mark('warn')}<span>${esc(i.text)}</span></li>`).join('')}</ul></section>` : ''}
     <div class="move-actions">
       <button class="btn" type="button" data-action="move-back">${icon('back')}Back</button>
-      <p class="small muted">Nothing switches on in Online payroll until a rule or a person confirms it.</p>
+      <p class="small muted">Nothing switches on until a rule or a person confirms it.</p>
       <button class="btn primary lg" type="button" data-action="move-run">Move to Online payroll${icon('arrow')}</button>
     </div>`;
 }
@@ -670,11 +642,11 @@ function moveSummary(s) {
     </div>
     <div class="wl-grid">
       <section class="card" aria-labelledby="exc-h">
-        <div class="card-head"><div><h2 id="exc-h">Exception report</h2><p class="card-sub">What the rules left for a person</p></div></div>
+        <div class="card-head"><div><h2 id="exc-h">Left for a person</h2></div></div>
         <div class="card-body">${report}</div>
       </section>
       <section class="card" aria-labelledby="next-h">
-        <div class="card-head"><div><h2 id="next-h">What happens next</h2><p class="card-sub">Up to the first Online payroll</p></div>${arrowLink('#golive', 'Open the go-live checks')}</div>
+        <div class="card-head"><div><h2 id="next-h">What happens next</h2></div>${arrowLink('#golive', 'Open the go-live checks')}</div>
         <div class="card-body"><ol class="next-steps">${next.map((x) => `<li class="${x.done ? 'done' : ''}"><span class="mv-mark${x.done ? ' done' : ''}">${x.done ? `${icon('tick')}<span class="sr-only">Done:</span>` : ''}</span><span>${esc(x.text)}</span></li>`).join('')}</ol></div>
         ${fold('list', `Your rules (${AUTOMATION_RULES.filter((r) => policy[r.id]).length} of ${AUTOMATION_RULES.length} on)`, `<div class="rules-list">${rules}</div>`)}
       </section>
@@ -757,7 +729,7 @@ function labMap(r) {
 
 function viewLab() {
   const head = `<div class="page-head"><h1>ML Lab</h1>
-    <p class="lede">Does the label clustering work beyond the 53-label demo pool? Here it fits on Desktop-style labels, never sees a held-back part, and is graded on it.</p></div>`;
+    <p class="lede">The label clustering, graded on labels it never saw.</p></div>`;
   const form = `<form class="lab-form panel" data-action="run-lab">
       <label class="field" for="lab-seed">Seed<input type="number" id="lab-seed" name="seed" min="1" max="99999" step="1" value="${lab.seed}"></label>
       <label class="field" for="lab-size">Labelled set<select id="lab-size" name="total">${LAB_SIZES.map(([n, t]) => `<option value="${n}"${n === lab.total ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
@@ -817,17 +789,17 @@ function viewLab() {
       <div class="wl-tile blue"><div class="tile-head"><span class="t">${icon('user')}To an expert</span></div><span class="n">${pct(1 - r.model.coverage)}</span><p>${num(r.testSize - r.model.suggested)} held-back labels not confident enough</p></div>
     </div>
     <section class="panel lab-gates" aria-labelledby="lg-h">
-      <h2 id="lg-h">The BRD gates on this set</h2>
+      <h2 id="lg-h">The gates on this set</h2>
       <ul class="gate-chips">${gates.map(([g, v, ok]) => `<li class="${ok ? 'pass' : 'fail'}">${mark(ok ? 'pass' : 'fail')}<span><strong>${g}</strong>${esc(v)}</span></li>`).join('')}</ul>
       ${pill(passes ? 'Suggestions would be shown' : 'Shadow mode: logged, people decide', passes ? 'good' : 'warn')}
     </section>
     <div class="dash-grid even">
       <section class="card" aria-labelledby="sil-h">
-        <div class="card-head"><div><h2 id="sil-h">Silhouette by number of clusters</h2><p class="card-sub">How well the labels separate into k groups. The best k is used.</p></div></div>
+        <div class="card-head"><div><h2 id="sil-h">Silhouette by number of clusters</h2><p class="card-sub">The best k is used.</p></div></div>
         <div class="viz-wrap">${silhouetteChart(r, floor)}</div>
       </section>
       <section class="card" aria-labelledby="map-h">
-        <div class="card-head"><div><h2 id="map-h">Every label on a map</h2><p class="card-sub">Similar words sit close. Hover a point to read it.</p></div></div>
+        <div class="card-head"><div><h2 id="map-h">Every label on a map</h2><p class="card-sub">Hover a point to read it.</p></div></div>
         <div class="viz-wrap">${labMap(r)}</div>
         <ul class="viz-legend">${legend}<li><span class="sw solid"></span>Used to fit</li><li><span class="sw ring"></span>Held back</li><li><span class="sw x" aria-hidden="true">×</span>Wrong suggestion</li></ul>
       </section>
@@ -851,7 +823,7 @@ function viewLab() {
         </div>
     </section>
     <section class="card" aria-labelledby="cl-h">
-      <div class="card-head"><div><h2 id="cl-h">The ${r.k} clusters</h2><p class="card-sub">Named after the closest catalogue entry. Purity is the share of labels with the cluster's most common answer.</p></div></div>
+      <div class="card-head"><div><h2 id="cl-h">The ${r.k} clusters</h2><p class="card-sub">Purity: share of labels with the cluster's most common answer.</p></div></div>
       <div class="table-wrap"><table><thead><tr><th>Named</th><th class="num">Labels</th><th class="num">Purity</th><th class="num">Silhouette</th><th>Most are</th><th>Examples</th></tr></thead><tbody>${clusterRows}</tbody></table></div>
       ${clusters.length > 10 ? `<div class="card-foot"><button class="btn quiet" type="button" data-action="show-more" data-key="clusters">${more.clusters ? 'Show the 10 largest' : `Show all ${clusters.length}`}</button></div>` : ''}
     </section>
@@ -912,11 +884,11 @@ function viewAnalysis(s) {
       <ul class="marks">${a.dataIssues.map((i) => `<li>${mark('warn')}<span>${esc(i.text)}</span></li>`).join('')}</ul>
     </section>` : ''}
     <section class="section" aria-labelledby="items-h">
-      <div class="section-head"><h2 id="items-h">Desktop payroll items</h2><p>Law ID 177 or 0 is an employer-created item with a free-text name.</p></div>
+      <div class="section-head"><h2 id="items-h">Desktop payroll items</h2><p>Law ID 177 or 0: created by the employer.</p></div>
       <div class="table-wrap"><table><thead><tr><th>Item label</th><th>Law ID</th><th>Kind</th><th>Desktop setting</th><th>Rate</th><th>Agency on file</th><th class="num">Employees</th></tr></thead><tbody>${items}</tbody></table></div>
     </section>
     <section class="section" aria-labelledby="people-h">
-      <div class="section-head"><h2 id="people-h">Employees and their expected taxes</h2><p>From the address lookup (Intuit's tax service in production).</p></div>
+      <div class="section-head"><h2 id="people-h">Employees and their expected taxes</h2></div>
       <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Home address</th><th>Works at</th><th>Expected taxes</th></tr></thead><tbody>${people}</tbody></table></div>
       ${a.employees.length > PEOPLE_SHOWN ? `<div class="row"><button class="btn quiet" type="button" data-action="show-more" data-key="people">${more.people ? `Show the first ${PEOPLE_SHOWN}` : `Show all ${a.employees.length} employees`}</button></div>` : ''}
     </section>`;
@@ -1173,9 +1145,9 @@ function missingCard(s) {
   }).join('');
   const acct = accounts.map((a) => `<li class="mi-row"><div class="mi-who"><span class="avatar">${icon('landmark')}</span><div><strong>${esc(a.agency)}</strong><span>${esc([a.account ? '' : 'Account number', a.frequency ? '' : 'deposit frequency'].filter(Boolean).join(' and '))} missing. Needed to pay and file.</span></div></div><a class="btn" href="#golive">Add it</a></li>`).join('');
   return `<section class="panel missing" data-open="${state.detailOpen ? 'true' : 'false'}" aria-labelledby="mi-h">
-    <div class="section-head"><h2 id="mi-h" tabindex="-1">Missing information <span class="count">${people.length + accounts.length}</span></h2><p>Only you can give these. Add one and the engine checks those lines again; your rules settle what they can.</p></div>
+    <div class="section-head"><h2 id="mi-h" tabindex="-1">Missing information <span class="count">${people.length + accounts.length}</span></h2><p>Only you can give these.</p></div>
     <ul class="mi-list">${rows}${acct}</ul>
-    ${people.length ? '<p class="small muted">The demo address lookup knows a fixed list of addresses, and "Fill a demo address" picks one near the work site. In production, Intuit\'s tax service places any US address.</p>' : ''}
+    ${people.length ? '' : ''}
   </section>`;
 }
 
@@ -1200,9 +1172,8 @@ function addCorrection(corr) {
   state.corrections = [...state.corrections.filter((x) => !(x.company_id === corr.company_id && x.employee_id === corr.employee_id)), corr];
   let found;
   if (db) {
-    const r = applyCorrection(db, corr, lookupIdx);
-    const [co] = readCompanies(db, corr.company_id);
-    data.companies = data.companies.map((c) => (c.company_id === co.company_id ? co : c));
+    const r = applyCorrection(db, corr, lookupIdx, lookupAddresses());
+    data.companies = [readCompany(db)];
     if (!r.found) unplaced(r.addressId, corr);
     found = r.found;
   } else found = correctInMemory(corr);
@@ -1584,7 +1555,7 @@ function expertTools(c, s) {
             <label class="field" for="value-${id}">${flat ? 'Amount a year ($)' : 'Rate (%)'}<input type="number" id="value-${id}" name="value" step="0.01" min="0" required value="${flat ? c.item.calc.amount : c.item.calc.rate}"></label>
             <label class="field" for="frequency-${id}">Filing frequency${sel('frequency', [['Monthly', 'Monthly'], ['Quarterly', 'Quarterly'], ['Semi-monthly', 'Semi-monthly'], ['Annually', 'Annually']], c.item.deposit_frequency ?? 'Quarterly')}</label>
           </div>
-          <p class="small muted">A custom entry is marked employer-managed: QuickBooks will not pay or file it. It also goes to Intuit's catalogue review so the next company can match it.</p>
+          <p class="small muted">Marked employer-managed: QuickBooks will not pay or file it.</p>
           <div><button class="btn primary" type="submit">Save custom entry</button></div>
         </form>
       </details>
@@ -1609,7 +1580,7 @@ function viewGoLive(s) {
       <td class="small muted">${a.source ? `From ${esc(a.source)}` : 'Enter from the agency letter'}</td>
     </tr>`).join('');
   return `<div class="page-head"><h1>Go live</h1>
-    <p class="lede">Confirmed taxes switch on with the first Online payroll. Desktop history is relabelled for the W-2; amounts never change.</p></div>
+    <p class="lede">Confirmed taxes switch on with the first Online payroll.</p></div>
     ${live ? `<div class="live-banner"><span>Live since ${new Date(s.d.liveAt).toLocaleString()}: ${plural(liveCount, 'employee tax', 'employee taxes')} switched on.</span><div class="row"><button class="btn quiet" type="button" data-action="undo-live">Undo go-live (demo)</button></div></div>` : ''}
     <div class="two-col">
       <section class="panel section" aria-labelledby="checks-h">
@@ -1626,7 +1597,7 @@ function viewGoLive(s) {
       </section>
     </div>
     <section class="section" aria-labelledby="acct-h">
-      <div class="section-head"><h2 id="acct-h">Agency accounts</h2><p>Needed to pay and file. Filled from Desktop where it had them.</p></div>
+      <div class="section-head"><h2 id="acct-h">Agency accounts</h2><p>Filled from Desktop where it had them.</p></div>
       ${r.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>Agency</th><th>Account number</th><th>Deposit frequency</th><th>Source</th></tr></thead><tbody>${accounts}</tbody></table></div>` : '<div class="empty"><span>No taxes are confirmed yet, so no agency accounts are needed.</span></div>'}
     </section>
     ${live ? reconcileSection(s) : ''}
@@ -1669,7 +1640,7 @@ function reconcileSection(s) {
   const cm = cloudMonths(s.a.company);
   const first = monthSpan([cm[0]]);
   const period = cm.length <= 3 ? 'first quarter' : 'Online months';
-  const head = `<div class="section-head"><h2 id="rec-h">Reconcile</h2><p>After the first Online payroll and the first quarter, withholding is checked against the addresses.</p></div>`;
+  const head = `<div class="section-head"><h2 id="rec-h">Reconcile</h2><p>After the first payroll and the first quarter.</p></div>`;
   if (!s.d.reconciled) return `<section class="section" aria-labelledby="rec-h">${head}<div class="empty"><span>The demo simulates the first Online payroll (${first}) and ${monthSpan(cm)} at the official rates.</span><button class="btn primary" type="button" data-action="run-reconcile">Run first payroll and quarter</button></div></section>`;
   const r = reconcile(s.a, s.d);
   const names = (list) => (list.length > 4 ? `${list.slice(0, 3).map(esc).join(', ')} and ${list.length - 3} more` : list.map(esc).join(', '));
@@ -1732,11 +1703,11 @@ function thresholdPanel(s) {
   const locked = s.d.live;
   const fields = THRESHOLD_FIELDS.map((f) => `<label class="field" for="th-${f.key}">${f.label}
       <input type="number" id="th-${f.key}" min="${f.min}" max="${f.max}" step="${f.step}" value="${t[f.key]}" data-action="threshold" data-key="${f.key}"${locked ? ' disabled' : ''}>
-      <span class="small muted">${f.help} BRD value: ${f.show(DEFAULT_THRESHOLDS[f.key])}.</span></label>`).join('');
+      <span class="small muted">${f.help} Default: ${f.show(DEFAULT_THRESHOLDS[f.key])}.</span></label>`).join('');
   return `<section class="panel section" aria-labelledby="th-h">
-    <div class="section-head"><h2 id="th-h">Gate thresholds</h2><p>Change one to see a state switch to shadow mode. A value equal to the threshold passes.${locked ? ' Locked: this business is live.' : ''}</p></div>
+    <div class="section-head"><h2 id="th-h">Gate thresholds</h2><p>A value equal to the threshold passes.${locked ? ' Locked: this business is live.' : ''}</p></div>
     <div class="threshold-grid">${fields}</div>
-    ${changed ? `<div class="row"><span class="pill warn"><span class="dot"></span>Thresholds differ from the BRD</span><button class="btn quiet" type="button" data-action="reset-thresholds"${locked ? ' disabled' : ''}>Back to BRD values</button></div>` : ''}
+    ${changed ? `<div class="row"><span class="pill warn"><span class="dot"></span>Changed from the defaults</span><button class="btn quiet" type="button" data-action="reset-thresholds"${locked ? ' disabled' : ''}>Back to defaults</button></div>` : ''}
   </section>`;
 }
 
@@ -1771,13 +1742,13 @@ function viewModel(s) {
         ${gate('Precision', `At least ${pct(t.precisionTarget, 0)} of high-confidence suggestions match the expert`, m.highConfidence ? `${pct(m.precision)} (${m.correct} of ${m.highConfidence})` : 'No high-confidence suggestions', m.gates.precision)}
         ${gate('Sample', `At least ${t.minSample} expert-labelled labels (demo scale)`, `${m.poolSize}`, m.gates.sample)}
       </tbody></table></div>
-      <p class="small muted">Fitted once per state on expert-labelled labels. ${pct(m.coverage, 0)} of them get a high-confidence suggestion. Green labels come from ${esc(s.a.company.name)}'s Desktop file; dotted ones are weak and go to an expert.${m.forced ? ' Shadow mode is forced on.' : ''}</p>
+      <p class="small muted">Green: ${esc(s.a.company.name)}'s labels. Dotted: too weak, so an expert decides.${m.forced ? ' Shadow mode is forced on.' : ''}</p>
       ${unassigned}
       <div class="cluster-list">${clusters}${singleCard}</div>
     </section>`;
   }).join('');
   return `<div class="page-head"><h1>Model</h1>
-    <p class="lede">Suggestions show only in a state that passes every gate; otherwise the model runs in shadow mode and people decide. ${esc(MODEL_VERSION)}.</p></div>
+    <p class="lede">Suggestions show only where every gate passes; otherwise people decide (shadow mode).</p></div>
     ${thresholdPanel(s)}
     ${panels}`;
 }
@@ -1801,7 +1772,7 @@ function viewScenarios() {
     </details>`;
   }).join('');
   return `<div class="page-head"><h1>Scenarios</h1>
-    <p class="lede">Every case the BRD has to handle, checked live each time the page opens. Each one runs on a small test file made for that case, separate from the business being moved. The same checks run in the automated tests. Open a step to see its checks.</p></div>
+    <p class="lede">Every case the migration must handle, checked live on small test files. The same checks run in the automated tests.</p></div>
     <div class="score ${passed === results.length ? 'all' : ''}"><span class="n">${passed} of ${results.length}</span><span>scenarios pass</span></div>
     <section class="card scen-card" aria-label="Scenarios by step">${groups}</section>`;
 }
@@ -1813,7 +1784,7 @@ function viewAudit(s) {
   const entries = state.audit.filter((a) => a.company_id === state.companyId);
   const rows = entries.slice(0, more.audit ? undefined : LOG_SHOWN).map((a) => `<tr><td class="small">${esc(new Date(a.at).toLocaleString())}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td><td class="small muted">${esc(a.detail)}</td></tr>`).join('');
   return `<div class="page-head"><h1>Decision log</h1>
-    <p class="lede">Every decision for this business, newest first: who, when, and the rule or reason.</p></div>
+    <p class="lede">Who did what and when, newest first.</p></div>
     <div class="row">${HOSTED
       ? `<button class="btn primary" type="button" data-action="copy-json">Copy report (JSON)</button>
       <button class="btn" type="button" data-action="copy-csv">Copy lines (CSV)</button>
@@ -1832,24 +1803,21 @@ function viewAudit(s) {
 const EXAMPLES = [
   ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM line_results\nGROUP BY route\nORDER BY lines DESC'],
   ['Who decided', 'SELECT COALESCE(decided_by, \'nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM line_results\nGROUP BY 1\nORDER BY lines DESC'],
-  ['One line across the keys', 'SELECT e.name AS employee, p.label AS desktop_item, a.city, a.school_district, r.route, r.online_tax\nFROM desktop_lines l\nJOIN employees e ON e.company_id = l.company_id AND e.employee_id = l.employee_id\nJOIN payroll_items p ON p.company_id = l.company_id AND p.item_id = l.item_id\nJOIN employee_addresses h ON h.company_id = l.company_id AND h.employee_id = l.employee_id\nJOIN addresses a ON a.address_id = h.address_id\nLEFT JOIN line_results r ON r.company_id = l.company_id AND r.employee_id = l.employee_id AND r.item_id = l.item_id\nLIMIT 50'],
-  ['Owed, not withheld', 'SELECT e.name AS employee, t.name AS tax, x.months\nFROM expected_taxes x\nJOIN employees e ON e.company_id = x.company_id AND e.employee_id = x.employee_id\nJOIN taxes t ON t.tax_id = x.tax_id\nWHERE x.gap = 1\nORDER BY e.name'],
+  ['One line across the keys', 'SELECT e.name AS employee, p.label AS desktop_item, a.city, a.school_district, r.route, r.online_tax\nFROM desktop_lines l\nJOIN employees e ON e.employee_id = l.employee_id\nJOIN payroll_items p ON p.item_id = l.item_id\nJOIN home_addresses h ON h.employee_id = l.employee_id\nJOIN addresses a ON a.address_id = h.address_id\nLEFT JOIN line_results r ON r.employee_id = l.employee_id AND r.item_id = l.item_id\nLIMIT 50'],
+  ['Owed, not withheld', 'SELECT e.name AS employee, t.name AS tax, x.months\nFROM expected_taxes x\nJOIN employees e ON e.employee_id = x.employee_id\nJOIN taxes t ON t.tax_id = x.tax_id\nWHERE x.gap = 1\nORDER BY e.name'],
   ['Open lines by reason', 'SELECT reason, COUNT(*) AS lines\nFROM line_results\nWHERE stage = \'with_expert\'\nGROUP BY reason\nORDER BY lines DESC'],
-  ['Desktop items', 'SELECT p.label, p.law_id, p.origin, COUNT(l.employee_id) AS employees\nFROM payroll_items p LEFT JOIN desktop_lines l ON l.company_id = p.company_id AND l.item_id = p.item_id\nGROUP BY p.company_id, p.item_id\nORDER BY employees DESC'],
-  ['Problems in the Desktop file', 'SELECT employee_id, kind, value\nFROM import_issues'],
-  ['Added addresses', 'SELECT employee_id, value, found_in_lookup, at\nFROM corrections\nORDER BY at DESC'],
+  ['Desktop items', 'SELECT p.label, p.law_id, p.origin, COUNT(l.employee_id) AS employees\nFROM payroll_items p LEFT JOIN desktop_lines l ON l.item_id = p.item_id\nGROUP BY p.item_id\nORDER BY employees DESC'],
+  ['Added addresses', 'SELECT at, line AS employee, detail\nFROM decision_log\nWHERE action = \'Added a home address\'\nORDER BY at DESC'],
 ];
-const LAYER_NO = { reference: 1, source: 2, work: 3, audit: 4 };
-// The tables that tell the story of one line: a Desktop line belongs to an employee, whose address picks the tax.
-const MAIN_TABLES = new Set(['companies', 'employees', 'addresses', 'payroll_items', 'desktop_lines', 'taxes', 'line_results']);
+const LAYER_NO = { desktop: 1, lookup: 2, results: 3 };
 let schemaSel = 'employees';  // the table open in the schema view
 const ruleResults = {};      // the database's answer to each rule check
 
 // The schema, read from the database itself: four layers of tables, then one table in detail.
 function schemaCard(groups) {
-  const layers = groups.map((g) => `<div class="layer layer-${g.id}">
+  const layers = groups.map((g) => `<div class="layer">
       <div class="layer-head"><span class="layer-n">${LAYER_NO[g.id]}</span><div><strong>${esc(g.title)}</strong><span>${esc(g.owner)}</span></div></div>
-      <ul class="layer-tables">${g.tables.map((t) => `<li><button type="button" class="tbl${MAIN_TABLES.has(t.name) ? ' main' : ''}" data-action="schema-table" data-key="${esc(t.name)}"${t.name === schemaSel ? ' aria-current="true"' : ''}><span class="tbl-name">${esc(t.name)}</span><span class="tbl-n">${num(t.rows)}</span></button></li>`).join('')}</ul>
+      <ul class="layer-tables">${g.tables.map((t) => `<li><button type="button" class="tbl" data-action="schema-table" data-key="${esc(t.name)}"${t.name === schemaSel ? ' aria-current="true"' : ''}><span class="tbl-name">${esc(t.name)}</span><span class="tbl-n">${num(t.rows)}</span></button></li>`).join('')}</ul>
     </div>`).join('');
   const t = describeTable(db, schemaSel) ?? describeTable(db, 'employees');
   const layer = groups.find((g) => g.tables.some((x) => x.name === t.name));
@@ -1857,12 +1825,12 @@ function schemaCard(groups) {
   const cols = t.columns.map((c) => `<tr><td><code class="code">${esc(c.name)}</code></td><td class="small">${esc((c.type || 'TEXT').toLowerCase())}</td><td>${keyOf(c) || '<span class="muted">-</span>'}</td><td class="small">${c.notNull ? 'Yes' : '<span class="muted">No</span>'}</td><td>${c.links.map((x) => `<button type="button" class="link-tbl" data-action="schema-table" data-key="${esc(x)}">${esc(x)}</button>`).join(' ') || '<span class="muted">-</span>'}</td></tr>`).join('');
   const fks = t.foreignKeys.map((f) => `<li><code class="code">${esc(f.from.join(', '))}</code> must match <button type="button" class="link-tbl" data-action="schema-table" data-key="${esc(f.table)}">${esc(f.table)}</button> <code class="code">${esc(f.to.join(', '))}</code></li>`).join('');
   return `<section class="card" aria-labelledby="schema-h">
-    <div class="card-head"><div><h2 id="schema-h">Schema</h2><p class="card-sub">The blueprint: one database, ${groups.reduce((n, g) => n + g.tables.length, 0)} tables in four layers, like sheets in one workbook. Start with the bold ones; click any table for its columns, keys and rules.</p></div>
+    <div class="card-head"><div><h2 id="schema-h">Schema</h2><p class="card-sub">One database for this migration: ${groups.reduce((n, g) => n + g.tables.length, 0)} tables in three groups. Click a table for its columns and keys.</p></div>
       <div class="row">${HOSTED ? '<button class="btn" type="button" data-action="copy-schema">Copy schema.sql</button>' : `<button class="btn" type="button" data-action="download-schema">schema.sql</button><button class="btn primary" type="button" data-action="download-db">${icon('file')}Download the database</button>`}</div></div>
     <div class="card-body">
       <div class="layers">${layers}</div>
       <div class="tdetail" id="tdetail" tabindex="-1">
-        <div class="tdetail-head"><div><h3><code>${esc(t.name)}</code></h3><p class="small muted">Layer ${LAYER_NO[layer.id]}, ${esc(layer.title.toLowerCase())}. ${plural(t.rows, 'row')}.</p></div><button class="btn quiet" type="button" data-action="example-query" data-sql="${esc(`SELECT * FROM ${t.name} LIMIT 50`)}">Look inside</button></div>
+        <div class="tdetail-head"><div><h3><code>${esc(t.name)}</code></h3><p class="small muted">${esc(layer.title)}, ${plural(t.rows, 'row')}</p></div><button class="btn quiet" type="button" data-action="example-query" data-sql="${esc(`SELECT * FROM ${t.name} LIMIT 50`)}">Look inside</button></div>
         <p class="tdetail-note">${esc(TABLE_NOTES[t.name] ?? '')}</p>
         <div class="table-wrap"><table class="col-table"><thead><tr><th>Column</th><th>Type</th><th>Key</th><th>Required</th><th>Links to</th></tr></thead><tbody>${cols}</tbody></table></div>
         <div class="tdetail-links">
@@ -1874,7 +1842,7 @@ function schemaCard(groups) {
       </div>
       <label class="sr-only" for="schema-box">schema.sql</label><textarea class="copy-box" id="schema-box" readonly hidden></textarea>
     </div>
-    ${fold('layers', 'Diagram of the main tables', '<img class="erd" src="./schema-diagram.svg" alt="Entity-relationship diagram of the main tables: companies, worksites, employees, employee addresses, addresses, payroll items, Desktop lines, taxes, expected taxes, line results and decisions, with their primary and foreign keys." loading="lazy" width="1304" height="1475">')}
+    ${fold('layers', 'Diagram of the tables', '<img class="erd" src="./schema-diagram.svg" alt="Entity-relationship diagram of the tables: company, worksites, employees, home addresses, addresses, payroll items, Desktop lines, taxes, expected taxes, line results and the decision log, with their keys." loading="lazy" width="1312" height="1146">')}
   </section>`;
 }
 
@@ -1886,14 +1854,14 @@ function rulesCard() {
     return `<li><div class="rule-text"><strong>${esc(c.label)}</strong><span class="small muted">${esc(c.rule)} rule</span>${r ? `<code class="sql-line">${esc(c.sql)}</code>${answer}` : ''}</div><button class="btn" type="button" data-action="try-rule" data-key="${c.id}">Try it</button></li>`;
   }).join('');
   return `<section class="card" aria-labelledby="rules-h">
-    <div class="card-head"><div><h2 id="rules-h">The database checks the data itself</h2><p class="card-sub">Each button tries to break one rule. The database refuses it; nothing changes.</p></div><button class="btn quiet" type="button" data-action="try-rule" data-key="all">Try all</button></div>
+    <div class="card-head"><div><h2 id="rules-h">The database checks the data itself</h2><p class="card-sub">Each button tries to break a rule. The database refuses it.</p></div><button class="btn quiet" type="button" data-action="try-rule" data-key="all">Try all</button></div>
     <div class="card-body"><ul class="rule-list">${rows}</ul></div>
   </section>`;
 }
 
 function viewData() {
   const head = `<div class="page-head"><h1>Data</h1>
-    <p class="lede">A real SQLite database inside this page, with its keys and rules switched on. It holds the business being moved, the Ohio tax reference, and every result and decision.</p></div>`;
+    <p class="lede">A SQLite database running in this page. It holds ${esc(companyById().name)} and its migration.</p></div>`;
   syncWork();
   if (db && !query.result && !query.error) runSql(query.sql);
   const groups = db ? tableSummary(db) : [];
@@ -1903,13 +1871,14 @@ function viewData() {
     : r ? (r.columns.length
       ? `<p class="small muted">${plural(r.total, 'row')}${r.total > r.rows.length ? `, first ${r.rows.length} shown` : ''}</p><div class="table-wrap result"><table><thead><tr>${r.columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.rows.map((row) => `<tr>${row.map((v) => `<td>${v === null ? '<span class="none">null</span>' : esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
       : '<p class="small muted">No rows.</p>') : '';
-  const msg = uploadMsg ? `<div class="banner ${uploadMsg.tone}" id="upload-msg" tabindex="-1">${icon(uploadMsg.tone === 'good' ? 'check' : 'alert', 'lg')}<div><strong>${esc(uploadMsg.title)}</strong><ul>${uploadMsg.items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>${uploadMsg.id && data.companies.some((c) => c.company_id === uploadMsg.id) ? `<div class="row"><button class="btn" type="button" data-action="open-client" data-id="${esc(uploadMsg.id)}">Open its move</button><button class="btn quiet" type="button" data-action="company-switch" data-id="${esc(uploadMsg.id)}" data-view="analysis">See how the engine read it</button></div>` : ''}</div></div>` : '';
-  const list = uploads.length ? `<ul class="upload-list">${uploads.map((u) => `<li>${icon('file')}<span><strong>${esc(u.company.name)}</strong><span class="small muted">${esc(u.file ?? 'Uploaded file')}, ${plural(u.company.employees.length, 'employee')}</span></span><button class="btn quiet" type="button" data-action="remove-upload" data-id="${esc(u.company.company_id)}">Remove</button></li>`).join('')}</ul>` : '';
+  const msg = uploadMsg ? `<div class="banner ${uploadMsg.tone}" id="upload-msg" tabindex="-1">${icon(uploadMsg.tone === 'good' ? 'check' : 'alert', 'lg')}<div><strong>${esc(uploadMsg.title)}</strong><ul>${uploadMsg.items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div></div>` : '';
+  const up = uploads[0];
+  const current = up ? `<div class="upload-now">${icon('file')}<span><strong>Moving ${esc(up.company.name)}</strong><span class="small muted">${esc(up.file ?? 'Uploaded file')}, ${plural(up.company.employees.length, 'employee')}</span></span><button class="btn" type="button" data-action="remove-upload">Back to ${esc(generated.companies[0].name)}</button></div>` : '';
   return `${head}
     ${db ? '' : `<div class="banner warn">${icon('alert', 'lg')}<div><strong>The database could not start here.</strong> ${esc(dbError ?? '')} The app is reading the demo files directly; open the GitHub Pages site to use the database.</div></div>`}
     ${db ? schemaCard(groups) + rulesCard() : ''}
     <section class="card" aria-labelledby="q-h">
-      <div class="card-head"><div><h2 id="q-h">Ask the data</h2><p class="card-sub">One SELECT at a time; the database stays read-only here.</p></div></div>
+      <div class="card-head"><div><h2 id="q-h">Ask the data</h2><p class="card-sub">Read-only SQL</p></div></div>
       <div class="card-body">
         <div class="chips">${EXAMPLES.map(([t, sql]) => `<button type="button" class="chip-btn" data-action="example-query" data-sql="${esc(sql)}">${esc(t)}</button>`).join('')}</div>
         <form class="query-form" data-action="run-query"><label class="sr-only" for="sql">SQL query</label><textarea id="sql" name="sql" rows="5" spellcheck="false"${db ? '' : ' disabled'}>${esc(query.sql)}</textarea><button class="btn primary" id="run-query-btn" type="submit"${db ? '' : ' disabled'}>Run query</button></form>
@@ -1917,13 +1886,13 @@ function viewData() {
       </div>
     </section>
     <section class="card" aria-labelledby="up-h">
-      <div class="card-head"><div><h2 id="up-h">Try your own Desktop file</h2><p class="card-sub">A CSV with one row per employee per payroll item. It goes through the same checks and engine as ${esc(generated?.companies[0]?.name ?? 'the demo business')}, and a business picker appears so you can switch between them.</p></div></div>
+      <div class="card-head"><div><h2 id="up-h">Try your own Desktop file</h2><p class="card-sub">A CSV, one row per employee per payroll item. It replaces ${esc(generated.companies[0].name)} until you go back.</p></div></div>
       <div class="card-body">
         <div class="row"><label class="btn primary file-btn">${icon('file')}Choose a CSV file<input type="file" accept=".csv,text/csv" data-action="upload" class="sr-only"></label><button class="btn" type="button" data-action="template">${HOSTED ? 'Copy the template' : 'Download the template'}</button></div>
         <label class="sr-only" for="template-box">Template CSV</label><textarea class="copy-box" id="template-box" readonly hidden></textarea>
         ${msg}
-        ${list}
-        ${fold('list', 'Columns in the file', `<table class="col-table"><tbody>${CSV_COLUMNS.map(([c, req, help]) => `<tr><td><code class="code">${esc(c)}</code></td><td>${req ? 'Required' : 'Optional'}</td><td class="small muted">${esc(help)}</td></tr>`).join('')}</tbody></table><p class="small muted">Addresses are matched to the demo address lookup. A home address it has never seen goes to an expert; a work address it has never seen stops the file.</p>`)}
+        ${current}
+        ${fold('list', 'Columns in the file', `<table class="col-table"><tbody>${CSV_COLUMNS.map(([c, req, help]) => `<tr><td><code class="code">${esc(c)}</code></td><td>${req ? 'Required' : 'Optional'}</td><td class="small muted">${esc(help)}</td></tr>`).join('')}</tbody></table><p class="small muted">A home address the lookup does not know goes to an expert; an unknown work address stops the file.</p>`)}
       </div>
     </section>`;
 }
@@ -1994,7 +1963,6 @@ function handle(action, el) {
   switch (action) {
     case 'sign-in': {
       state.role = el.dataset.role;
-      if (state.role === 'owner') state.companyId = document.getElementById('signin-company')?.value ?? state.companyId;
       state.detailOpen = false;
       save();
       afterRender = () => { window.scrollTo(0, 0); document.getElementById('main')?.focus({ preventScroll: true }); };
@@ -2020,15 +1988,17 @@ function handle(action, el) {
       return;
     }
     case 'remove-upload': {
-      const gone = uploads.find((u) => u.company.company_id === id);
-      uploads = uploads.filter((u) => u.company.company_id !== id);
-      delete state.decisions[id];
-      state.corrections = state.corrections.filter((c) => c.company_id !== id);
+      const gone = uploads[0];
+      if (gone) {
+        delete state.decisions[gone.company.company_id];
+        state.corrections = state.corrections.filter((c) => c.company_id !== gone.company.company_id);
+        state.audit = state.audit.filter((a) => a.company_id !== gone.company.company_id);
+      }
+      uploads = [];
+      uploadMsg = null;
       saveUploads();
       rebuildData();
-      if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies[0].company_id;
-      if (uploadMsg?.id === id) uploadMsg = null;
-      toast(`Removed ${gone?.company.name ?? 'the upload'}`);
+      toast(`Back to ${companyById().name}`);
       break;
     }
     case 'run-query':
@@ -2061,16 +2031,6 @@ function handle(action, el) {
     case 'example-query':
       runSql(el.dataset.sql);
       break;
-    case 'company-switch':
-      state.companyId = el.dataset.id;
-      toast(`Opened ${companyById().name}`);
-      if (el.dataset.view && location.hash !== `#${el.dataset.view}`) { save(); location.hash = `#${el.dataset.view}`; return; }
-      break;
-    case 'company':
-      state.companyId = el.value;
-      state.detailOpen = false;
-      toast(`Opened ${companyById().name}`);
-      break;
     case 'reset': {
       // Two steps: the first click arms the button for a few seconds; nothing is cleared yet.
       if (!resetArmed) {
@@ -2090,21 +2050,14 @@ function handle(action, el) {
       clearTimeout(resetTimer);
       if (moving) clearTimeout(moving.timer);
       moving = null;
-      state = { ...freshState(), role: state.role, companyId: state.companyId };
+      state = { ...freshState(), role: state.role };
       uploads = [];
       uploadMsg = null;
       saveUploads();
       rebuildData();
-      if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies[0].company_id;
       toast('Demo reset to its starting data');
       break;
     }
-    case 'open-client':
-      state.companyId = id;
-      save();
-      if (location.hash === '#move') render();
-      else location.hash = '#move';
-      return;
     case 'fix-address': {
       if (d.live) { toast('This business is live. Undo go-live to change an address.'); return; }
       const f = new FormData(el);
@@ -2357,8 +2310,8 @@ function handle(action, el) {
     case 'reset-thresholds':
       state.settings.thresholds = {};
       cache.clear();
-      log('Intuit governance', 'Restored the BRD thresholds', 'All states');
-      toast('Thresholds are back to the BRD values');
+      log('Intuit governance', 'Restored the default thresholds', 'All states');
+      toast('Thresholds are back to the defaults');
       break;
     case 'force-shadow': {
       state.settings.forceShadow = { ...state.settings.forceShadow, [el.dataset.state]: el.checked };
@@ -2493,46 +2446,52 @@ function scrollToDetail() {
 // ---------- data: the database, with the demo files as the fallback ----------
 
 let SQLlib = null;
-// Rebuild the database from the demo files plus uploads, and read the engine's input back from it.
+// The business being moved: the uploaded Desktop file if there is one, otherwise Buckeye Supply Co.
+const currentFile = () => uploads[0] ?? { company: generated.companies[0], addresses: [] };
+const lookupAddresses = () => [...files.geocoder.addresses, ...(generated?.addresses ?? [])];
+
+// Build the database for the business being moved, and read the engine's input back from it.
 // Addresses the employer added are applied again on every rebuild, so they survive a reload.
 function rebuildData() {
   cache.clear();
   outcomesKey = null;
   scenarioResults = null;
   lookupIdx = lookupIndex(lookupAddresses());
-  const known = new Set([...(generated?.companies ?? []), ...uploads.map((u) => u.company)].map((c) => c.company_id));
-  const corrections = state.corrections.filter((c) => known.has(c.company_id));
+  const biz = currentFile();
+  state.companyId = biz.company.company_id;
+  const corrections = state.corrections.filter((c) => c.company_id === state.companyId);
   if (SQLlib) {
     try {
       db?.close();
-      db = createDatabase(SQLlib, { ...files, companies: [] }, uploads, generated); // the six test files stay out of the business's database
-      for (const c of corrections) applyCorrection(db, c, lookupIdx);
-      data = readData(db);
+      db = createDatabase(SQLlib, { company: biz.company, addresses: biz.addresses, lookup: lookupAddresses(), catalog: files.catalog });
+      for (const c of corrections) applyCorrection(db, c, lookupIdx, lookupAddresses());
+      data = readData(db, { catalog: files.catalog, lookup: lookupAddresses(), pools: files.pools, lookupMeta: files.geocoder.metadata });
       return;
     } catch (err) { dbError = err.message; db = null; }
   }
-  data = fromFiles({ ...files, companies: [] }, uploads);
+  data = fromFiles({ ...files, companies: [] }, [biz]);
   for (const c of corrections) correctInMemory(c);
 }
-const lookupAddresses = () => [...files.geocoder.addresses, ...(generated?.addresses ?? [])];
 // Without the database (a viewer that blocks WebAssembly), the engine reads the files directly.
-function fromFiles(f, ups, gen = generated) {
+// The scenarios use this too, on the six small test files.
+function fromFiles(f, ups, gen = null) {
   const unplacedAddresses = ups.flatMap((u) => u.addresses ?? []).map((a) => ({ ...a, school_district: 'UNRESOLVED', municipality: null }));
   return {
     catalog: f.catalog,
-    geocoder: { ...f.geocoder, addresses: [...f.geocoder.addresses, ...(gen?.addresses ?? []), ...unplacedAddresses] },
+    geocoder: { ...f.geocoder, addresses: [...f.geocoder.addresses, ...(generated?.addresses ?? []), ...(gen?.addresses ?? []), ...unplacedAddresses] },
     pools: f.pools,
-    companies: [...f.companies, ...(gen?.companies ?? []), ...ups.map((u) => u.company)],
+    companies: [...f.companies, ...ups.map((u) => u.company)],
   };
 }
 
-// Write the work and audit tables: the engine's results for every business, every decision and the log.
-// Only when something changed since the last write.
+// Write the result tables: the engine's results, every decision and the log. Only when something changed.
 function syncWork() {
   if (!db) return;
-  const key = JSON.stringify([settingsKey(), data.companies.length, state.decisions, state.audit.length, state.audit[0]?.at ?? '', state.corrections.length]);
+  const key = JSON.stringify([settingsKey(), state.companyId, state.decisions[state.companyId] ?? null, state.audit.length, state.audit[0]?.at ?? '', state.corrections.length]);
   if (key === outcomesKey) return;
-  writeWork(db, workRows({ companies: data.companies, analysisOf: (id) => analysisFor(id), decisionsOf: peekDecisions, audit: state.audit, modelVersion: MODEL_VERSION }));
+  let analysis = null;
+  try { analysis = analysisFor(); } catch (err) { if (err.name !== 'DataError') throw err; }
+  writeResults(db, resultRows({ analysis, decisions: peekDecisions(state.companyId), log: state.audit.filter((a) => a.company_id === state.companyId) }));
   outcomesKey = key;
 }
 
@@ -2554,14 +2513,11 @@ async function uploadFile(input) {
   } else {
     // The engine's own file checks: a file it cannot analyse is refused with its reasons.
     try {
-      analyseCompany(res.company, fromFiles(files, [...uploads, res]), state.settings);
-      // Then the database's keys and rules, tried inside a savepoint that is always rolled back.
+      analyseCompany(res.company, fromFiles({ ...files, companies: [] }, [res]), state.settings);
+      // Then the database's keys and rules: a file that breaks one is refused with the database's message.
       let refused = null;
-      if (db) {
-        db.run('SAVEPOINT upload_check');
-        try { insertCompany(db, res.company, 'upload', 99999, res.addresses); } catch (err) { refused = err.message; }
-        db.run('ROLLBACK TO upload_check');
-        db.run('RELEASE upload_check');
+      if (SQLlib) {
+        try { createDatabase(SQLlib, { company: res.company, addresses: res.addresses, lookup: lookupAddresses(), catalog: files.catalog }).close(); } catch (err) { refused = err.message; }
       }
       if (refused) {
         uploadMsg = { tone: 'bad', title: `${file.name} was not added: the database refused it`, items: [refused] };
@@ -2570,12 +2526,14 @@ async function uploadFile(input) {
         document.getElementById('upload-msg')?.focus({ preventScroll: false });
         return;
       }
-      uploads.push({ company: res.company, addresses: res.addresses, file: file.name });
+      // One business at a time: the file replaces the demo business until it is removed.
+      if (uploads[0]) delete state.decisions[uploads[0].company.company_id];
+      uploads = [{ company: res.company, addresses: res.addresses, file: file.name }];
       saveUploads();
       rebuildData();
       const a = analysisFor(id);
       log('Admin', 'Uploaded a Desktop file', res.company.name, file.name);
-      uploadMsg = { tone: 'good', title: `Added ${res.company.name}`, id, items: [`${plural(res.company.employees.length, 'employee')} and ${plural(a.cases.length, 'Desktop line')}: ${a.cases.filter((c) => c.route === 'local_tax').length} local tax, ${a.cases.filter((c) => c.route === 'not_a_tax').length} not a tax, ${a.cases.filter((c) => c.route === 'not_in_database').length} to an expert.`, ...a.dataIssues.map((d) => d.text)] };
+      uploadMsg = { tone: 'good', title: `Now moving ${res.company.name}`, items: [`${plural(res.company.employees.length, 'employee')} and ${plural(a.cases.length, 'Desktop line')}: ${a.cases.filter((c) => c.route === 'local_tax').length} local tax, ${a.cases.filter((c) => c.route === 'not_a_tax').length} not a tax, ${a.cases.filter((c) => c.route === 'not_in_database').length} to an expert.`, ...a.dataIssues.map((d) => d.text)] };
     } catch (err) {
       if (err.name !== 'DataError') throw err;
       uploadMsg = { tone: 'bad', title: `${file.name} was not added: the engine stops on it`, items: err.issues.map((x) => x.text) };
@@ -2599,7 +2557,6 @@ async function boot() {
     generated = generateBusinesses(catalog, { count: 1 }); // the business being moved: Buckeye Supply Co.
     try { SQLlib = await loadSqlJs(); } catch (err) { dbError = err.message || 'WebAssembly is blocked here'; }
     rebuildData();
-    if (!data.companies.some((c) => c.company_id === state.companyId)) state.companyId = data.companies.find((c) => c.company_id === 'G-001')?.company_id ?? data.companies[0].company_id;
     render();
   } catch (err) {
     app.innerHTML = `<p class="boot">The demo data did not load (${esc(err.message)}). Run <code>npm run build</code> and <code>npm start</code>, then open http://localhost:3000.</p>`;

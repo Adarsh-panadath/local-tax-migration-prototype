@@ -678,7 +678,7 @@ export const SCENARIOS = [
     },
   },
   {
-    id: 'auto-person-only', group: 'auto', title: 'Automation never guesses where the BRD wants a person',
+    id: 'auto-person-only', group: 'auto', title: 'Automation never guesses where a person must decide',
     where: { company: 'C-HHF', view: 'expert' },
     expect: 'Across every client, what is left is only a weak or missing signal, a conflict, a bad address, a wrong state, shadow mode, or a missing account number.',
     check: (x) => {

@@ -788,26 +788,12 @@ tr.spotlight { outline-offset: -2px; }
 .move-cta { margin-top: 4px; }
 .move-cta .btn.primary .ic, .move-actions .btn.primary .ic { width: 17px; height: 17px; }
 
-.xfer { margin: 0; background: var(--brand); color: var(--on-deep); padding: 30px 28px 24px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 14px 16px; align-items: center; }
-.xfer :focus-visible { outline-color: var(--mint); }
-.xfer-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; align-self: start; }
-.xfer-h { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 650; color: var(--on-deep); }
-.xfer-h .ic { width: 15px; height: 15px; }
-.xfer ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.xfer li { border-radius: 10px; padding: 8px 12px; font-size: 13.5px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
-.xfer li.loose { color: var(--on-deep); border: 1.5px dashed rgb(255 255 255 / 0.4); }
-.xfer li.exact { display: flex; align-items: center; gap: 8px; background: var(--surface); color: var(--ink); }
-.xfer li.exact .ic { color: var(--brand); }
-.xfer li.exact b { color: var(--brand-text); }
-.xfer li.exact .ic { width: 14px; height: 14px; stroke-width: 2.8; }
-.xfer li.exact span { flex: 1; min-width: 0; }
-.xfer li.exact b { font-weight: 800; white-space: nowrap; }
-.xfer li.more-n { color: var(--on-deep); font-weight: 500; font-size: 12.5px; padding: 0 4px; }
-.xfer-arrow { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); color: var(--brand); }
-.xfer-arrow .ic { width: 18px; height: 18px; stroke-width: 2.4; }
-.xfer figcaption { grid-column: 1 / -1; font-size: 12.5px; color: var(--on-deep); border-top: 1px solid rgb(255 255 255 / 0.16); padding-top: 14px; margin-top: 8px; }
 
 .moves { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.move-side { background: var(--subtle); border-left: 1px solid var(--line); padding: 32px 28px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.move-side h2 { font-size: 15px; }
+.move-side .moves { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.move-side .moves li { padding: 10px 12px; }
 .moves li { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 14px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-l); padding: 14px 16px; box-shadow: var(--shadow-xs); }
 .moves li > div { min-width: 0; }
 .moves strong { display: block; font-size: 14.5px; font-weight: 650; }
@@ -931,6 +917,7 @@ tr.spotlight { outline-offset: -2px; }
 
 @media (max-width: 900px) {
   .move-hero, .check-grid, .wl-grid { grid-template-columns: minmax(0, 1fr); }
+  .move-side { border-left: 0; border-top: 1px solid var(--line); padding: 24px; }
   .move-copy { padding: 28px 24px; }
   .move-copy h1 { font-size: 28px; }
 }
@@ -940,8 +927,6 @@ tr.spotlight { outline-offset: -2px; }
   .move-copy { padding: 24px 20px; gap: 14px; }
   .move-copy h1 { font-size: 25px; }
   .move-cta .btn.primary { flex: 1; }
-  .xfer { grid-template-columns: minmax(0, 1fr); padding: 22px 20px 20px; }
-  .xfer-arrow { justify-self: center; transform: rotate(90deg); width: 32px; height: 32px; }
   .moves { grid-template-columns: minmax(0, 1fr); }
   .moves li { grid-template-columns: 40px minmax(0, 1fr); gap: 4px 14px; }
   .mv-how { grid-column: 2; justify-self: start; }
@@ -1026,6 +1011,9 @@ tr.spotlight { outline-offset: -2px; }
 .upload-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: var(--subtle); }
 .upload-list li > span { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .upload-list .ic { color: var(--brand-text); }
+.upload-now { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: var(--brand-soft); }
+.upload-now > span { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.upload-now .ic { color: var(--brand-text); }
 .col-table td { padding: 6px 10px 6px 0; border: 0; vertical-align: top; font-size: 13px; }
 .banner .row { margin-top: 10px; }
 .banner:focus { outline: none; }
@@ -1131,7 +1119,7 @@ tr.spotlight { outline-offset: -2px; }
 .cmp-table td:first-child { min-width: 15rem; }
 
 /* ---------- schema (Data page) ---------- */
-.layers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .layer { border: 1px solid var(--line); border-radius: var(--r-m); background: var(--subtle); padding: 10px 8px 8px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .layer-head { display: flex; align-items: center; gap: 10px; padding: 2px 6px 4px; }
 .layer-head > div { display: flex; flex-direction: column; min-width: 0; }
@@ -1142,8 +1130,6 @@ tr.spotlight { outline-offset: -2px; }
 .layer .tbl { padding: 7px 8px; }
 .layer .tbl:hover { background: var(--surface); }
 .layer .tbl[aria-current="true"] { background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--brand); }
-.layer .tbl:not(.main) .tbl-name { color: var(--ink-2); }
-.layer .tbl.main .tbl-name { font-weight: 700; color: var(--ink); }
 .layer .tbl[aria-current="true"] .tbl-name { font-weight: 650; }
 .tdetail { border: 1px solid var(--line); border-radius: var(--r-m); padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 16px; }
 .tdetail:focus { outline: none; box-shadow: 0 0 0 2px var(--brand-line); }
@@ -1179,7 +1165,7 @@ tr.spotlight { outline-offset: -2px; }
 .rule-out .ic { width: 16px; height: 16px; }
 .rule-out.bad { color: var(--bad); }
 .rule-out.warn { color: var(--warn); }
-@media (max-width: 1100px) { .layers { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tdetail-links { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+@media (max-width: 1100px) { .tdetail-links { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 @media (max-width: 640px) {
   .layers, .tdetail-links { grid-template-columns: minmax(0, 1fr); }
   .tdetail { padding: 14px; }

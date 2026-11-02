@@ -55,20 +55,19 @@ Desktop payroll file
 
 ## The database
 
-The data lives in a **SQLite database inside the page** (sql.js, compiled to WebAssembly; no server, no account, no keys), with primary keys, foreign keys and CHECK rules switched on. It is rebuilt on every visit, so every visitor has a private copy. The engine reads its input from the database with SQL, and a test checks that this equals the files exactly.
+The data lives in a **SQLite database inside the page** (sql.js, compiled to WebAssembly; no server, no account, no keys), with primary keys, foreign keys and CHECK rules switched on. It is rebuilt on every visit. The engine reads the business back from the database with SQL, and a test checks that this equals the file exactly.
 
-**The schema has 22 tables in four layers** (full explanation, every table and its keys: [docs/schema.md](docs/schema.md); the SQL: [docs/schema.sql](docs/schema.sql)):
+**One database per migration: 11 tables in three groups**, and no table needs a company id (full explanation: [docs/schema.md](docs/schema.md); the SQL: [docs/schema.sql](docs/schema.sql)):
 
-| Layer | Owner | Tables |
+| Group | Who it comes from | Tables |
 | --- | --- | --- |
-| 1. Tax reference | Intuit | `states`, `taxes`, `no_tax_districts`, `state_place_names`, `defined_entries`, `defined_entry_states`, `addresses`, `label_pool` |
-| 2. Source | Customer: the Desktop file, never edited | `companies`, `worksites`, `payroll_items`, `employees`, `employee_addresses`, `desktop_lines`, `import_issues` |
-| 3. Work | Engine and people | `expected_taxes`, `line_results`, `decisions`, `corrections`, `migrations` |
-| 4. Audit | System | `audit_log`, `model_runs` |
+| 1. Desktop file | The business | `company`, `worksites`, `employees`, `home_addresses`, `payroll_items`, `desktop_lines` |
+| 2. Tax lookup | Intuit (only what this business needs) | `addresses`, `taxes` |
+| 3. Migration results | Engine and people | `expected_taxes`, `line_results`, `decision_log` |
 
-![The main tables and how they link](web/schema-diagram.svg)
+![The tables and how they link](web/schema-diagram.svg)
 
-The admin's **Data** page shows the schema read from the database itself: click a table for its columns, keys, rules and links. **The database checks the data itself** has five buttons that each try to break a rule (a business that does not exist, a duplicate employee, month 13, a 150% rate, an item that was never set up); the database refuses each one. **Download the database** gives the whole thing as a `.sqlite` file to open in any SQLite tool. The page also runs read-only SQL queries (with examples) and accepts a **Desktop file as CSV**: download the template, upload it, and that business goes through the same file checks and engine as Buckeye (a business picker appears once there are two). A file with missing columns or an unknown work site is refused with the reason; a home address the lookup has never seen goes to an expert. Uploads stay in your browser. See [the data contract](docs/data-contract.md) for the columns.
+The admin's **Data** page shows the schema read from the database itself: click a table for its columns and keys. **The database checks the data itself** has five buttons that each try to break a rule (a work site that does not exist, a duplicate employee, month 13, a 150% rate, an item that was never set up); the database refuses each one. **Download the database** gives the whole thing as a `.sqlite` file. The page also runs read-only SQL queries (with examples) and accepts **your own Desktop file as CSV**: it replaces Buckeye until you go back, and goes through the same file checks, database keys and engine. A file with missing columns or an unknown work site is refused with the reason, and so is one the database refuses (the same item twice for one person); a home address the lookup has never seen goes to an expert. See [the data contract](docs/data-contract.md) for the columns.
 
 Customer payroll data stays fictional on purpose: real payroll files hold social security numbers and wages. Real companies demo the same way: invented people, real tax rules.
 
@@ -126,7 +125,7 @@ It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, 
    - **Engine**: what each step found for Buckeye: 289 expected taxes, 274 custom lines clustered, 266 local tax, 34 not a tax, 13 to an expert, 5 owed but not withheld.
    - **Model**: Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
-   - **Data**: the schema (22 tables, 4 layers), the five rule checks, "Added addresses" to see step 2's addresses, and **Download the database**.
+   - **Data**: the schema (11 tables in 3 groups), the five rule checks, "Added addresses" to see step 2's addresses, and **Download the database**.
    - **Scenarios**: 76 of 76 pass.
 
 ## Scenario coverage
@@ -178,7 +177,7 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/engine/cluster.mjs` | Average-linkage clustering, silhouette, naming clusters, scoring a new label |
 | `web/engine/analysis.mjs` | File checks, expected taxes, rollout gates, routing, rate checks, gaps |
 | `web/engine/workflow.mjs` | Decisions, automation rules, go-live checks, dollar tie-out, W-2, reconciliation |
-| `web/db.mjs` | The database: schema, loading, reading the engine's input with SQL, queries, CSV import, added addresses |
+| `web/db.mjs` | The database (one per migration): schema, loading, reading the business back with SQL, results, queries, CSV import, added addresses |
 | `web/generate.mjs` | Buckeye Supply Co. (and, for the scale test, 59 more), and the ML Lab's labelled set, from a fixed seed |
 | `web/mllab.mjs` | The ML Lab: hold-out split, fit, scoring, baseline, confusion matrix, 2D map |
 | `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { generateBusinesses, labelSet, GENERATED_COUNT } from '../web/generate.mjs';
-import { createDatabase, readData, readCompanies, applyCorrection, lookupIndex } from '../web/db.mjs';
+import { createDatabase, readData, applyCorrection, lookupIndex } from '../web/db.mjs';
 import { runLab } from '../web/mllab.mjs';
 import { analyseCompany } from '../web/engine/analysis.mjs';
 import { automate, automationStats, exceptions, emptyDecisions } from '../web/engine/workflow.mjs';
@@ -20,10 +20,13 @@ async function loadSql() {
   return module.exports({ wasmBinary: await readFile(new URL('../web/vendor/sql-wasm.wasm', import.meta.url)) });
 }
 const SQL = await loadSql();
-const [catalog, geocoder, pool, companies] = await Promise.all(['catalog.json', 'geocoder.json', 'label-pool.json', 'companies.json'].map(read));
-const files = { catalog, geocoder, pools: pool.pools, poolMeta: pool.metadata, companies: companies.companies, companiesMeta: companies.metadata };
+const [catalog, geocoder, pool] = await Promise.all(['catalog.json', 'geocoder.json', 'label-pool.json'].map(read));
 const generated = generateBusinesses(catalog);
 const withGenerated = { catalog, geocoder: { ...geocoder, addresses: [...geocoder.addresses, ...generated.addresses] }, pools: pool.pools };
+const lookup = withGenerated.geocoder.addresses;
+const ref = { catalog, lookup, pools: pool.pools };
+// One database per migration: each business gets its own.
+const dbFor = (c) => createDatabase(SQL, { company: c, lookup, catalog });
 
 test('the generator makes the same 60 businesses every time, each with at least 100 employees', () => {
   assert.equal(generated.companies.length, GENERATED_COUNT);
@@ -62,38 +65,40 @@ test('every generated business goes through the engine, and most lines settle by
   for (const r of ['no_address', 'address_unresolved', 'weak_signal']) assert.ok(reasons.has(r), `expected some ${r}`);
 });
 
-test('the generated businesses round-trip through the database exactly', () => {
-  const db = createDatabase(SQL, files, [], generated);
-  const back = readData(db);
-  assert.equal(back.companies.length, companies.companies.length + GENERATED_COUNT);
-  for (const c of generated.companies) assert.deepStrictEqual(back.companies.find((x) => x.company_id === c.company_id), c);
-  assert.equal(back.geocoder.addresses.length, geocoder.addresses.length + generated.addresses.length);
-  assert.deepStrictEqual(readCompanies(db, 'G-001')[0], generated.companies[0]);
+// An empty field (null) reads back as absent; everything else must come back exactly.
+const dropEmpty = (v) => JSON.parse(JSON.stringify(v, (k, x) => (x === null ? undefined : x)));
+
+test('every generated business round-trips through its own database exactly', () => {
+  for (const c of generated.companies) {
+    const db = dbFor(c);
+    assert.deepStrictEqual(readData(db, ref).companies, [dropEmpty(c)], c.company_id);
+    db.close();
+  }
 });
 
 test('an employer adding a missing home address settles the lines that waited for it', () => {
-  const db = createDatabase(SQL, files, [], generated);
   const flag = generated.companies[0];
+  const db = dbFor(flag);
   const a0 = analyseCompany(flag, withGenerated);
   const noAddr = a0.cases.filter((c) => c.reason === 'no_address');
   assert.ok(noAddr.length >= 1);
   const who = noAddr[0].employee_id;
   // A Lancaster address the lookup knows.
   const known = generated.addresses.find((x) => x.city === 'Lancaster' && x.school_district === '2305');
-  const r = applyCorrection(db, { company_id: 'G-001', employee_id: who, line1: known.line1, city: 'Lancaster', state: 'OH', zip: known.zip, at: '2026-10-31T00:00:00Z' }, lookupIndex(withGenerated.geocoder.addresses));
+  const r = applyCorrection(db, { company_id: 'G-001', employee_id: who, line1: known.line1, city: 'Lancaster', state: 'OH', zip: known.zip, at: '2026-10-31T00:00:00Z' }, lookupIndex(lookup), lookup);
   assert.equal(r.found, true);
-  const back = readData(db);
-  const a1 = analyseCompany(back.companies.find((c) => c.company_id === 'G-001'), back);
+  const back = readData(db, ref);
+  const a1 = analyseCompany(back.companies[0], back);
   assert.ok(!a1.cases.some((c) => c.employee_id === who && c.reason === 'no_address'), 'the line no longer waits for an address');
   const before = automationStats(a0, automate(a0, emptyDecisions()).decisions).auto;
   const after = automationStats(a1, automate(a1, emptyDecisions()).decisions).auto;
   assert.ok(after > before, `rules settle more after the fix (${before} → ${after})`);
   // An address the lookup has never seen is kept, and the lookup cannot place it: an expert decides.
   const other = noAddr.find((c) => c.employee_id !== who)?.employee_id ?? a0.company.employees.find((e) => e.employee_id !== who).employee_id;
-  const r2 = applyCorrection(db, { company_id: 'G-001', employee_id: other, line1: '1 Nowhere Ln', city: 'Lancaster', state: 'OH', zip: '43130', at: '2026-10-31T00:00:00Z' }, lookupIndex(withGenerated.geocoder.addresses));
+  const r2 = applyCorrection(db, { company_id: 'G-001', employee_id: other, line1: '1 Nowhere Ln', city: 'Lancaster', state: 'OH', zip: '43130', at: '2026-10-31T00:00:00Z' }, lookupIndex(lookup), lookup);
   assert.equal(r2.found, false);
-  const back2 = readData(db);
-  const a2 = analyseCompany(back2.companies.find((c) => c.company_id === 'G-001'), back2);
+  const back2 = readData(db, ref);
+  const a2 = analyseCompany(back2.companies[0], back2);
   assert.ok(a2.cases.some((c) => c.employee_id === other && c.reason === 'address_unresolved'));
 });
 

@@ -1,13 +1,13 @@
-// The in-browser database: the engine's input rebuilt from SQL must equal the demo files exactly,
-// uploaded Desktop CSV files must go through the same engine, and the query box must stay read-only.
+// The in-browser database: one database per migration. The business read back from SQL must equal the file,
+// the engine must give the same answers either way, the keys must be enforced, and the query box stays read-only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { createDatabase, readData, runQuery, tableSummary, csvTemplate, companyFromCsv, insertCompany, parseCsv, writeWork, workRows, all, SCHEMA, TABLE_GROUPS, RULE_CHECKS, tryRule, describeTable, exportDatabase } from '../web/db.mjs';
+import { createDatabase, readData, runQuery, tableSummary, csvTemplate, companyFromCsv, parseCsv, writeResults, resultRows, all, SCHEMA, TABLE_GROUPS, RULE_CHECKS, tryRule, describeTable, exportDatabase } from '../web/db.mjs';
 import { analyseCompany } from '../web/engine/analysis.mjs';
-import { automate, automationStats, effectiveAll, emptyDecisions } from '../web/engine/workflow.mjs';
-import { MODEL_VERSION } from '../web/engine/cluster.mjs';
+import { automate, automationStats, emptyDecisions } from '../web/engine/workflow.mjs';
+import { generateBusinesses } from '../web/generate.mjs';
 import { schemaDocs } from '../scripts/schema-docs.mjs';
 
 const require = createRequire(import.meta.url);
@@ -25,127 +25,127 @@ async function loadSql() {
 
 const SQL = await loadSql();
 const [catalog, geocoder, pool, companies] = await Promise.all(['catalog.json', 'geocoder.json', 'label-pool.json', 'companies.json'].map(read));
-const files = { catalog, geocoder, pools: pool.pools, poolMeta: pool.metadata, companies: companies.companies, companiesMeta: companies.metadata };
+const gen = generateBusinesses(catalog, { count: 1 });
+const buckeye = gen.companies[0];
+const lookup = [...geocoder.addresses, ...gen.addresses];
+const ref = { catalog, lookup, pools: pool.pools };
+const files = { catalog, geocoder: { addresses: lookup }, pools: pool.pools };
+const dbFor = (company, addresses = []) => createDatabase(SQL, { company, addresses, lookup, catalog });
+const dropEmpty = (v) => JSON.parse(JSON.stringify(v, (k, x) => (x === null ? undefined : x)));
+const pick = (x) => ({ cases: x.cases.map((k) => [k.case_id, k.route, k.reason, k.proposal.map((p) => p.tax.tax_id)]), gaps: x.gaps.map((g) => g.gap_id), issues: x.dataIssues.map((d) => d.text) });
+const auto = (x) => automationStats(x, automate(x, emptyDecisions()).decisions);
 
-test('the database rebuilds every demo file exactly', () => {
-  const db = createDatabase(SQL, files);
-  const back = readData(db);
-  assert.deepStrictEqual(back.catalog, catalog);
-  assert.deepStrictEqual(back.geocoder, geocoder);
-  assert.deepStrictEqual(back.pools, pool.pools);
-  assert.deepStrictEqual(back.poolMeta, pool.metadata);
-  assert.deepStrictEqual(back.companiesMeta, companies.metadata);
-  assert.equal(back.companies.length, companies.companies.length);
-  for (let i = 0; i < companies.companies.length; i += 1) assert.deepStrictEqual(back.companies[i], companies.companies[i], companies.companies[i].company_id);
+test('the business reads back from its database exactly as it was written', () => {
+  const back = readData(dbFor(buckeye), ref);
+  assert.deepStrictEqual(back.companies, [buckeye]);
+  assert.equal(back.catalog, catalog);
+  assert.equal(back.geocoder.addresses.length, lookup.length, 'no address typed by the employer yet');
 });
 
-test('the engine gives the same answers from the database as from the files', () => {
-  const back = readData(createDatabase(SQL, files));
-  const fromFiles = { catalog, geocoder, pools: pool.pools };
-  for (const c of companies.companies) {
-    const a = analyseCompany(c, fromFiles);
-    const b = analyseCompany(back.companies.find((x) => x.company_id === c.company_id), back);
-    const pick = (x) => ({ cases: x.cases.map((k) => [k.case_id, k.route, k.reason, k.proposal.map((p) => p.tax.tax_id)]), gaps: x.gaps.map((g) => g.gap_id), issues: x.dataIssues.map((d) => d.text) });
+test('the engine gives the same answers from the database as from the file', () => {
+  for (const c of [buckeye, ...companies.companies.filter((x) => x.company_id !== 'C-RPS')]) {
+    const back = readData(dbFor(c), ref);
+    assert.deepStrictEqual(back.companies[0], dropEmpty(c), c.company_id);
+    const a = analyseCompany(c, files);
+    const b = analyseCompany(back.companies[0], back);
     assert.deepStrictEqual(pick(b), pick(a), c.company_id);
-    const auto = (x) => automationStats(x, automate(x, emptyDecisions()).decisions);
     assert.deepStrictEqual(auto(b), auto(a), c.company_id);
   }
 });
 
-test('the schema has four layers, and every table in them exists', () => {
-  const db = createDatabase(SQL, files);
+test('a Desktop file that breaks a key is refused by the database', () => {
+  // Ridgeview's file points at an address nobody knows and an item that does not exist.
+  assert.throws(() => dbFor(companies.companies.find((x) => x.company_id === 'C-RPS')), /FOREIGN KEY/);
+  const twice = structuredClone(buckeye);
+  twice.employees[0].items.push(twice.employees[0].items[0]);
+  assert.throws(() => dbFor(twice), /UNIQUE constraint failed: desktop_lines/);
+});
+
+test('one database per migration: three groups of tables, no company id outside the company table', () => {
+  const db = dbFor(buckeye);
   const groups = tableSummary(db);
-  assert.deepStrictEqual(groups.map((g) => g.id), ['reference', 'source', 'work', 'audit']);
+  assert.deepStrictEqual(groups.map((g) => g.id), ['desktop', 'lookup', 'results']);
   const rows = Object.fromEntries(groups.flatMap((g) => g.tables.map((t) => [t.name, t.rows])));
-  assert.equal(rows.companies, companies.companies.length);
-  assert.equal(rows.employees, companies.companies.reduce((n, c) => n + c.employees.length, 0));
-  assert.equal(rows.addresses, geocoder.addresses.length);
-  assert.equal(rows.label_pool, Object.values(pool.pools).reduce((n, l) => n + l.length, 0));
+  assert.equal(rows.company, 1);
+  assert.equal(rows.employees, 152);
+  assert.equal(rows.desktop_lines, 313);
+  assert.equal(rows.payroll_items, 12);
   assert.equal(rows.line_results, 0);
-  const inSchema = all(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name <> 'dataset_info'").map((r) => r.name).sort();
-  assert.deepStrictEqual(TABLE_GROUPS.flatMap((g) => g.tables).sort(), inSchema, 'every table is in exactly one layer');
+  // Only the addresses this business uses go in.
+  const used = new Set([...buckeye.worksites.map((w) => w.address_id), ...buckeye.employees.flatMap((e) => e.addresses.map((a) => a.address_id))]);
+  assert.equal(rows.addresses, used.size);
+  const inSchema = all(db, "SELECT name FROM sqlite_master WHERE type = 'table'").map((r) => r.name).sort();
+  assert.deepStrictEqual(TABLE_GROUPS.flatMap((g) => g.tables).sort(), inSchema, 'every table is in exactly one group');
+  for (const t of inSchema.filter((x) => x !== 'company')) assert.ok(!describeTable(db, t).columns.some((c) => c.name === 'company_id'), t);
 });
 
 test('every table has a primary key, and the keys are enforced', () => {
-  const db = createDatabase(SQL, files);
+  const db = dbFor(buckeye);
   assert.equal(all(db, 'PRAGMA foreign_keys')[0].foreign_keys, 1);
   assert.deepStrictEqual(all(db, 'PRAGMA foreign_key_check'), []);
   for (const name of TABLE_GROUPS.flatMap((g) => g.tables)) {
     assert.ok(describeTable(db, name).columns.some((c) => c.pk), `${name} has a primary key`);
   }
-  assert.ok(describeTable(db, 'companies').checks.includes('migration_month BETWEEN 1 AND 12'));
+  assert.ok(describeTable(db, 'company').checks.includes('migration_month BETWEEN 1 AND 12'));
   const emp = describeTable(db, 'employees');
-  assert.deepStrictEqual(emp.foreignKeys.map((f) => f.table).sort(), ['companies', 'worksites']);
+  assert.deepStrictEqual(emp.foreignKeys.map((f) => f.table), ['worksites']);
   assert.ok(emp.linkedFrom.includes('desktop_lines'));
   // Each rule check is refused by the database itself, and nothing changes.
   const before = all(db, 'SELECT COUNT(*) AS n FROM employees')[0].n;
-  const expected = { fk: /FOREIGN KEY/, pk: /UNIQUE/, month: /month_1_to_12/, rate: /rate_0_to_100/, line: /FOREIGN KEY/ };
+  const expected = { fk: /FOREIGN KEY/, pk: /UNIQUE constraint failed: employees.employee_id/, month: /month_1_to_12/, rate: /rate_0_to_100/, line: /FOREIGN KEY/ };
   for (const c of RULE_CHECKS) assert.match(tryRule(db, c.id).refused ?? 'accepted', expected[c.id], c.id);
   assert.equal(all(db, 'SELECT COUNT(*) AS n FROM employees')[0].n, before);
-  assert.equal(all(db, "SELECT migration_month FROM companies WHERE company_id = 'C-FHS'")[0].migration_month, 10);
-});
-
-test('rows in a Desktop file that break a key are kept in import_issues, and the engine still reports them', () => {
-  const db = createDatabase(SQL, files);
-  const issues = all(db, 'SELECT company_id, employee_id, kind, value FROM import_issues ORDER BY issue_id');
-  assert.deepStrictEqual(issues.map((x) => `${x.employee_id} ${x.kind} ${x.value}`), ['E02 unknown_address H-404', 'E03 unknown_item I-OLD', 'E03 repeated_item I-LANC']);
-  assert.ok(issues.every((x) => x.company_id === 'C-RPS'));
-  const a = analyseCompany(readData(db).companies.find((c) => c.company_id === 'C-RPS'), readData(db));
-  assert.ok(a.dataIssues.length >= 3);
+  assert.equal(all(db, 'SELECT migration_month FROM company')[0].migration_month, 10);
 });
 
 test('the schema documents in docs are generated from the schema the app runs', async () => {
   const docs = schemaDocs(SQL);
   assert.equal(docs.sql, SCHEMA.trimStart());
   const file = (n) => readFile(new URL(`../docs/${n}`, import.meta.url), 'utf8');
-  for (const [name, text] of [['schema.sql', docs.sql], ['schema.md', docs.md], ['schema.mmd', docs.mmd], ['schema-core.mmd', docs.core]]) {
+  for (const [name, text] of [['schema.sql', docs.sql], ['schema.md', docs.md], ['schema.mmd', docs.mmd]]) {
     assert.equal(await file(name), text, `docs/${name} is out of date: run npm run schema`);
   }
 });
 
 test('the database exports as a .sqlite file, with the keys still on afterwards', () => {
-  const db = createDatabase(SQL, files);
+  const db = dbFor(buckeye);
   const bytes = exportDatabase(db);
   assert.equal(new TextDecoder().decode(bytes.slice(0, 15)), 'SQLite format 3');
   assert.equal(all(db, 'PRAGMA foreign_keys')[0].foreign_keys, 1);
   const copy = new SQL.Database(bytes);
-  assert.equal(all(copy, 'SELECT COUNT(*) AS n FROM companies')[0].n, companies.companies.length);
+  assert.equal(all(copy, 'SELECT name FROM company')[0].name, 'Buckeye Supply Co.');
 });
 
 test('the query box runs one SELECT and nothing that changes data', () => {
-  const db = createDatabase(SQL, files);
-  const r = runQuery(db, 'SELECT name, plan FROM companies ORDER BY sort');
+  const db = dbFor(buckeye);
+  const r = runQuery(db, 'SELECT name, plan FROM company');
   assert.deepStrictEqual(r.columns, ['name', 'plan']);
-  assert.equal(r.rows[0][0], 'Fairfield Hardware Supply');
+  assert.deepStrictEqual(r.rows[0], ['Buckeye Supply Co.', 'Premium']);
   assert.equal(runQuery(db, 'WITH x AS (SELECT 1 AS n) SELECT n FROM x;').rows[0][0], 1);
-  assert.throws(() => runQuery(db, 'DELETE FROM companies'), /Only SELECT/);
-  assert.throws(() => runQuery(db, 'SELECT 1; DROP TABLE companies'), /one query/);
+  assert.throws(() => runQuery(db, 'DELETE FROM employees'), /Only SELECT/);
+  assert.throws(() => runQuery(db, 'SELECT 1; DROP TABLE employees'), /one query/);
   assert.throws(() => runQuery(db, '   '), /Type a query/);
-  assert.equal(runQuery(db, 'SELECT COUNT(*) FROM companies').rows[0][0], companies.companies.length);
+  assert.equal(runQuery(db, 'SELECT COUNT(*) FROM employees').rows[0][0], 152);
 });
 
-test('the work tables hold the engine\'s results and every decision, and they obey the keys', () => {
-  const db = createDatabase(SQL, files);
-  const data = readData(db);
-  const analyses = new Map(data.companies.map((c) => [c.company_id, analyseCompany(c, data)]));
-  const decided = new Map([...analyses].map(([id, a]) => [id, automate(a, emptyDecisions()).decisions]));
-  const rows = workRows({ companies: data.companies, analysisOf: (id) => analyses.get(id), decisionsOf: (id) => decided.get(id) ?? emptyDecisions(), audit: [{ at: '2026-10-31T00:00:00Z', company_id: 'C-FHS', actor: 'Automation', action: 'Confirmed', target: 'x', detail: '' }], modelVersion: MODEL_VERSION });
-  writeWork(db, rows);
+test('the result tables hold the engine\'s results and the log, and they obey the keys', () => {
+  const db = dbFor(buckeye);
+  const back = readData(db, ref);
+  const a = analyseCompany(back.companies[0], back);
+  const decided = automate(a, emptyDecisions()).decisions;
+  const log = [{ at: '2026-10-31T00:00:01Z', company_id: 'G-001', actor: 'Automation', action: 'Confirmed', target: 'Maya Perez: Lancaster Schools', detail: 'Rule: Confirm matches the address supports' }, { at: '2026-10-31T00:00:00Z', company_id: 'G-001', actor: 'Employer', action: 'Started the move to Online payroll', target: 'Buckeye Supply Co.', detail: '' }];
+  writeResults(db, resultRows({ analysis: a, decisions: decided, log }));
   const n = (sql) => all(db, sql)[0].n;
-  const lines = [...analyses.values()].reduce((s, a) => s + a.cases.length, 0);
-  assert.equal(n('SELECT COUNT(*) AS n FROM line_results'), lines, 'one result per Desktop line');
-  assert.equal(n('SELECT COUNT(*) AS n FROM desktop_lines'), lines, 'and one Desktop line per result');
-  const gaps = [...analyses.values()].reduce((s, a) => s + a.gaps.length, 0);
-  assert.equal(n('SELECT COUNT(*) AS n FROM expected_taxes WHERE gap = 1'), gaps, 'gaps come straight out of expected_taxes');
-  assert.ok(n("SELECT COUNT(*) AS n FROM decisions WHERE decided_by = 'rule'") > 0);
-  assert.equal(n('SELECT COUNT(*) AS n FROM migrations'), companies.companies.length);
-  assert.equal(n('SELECT COUNT(*) AS n FROM model_runs'), Object.keys(catalog.states).length);
-  assert.equal(n('SELECT COUNT(*) AS n FROM audit_log'), 1);
+  assert.equal(n('SELECT COUNT(*) AS n FROM line_results'), 313, 'one result per Desktop line');
+  assert.equal(n('SELECT COUNT(*) AS n FROM expected_taxes WHERE gap = 1'), a.gaps.length, 'gaps come straight out of expected_taxes');
+  // 313 of 318 items settled by rule: Desktop lines plus taxes nobody withheld.
+  assert.equal(n("SELECT COUNT(*) AS n FROM line_results WHERE decided_by = 'rule'") + a.gaps.length, automationStats(a, decided).auto);
+  assert.equal(automationStats(a, decided).auto, 313);
+  assert.deepStrictEqual(all(db, 'SELECT who FROM decision_log ORDER BY log_id').map((r) => r.who), ['Employer', 'Automation'], 'oldest first');
   assert.deepStrictEqual(all(db, 'PRAGMA foreign_key_check'), []);
-  // Fairfield: 16 of 18 items settled by rule (Desktop lines plus added gaps).
-  const fhs = all(db, "SELECT COUNT(*) AS n FROM line_results WHERE company_id = 'C-FHS' AND decided_by = 'rule'")[0].n
-    + all(db, "SELECT COUNT(*) AS n FROM decisions WHERE company_id = 'C-FHS' AND item_id IS NULL AND decided_by = 'rule'")[0].n;
-  assert.equal(fhs, automationStats(analyses.get('C-FHS'), decided.get('C-FHS')).auto);
+  // Writing again replaces the results; it does not add to them.
+  writeResults(db, resultRows({ analysis: a, decisions: decided, log }));
+  assert.equal(n('SELECT COUNT(*) AS n FROM line_results'), 313);
 });
 
 test('the CSV template uploads cleanly and runs through the engine', () => {
@@ -155,9 +155,8 @@ test('the CSV template uploads cleanly and runs through the engine', () => {
   assert.deepStrictEqual(addresses, []); // every template address is in the demo lookup
   assert.equal(company.employees.length, 3);
   assert.equal(company.items.length, 2);
-  const db = createDatabase(SQL, files, [{ company, addresses }]);
-  const back = readData(db);
-  const up = back.companies.find((c) => c.company_id === 'U-1');
+  const back = readData(dbFor(company, addresses), ref);
+  const up = back.companies[0];
   assert.deepStrictEqual(up, company);
   const a = analyseCompany(up, back);
   assert.equal(a.cases.length, 6);
@@ -176,9 +175,9 @@ test('an address the lookup has never seen goes to an expert, and a broken file 
   const r = companyFromCsv(ok, geocoder, 'U-2');
   assert.deepStrictEqual(r.problems, []);
   assert.equal(r.addresses.length, 1);
-  const db = createDatabase(SQL, files, [{ company: r.company, addresses: r.addresses }]);
-  const back = readData(db);
-  const a = analyseCompany(back.companies.find((c) => c.company_id === 'U-2'), back);
+  const back = readData(dbFor(r.company, r.addresses), ref);
+  assert.equal(back.geocoder.addresses.at(-1).school_district, 'UNRESOLVED', 'kept, and the lookup cannot place it');
+  const a = analyseCompany(back.companies[0], back);
   assert.equal(a.cases[0].route, 'not_in_database');
   assert.equal(a.cases[0].reason, 'address_unresolved');
 
@@ -192,13 +191,4 @@ test('an address the lookup has never seen goes to an expert, and a broken file 
 
 test('the CSV reader handles quotes, commas and line endings', () => {
   assert.deepStrictEqual(parseCsv('a,b\r\n"x, y","say ""hi"""\n\n'), [['a', 'b'], ['x, y', 'say "hi"']]);
-});
-
-test('a company inserted later is read back like the rest', () => {
-  const db = createDatabase(SQL, files);
-  const c = structuredClone(companies.companies[1]);
-  c.company_id = 'COPY';
-  insertCompany(db, c, 'upload', 50);
-  assert.deepStrictEqual(readData(db).companies.find((x) => x.company_id === 'COPY'), c);
-  assert.ok(effectiveAll(analyseCompany(c, { catalog, geocoder, pools: pool.pools }), emptyDecisions()).length > 0);
 });

@@ -8,7 +8,7 @@ export function buildReport(analysis, decisions, audit) {
   const ready = readiness(analysis, decisions);
   return {
     generated_at: new Date().toISOString(),
-    prototype: 'BRD v3 local-tax migration prototype (academic demo; fictional people and companies)',
+    prototype: 'Local tax migration prototype (academic demo; fictional people and companies)',
     model_version: MODEL_VERSION,
     company: { id: analysis.company.company_id, name: analysis.company.name, plan: analysis.company.plan },
     data_issues: (analysis.dataIssues ?? []).map((i) => i.text),
