@@ -1,16 +1,16 @@
 // Browser app for the local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=a0f951c7f9';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=a0f951c7f9';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=a0f951c7f9';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=a0f951c7f9';
-import { buildReport, casesCSV } from './report.mjs?v=a0f951c7f9';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=a0f951c7f9';
-import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=a0f951c7f9';
-import { generateBusinesses, SEED } from './generate.mjs?v=a0f951c7f9';
-import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=a0f951c7f9';
-import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=a0f951c7f9';
-import { createChat } from './chat.mjs?v=a0f951c7f9';
-import { runLab, KEY_NAMES } from './mllab.mjs?v=a0f951c7f9';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=882500390b';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=882500390b';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=882500390b';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=882500390b';
+import { buildReport, casesCSV } from './report.mjs?v=882500390b';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=882500390b';
+import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=882500390b';
+import { generateBusinesses, SEED } from './generate.mjs?v=882500390b';
+import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=882500390b';
+import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=882500390b';
+import { createChat } from './chat.mjs?v=882500390b';
+import { runLab, KEY_NAMES } from './mllab.mjs?v=882500390b';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
@@ -391,7 +391,6 @@ function appbar(view, s) {
         <button class="um-item" type="button" data-action="sign-out">${icon('out')}<span>Sign out</span></button>
       </div>
     </details>`;
-  const ask = `<button class="ask-ai" type="button" data-ask-ai aria-controls="chat-panel" aria-expanded="false">${icon('sparkles')}<span>Ask AI</span><span class="ask-dot" aria-hidden="true"></span></button>`;
   const total = s.cases.length;
   const lines = s.cases.filter((c) => c.stage === 'awaiting_employer').length;
   const gaps = s.awaiting - lines;
@@ -413,7 +412,6 @@ function appbar(view, s) {
       <nav class="tabs${role.tabs.length > 4 ? ' many' : ''}" aria-label="${esc(role.label)} screens">${role.tabs.map(tab).join('')}</nav>
       <div class="top-tools">
         ${company}
-        ${ask}
         ${user}
       </div>
     </div>
@@ -3337,7 +3335,7 @@ async function uploadFile(input) {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=a0f951c7f9`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=882500390b`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };
