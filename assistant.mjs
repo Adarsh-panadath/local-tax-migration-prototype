@@ -6,7 +6,7 @@
 //   - the built-in assistant everywhere else, which composes its answers from the brief with fixed rules.
 // Neither may invent a rate, an address or a rule: the prompt tells Claude to use only the facts, and the
 // built-in assistant has nothing else to use. The employer still confirms every line.
-import { monthSpan } from './engine/util.mjs?v=ed8bd37835';
+import { monthSpan } from './engine/util.mjs?v=48c45cd31a';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const money = (n) => usd.format(Number(n) || 0);
@@ -336,7 +336,7 @@ export const NO_ANSWER = 'I can only answer from the facts of this line. Try one
 
 // ---------- Claude ----------
 
-const RULES = `Rules the prototype uses (Ohio local income taxes):
+export const RULES = `Rules the prototype uses (Ohio local income taxes):
 - A school-district income tax is owed where the person LIVES (home address), month by month. Some places, such as Columbus, have no school-district income tax.
 - A city income tax is owed where the work is DONE: the work site, or the home for someone who works from home.
 - Taxes apply only in the months the person is on the payroll; a move splits the year.
