@@ -5,7 +5,7 @@ All files are in `data/`. Companies, people, street addresses, wages and account
 ## catalog.json: what Online payroll knows
 
 - `states.<ST>`: `name`, `rollout` (`enabled` or `not_yet_enabled`), `taxes[]`, `no_tax_districts[]`, `place_names[]`.
-- Tax: `tax_id`, `type` (`school_district` or `municipal`), `code` (the Ohio district number for school districts), `name`, `place`, `rate` (percent), `base`, `basis` (`home` or `work`), `agency`, `qb_pays_and_files`.
+- Tax: `tax_id`, `law_id` (the tax's unique Law ID; demo numbers), `type` (`school_district` or `municipal`), `code` (the Ohio district number for school districts), `name`, `place`, `rate` (percent), `base`, `basis` (`home` or `work`), `agency`, `qb_pays_and_files`.
 - `no_tax_districts[]`: districts with no school income tax, such as Columbus City Schools (`name`, `place`, `note`).
 - `place_names[]`: removed from labels before clustering, so "Lancaster SD" and "Bremen SD" look alike.
 - `defined_entries[]`: the names a cluster can take: `entry_id`, `kind` (`tax` or `non_tax`), `tax_type` for taxes, `states`, `label`, and `text` (the words the cluster is compared with).
@@ -21,8 +21,8 @@ A home city that differs from the work city gives an optional tax (courtesy with
 - Company: `company_id`, `name`, `plan` (`Core`, `Premium` or `Elite`), `migration_month` (1 to 12; 10 = October), `description` (optional, shown on the analysis page), `worksites[]` (`site_id`, `name`, `address_id`), `items[]`, `employees[]`.
 - Item:
   - `item_id`, `label` (free text);
-  - `law_id` (177 or 0 = employer-created custom item);
-  - `origin` (`custom` or `system`), plus `system_tax_id` for system items;
+  - `law_id`: the Law ID of the tax the item withholds, which maps it straight to a catalog tax; 177 or 0 for an item the employer created, which names no tax;
+  - `origin` (`custom` for Law ID 177 or 0, otherwise `system`);
   - `item_type`, `tracking_type` (`None` means Desktop treats it as an after-tax deduction);
   - `calc` (`{kind: "percent", rate}` or `{kind: "flat_annual", amount}`);
   - `agency`, `agency_account`, `deposit_frequency`.
@@ -117,7 +117,7 @@ One file is one company, with one row per employee per payroll item (an employee
 | `home_address`, `home_city`, `home_state`, `home_zip` | No | Blank means no address on file |
 | `work_site`, `work_address`, `work_state`, `work_zip` | Yes | `work_city` optional |
 | `remote` | No | `yes` if the employee works from home |
-| `item_label`, `law_id`, `item_type`, `tracking_type`, `rate_percent`, `agency` | No | `law_id` defaults to 177 (custom) |
+| `item_label`, `law_id`, `item_type`, `tracking_type`, `rate_percent`, `agency` | No | `law_id` defaults to 177 (custom); any other Law ID must be one the catalog has |
 | `agency_account`, `deposit_frequency` | No | |
 
 Addresses are matched to `geocoder.json` on street line and ZIP. A home address it has never seen is kept as customer data and its lines go to an expert ("address not placed"); a work address it has never seen stops the file. Rows with the same label, type, tracking, rate and agency become one Desktop item. After the format checks, the engine's own file checks and the database's keys run. The file then replaces the demo business until the admin goes back to it. Moves within the year cannot be expressed in the CSV yet.

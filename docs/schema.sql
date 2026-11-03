@@ -41,9 +41,10 @@ CREATE TABLE employees (
   left_month           INTEGER CHECK (left_month BETWEEN 1 AND 12)
 );
 
--- The local taxes Online payroll knows. code: the school-district number, or the city for a city tax.
+-- The local taxes Online payroll knows. law_id: the tax's unique Law ID.
+-- code: the school-district number (it matches addresses.school_district), or the city for a city tax.
 CREATE TABLE taxes (
-  tax_id  TEXT PRIMARY KEY,                          -- OH-SD-2305
+  law_id  INTEGER PRIMARY KEY,
   name    TEXT NOT NULL,
   type    TEXT NOT NULL CHECK (type IN ('school_district', 'municipal', 'earned_income', 'local_services')),
   code    TEXT,
@@ -52,19 +53,20 @@ CREATE TABLE taxes (
 );
 
 -- Payroll items as set up in Desktop, with the label exactly as someone typed it.
--- Law ID 177 or 0: an item the employer created.
+-- law_id: an item QuickBooks already knows carries its tax's Law ID, so it matches taxes.law_id.
+-- An item the employer created carries 177 (or 0), which names no tax: those are the lines the engine
+-- works out from the address and the label. That is why law_id here is not a foreign key.
 CREATE TABLE payroll_items (
   item_id            TEXT PRIMARY KEY,
   label              TEXT,
-  law_id             INTEGER,
+  law_id             INTEGER NOT NULL,
   item_type          TEXT,
   tracking_type      TEXT,                           -- None: Desktop treats it as an after-tax deduction
   rate_percent       REAL CHECK (rate_percent BETWEEN 0 AND 100),
   annual_amount      REAL CHECK (annual_amount >= 0),
   agency             TEXT,
   agency_account     TEXT,
-  deposit_frequency  TEXT,
-  system_tax_id      TEXT REFERENCES taxes (tax_id)  -- for an item Desktop already knows as a tax
+  deposit_frequency  TEXT
 );
 
 -- One row per employee per payroll item: a Desktop local tax line.
@@ -74,12 +76,12 @@ CREATE TABLE desktop_lines (
   PRIMARY KEY (employee_id, item_id)
 );
 
--- Where each Desktop line went: the route, the tax it becomes in Online payroll, and who decided.
+-- Where each Desktop line went: the route, the Law ID of the tax it becomes in Online payroll, and who decided.
 CREATE TABLE results (
   employee_id  TEXT NOT NULL,
   item_id      TEXT NOT NULL,
   route        TEXT NOT NULL CONSTRAINT route_value CHECK (route IN ('local_tax', 'not_a_tax', 'not_in_database', 'custom_entry', 'stop')),
-  tax_id       TEXT REFERENCES taxes (tax_id),       -- the Online payroll tax from the first Online payroll
+  law_id       INTEGER REFERENCES taxes (law_id),    -- the Online payroll tax from the first Online payroll
   status       TEXT NOT NULL CHECK (status IN ('awaiting_employer', 'with_expert', 'confirmed', 'moved_to_deduction', 'employer_managed', 'stopped')),
   reason       TEXT,                                 -- why it needs a person: weak_signal, no_address ...
   decided_by   TEXT CHECK (decided_by IN ('rule', 'employer', 'expert')),

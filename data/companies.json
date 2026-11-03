@@ -20,7 +20,7 @@
       "items": [
         { "item_id": "I-SCHOOL", "label": "School Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "XYZ Agency", "agency_account": "SD-48120-77", "deposit_frequency": "Monthly" },
         { "item_id": "I-SDWH", "label": "SD WH", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-48120-77", "deposit_frequency": "Monthly" },
-        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-220917", "deposit_frequency": "Monthly" },
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-220917", "deposit_frequency": "Monthly" },
         { "item_id": "I-DUES", "label": "Union Dues", "law_id": 0, "origin": "custom", "item_type": "Deduction", "tracking_type": "None", "calc": { "kind": "percent", "rate": 1.0 }, "agency": "Local 412", "agency_account": null, "deposit_frequency": null },
         { "item_id": "I-GARN", "label": "Wage Garnishment", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 5.0 }, "agency": "Fairfield County Court", "agency_account": null, "deposit_frequency": null },
         { "item_id": "I-LOCAL", "label": "Local Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "XYZ Agency", "agency_account": null, "deposit_frequency": null }
@@ -46,7 +46,7 @@
       "items": [
         { "item_id": "I-OHSD", "label": "OH School Dist", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-55102-14", "deposit_frequency": "Quarterly" },
         { "item_id": "I-OHSD2", "label": "School District Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.0 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-55102-14", "deposit_frequency": "Quarterly" },
-        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": null, "deposit_frequency": null }
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": null, "deposit_frequency": null }
       ],
       "employees": [
         { "employee_id": "E01", "name": "Dana Whitfield", "site_id": "S1", "monthly_wages": 6200, "addresses": [{ "address_id": "H-013", "from_month": 1 }], "items": ["I-OHSD", "I-LANC"] },
@@ -63,7 +63,7 @@
       "worksites": [{ "site_id": "S1", "name": "Lancaster depot", "address_id": "W-LAN-1" }, { "site_id": "S2", "name": "York terminal", "address_id": "W-YRK-1" }],
       "items": [
         { "item_id": "I-SCHL", "label": "Schl Dist W/H", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.75 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-61877-02", "deposit_frequency": "Monthly" },
-        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-301144", "deposit_frequency": "Monthly" },
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-301144", "deposit_frequency": "Monthly" },
         { "item_id": "I-EIT", "label": "PA Local EIT", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.0 }, "agency": "York Adams Tax Bureau", "agency_account": "YATB-9921", "deposit_frequency": "Quarterly" },
         { "item_id": "I-LST", "label": "LST", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "flat_annual", "amount": 52 }, "agency": "York Adams Tax Bureau", "agency_account": "YATB-9921", "deposit_frequency": "Quarterly" }
       ],
@@ -83,7 +83,7 @@
       "items": [
         { "item_id": "I-SCHOOL", "label": "School Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70214-55", "deposit_frequency": "Monthly" },
         { "item_id": "I-SCHOOL2", "label": "School Dist Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70214-55", "deposit_frequency": "Monthly" },
-        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-418806", "deposit_frequency": "Monthly" },
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-418806", "deposit_frequency": "Monthly" },
         { "item_id": "I-PICK", "label": "Pickerington SD", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70214-55", "deposit_frequency": "Monthly" },
         { "item_id": "I-COLS", "label": "Columbus City Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.5 }, "agency": "City of Columbus", "agency_account": "COL-552019", "deposit_frequency": "Quarterly" },
         { "item_id": "I-SDDED", "label": "SD Tax", "law_id": 0, "origin": "custom", "item_type": "Deduction", "tracking_type": "None", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": null, "deposit_frequency": null },
@@ -118,7 +118,7 @@
       "worksites": [{ "site_id": "S1", "name": "Lancaster bakery", "address_id": "W-LAN-2" }],
       "items": [
         { "item_id": "I-SCHOOL", "label": "School Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-90311-08", "deposit_frequency": "Quarterly" },
-        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-660245", "deposit_frequency": "Quarterly" }
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-660245", "deposit_frequency": "Quarterly" }
       ],
       "employees": [
         { "employee_id": "E01", "name": "Sofia Reyes", "site_id": "S1", "monthly_wages": 3600, "addresses": [{ "address_id": "H-006", "from_month": 1 }], "items": ["I-SCHOOL", "I-LANC"] },
@@ -136,7 +136,7 @@
         { "item_id": "I-SCH", "label": "School Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70415-33", "deposit_frequency": "Monthly" },
         { "item_id": "I-BLANK", "label": "   ", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 1.5 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70415-33", "deposit_frequency": "Monthly" },
         { "item_id": "I-ZERO", "label": "School District Tax", "law_id": 177, "origin": "custom", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 0 }, "agency": "Ohio Dept of Taxation", "agency_account": "SD-70415-33", "deposit_frequency": "Monthly" },
-        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "system_tax_id": "OH-CITY-LANCASTER", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-415502", "deposit_frequency": "Monthly" }
+        { "item_id": "I-LANC", "label": "Lancaster City Tax", "law_id": 4120, "origin": "system", "item_type": "Other Tax", "tracking_type": "Local Income Tax", "calc": { "kind": "percent", "rate": 2.3 }, "agency": "City of Lancaster", "agency_account": "LAN-415502", "deposit_frequency": "Monthly" }
       ],
       "employees": [
         { "employee_id": "E01", "name": "Leah Turner", "site_id": "S1", "monthly_wages": 3600, "addresses": [{ "address_id": "H-001", "from_month": 1 }], "items": ["I-BLANK", "I-LANC"] },

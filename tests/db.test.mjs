@@ -139,14 +139,18 @@ test('the results table holds where every line went, and obeys the keys', () => 
   writeResults(db, resultRows({ analysis: a, decisions: decided }));
   const n = (sql) => all(db, sql)[0].n;
   assert.equal(n('SELECT COUNT(*) AS n FROM results'), 313, 'one result per Desktop line');
-  assert.equal(n("SELECT COUNT(*) AS n FROM results WHERE route = 'local_tax'"), n('SELECT COUNT(*) AS n FROM results WHERE tax_id IS NOT NULL'), 'every local tax line names its Online tax');
+  assert.equal(n("SELECT COUNT(*) AS n FROM results WHERE route = 'local_tax'"), n('SELECT COUNT(*) AS n FROM results WHERE law_id IS NOT NULL'), 'every local tax line names its Online tax by Law ID');
+  // The Law ID story: custom items (177) end up on a real Law ID; system items keep their own.
+  const moved = all(db, "SELECT p.law_id AS desktop, r.law_id AS online FROM results r JOIN payroll_items p ON p.item_id = r.item_id WHERE r.route = 'local_tax'");
+  assert.ok(moved.some((x) => x.desktop === 177 && x.online !== 177), 'a custom item gets a real Law ID');
+  assert.ok(moved.filter((x) => x.desktop !== 177 && x.desktop !== 0).every((x) => x.desktop === x.online), 'a system item keeps its Law ID');
   // 313 of 318 items settled by rule: Desktop lines plus taxes nobody withheld.
   assert.equal(n("SELECT COUNT(*) AS n FROM results WHERE decided_by = 'rule'") + a.gaps.length, automationStats(a, decided).auto);
   assert.equal(automationStats(a, decided).auto, 313);
   // A mover's line names the tax at the new address, the one that goes live in October.
   const mover = buckeye.employees.find((e) => e.addresses.length === 2 && e.addresses[1].from_month <= 10 && e.items.length);
-  const live = all(db, "SELECT r.tax_id, a.school_district FROM results r JOIN employees e ON e.employee_id = r.employee_id JOIN addresses a ON a.address_id = e.new_home_address_id JOIN taxes t ON t.tax_id = r.tax_id WHERE r.employee_id = ? AND t.type = 'school_district'", [mover.employee_id]);
-  assert.ok(live.every((r) => r.tax_id.endsWith(r.school_district)), JSON.stringify(live));
+  const live = all(db, "SELECT t.code, a.school_district FROM results r JOIN employees e ON e.employee_id = r.employee_id JOIN addresses a ON a.address_id = e.new_home_address_id JOIN taxes t ON t.law_id = r.law_id WHERE r.employee_id = ? AND t.type = 'school_district'", [mover.employee_id]);
+  assert.ok(live.length && live.every((r) => r.code === r.school_district), JSON.stringify(live));
   assert.deepStrictEqual(all(db, 'PRAGMA foreign_key_check'), []);
   // Writing again replaces the results; it does not add to them.
   writeResults(db, resultRows({ analysis: a, decisions: decided }));
@@ -192,6 +196,21 @@ test('an address the lookup has never seen goes to an expert, and a broken file 
   assert.match(companyFromCsv(ok.replace(',3000,', ',lots,'), geocoder, 'U-5').problems.join(' '), /monthly_wages must be a number/);
   assert.match(companyFromCsv(ok.replace(',Premium,', ',Gold,'), geocoder, 'U-6').problems.join(' '), /plan must be Core, Premium or Elite/);
   assert.equal(companyFromCsv(ok.replace(',Premium,', ',elite,'), geocoder, 'U-7').company.plan, 'Elite');
+});
+
+test('a Law ID names the tax: a known one maps directly, an unknown one stops the file', () => {
+  const head = 'company_name,plan,migration_month,employee_id,employee_name,monthly_wages,home_address,home_city,home_state,home_zip,work_site,work_address,work_city,work_state,work_zip,item_label,law_id,item_type,tracking_type,rate_percent,agency';
+  const row = (law) => `${head}\nNew Co,Premium,10,N1,Ann Lee,3000,${geocoder.addresses.find((a) => a.address_id === 'H-001').line1},Lancaster,OH,43130,Store,1200 Mill Park Dr,Lancaster,OH,43130,Columbus City Tax,${law},Other Tax,Local Income Tax,2.5,City of Columbus\n`;
+  // 4120 is Lancaster's city tax: the item maps by its Law ID, whatever its label says.
+  const known = companyFromCsv(row(4120), geocoder, 'U-L1');
+  assert.deepStrictEqual(known.problems, []);
+  const a = analyseCompany(known.company, files);
+  assert.equal(a.cases[0].route, 'local_tax');
+  assert.equal(a.cases[0].proposal[0].tax.law_id, 4120);
+  assert.match(a.cases[0].evidence.find((e) => e.step === 3).text, /Law ID 4120 identifies the tax/);
+  // A Law ID no tax has: the engine stops and says so.
+  const unknown = companyFromCsv(row(9999), geocoder, 'U-L2');
+  assert.throws(() => analyseCompany(unknown.company, files), (err) => err.issues.some((x) => /Law ID 9999/.test(x.text)));
 });
 
 test('the CSV reader handles quotes, commas and line endings', () => {

@@ -198,8 +198,8 @@ export const SCENARIOS = [
   {
     id: 'state-system', group: 'state', title: 'A system-defined item already carries its state',
     where: { company: 'C-FHS', employee: 'E01', view: 'review' },
-    expect: 'Lancaster City Tax (Law ID 4120) is Intuit-defined, so no guessing is needed.',
-    check: (x) => { const c = x.find('C-FHS', 'John Carter', 'Lancaster City Tax'); return ok(/Desktop tax item/.test(c.evidence[0].text) && c.route === 'local_tax', c.evidence[0].text); },
+    expect: 'Lancaster City Tax carries Law ID 4120, which names the tax, so no guessing is needed.',
+    check: (x) => { const c = x.find('C-FHS', 'John Carter', 'Lancaster City Tax'); return ok(/Law ID 4120/.test(c.evidence[0].text) && c.route === 'local_tax' && c.proposal[0]?.tax.law_id === 4120, c.evidence[0].text); },
   },
   {
     id: 'state-conflict', group: 'state', title: 'The label names a state the employee has no address in',

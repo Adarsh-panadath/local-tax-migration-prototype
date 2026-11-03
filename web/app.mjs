@@ -849,7 +849,7 @@ function viewAnalysis(s) {
   const confirmed = s.cases.filter((c) => !['awaiting_employer', 'with_expert'].includes(c.stage)).length;
   const items = a.company.items.map((i) => {
     const users = a.company.employees.filter((e) => e.items.includes(i.item_id)).length;
-    return `<tr><td><strong>${esc(labelOf(i.label))}</strong></td><td>${i.law_id}</td><td>${i.origin === 'custom' ? 'Custom' : 'System-defined'}</td><td>${esc(i.item_type)}, ${esc(i.tracking_type)}</td><td>${esc(rateText(i))}</td><td>${esc(i.agency)}</td><td class="num">${users}</td></tr>`;
+    return `<tr><td><strong>${esc(labelOf(i.label))}</strong></td><td>${i.law_id}</td><td>${i.origin === 'custom' ? '<span class="muted">Custom: names no tax</span>' : esc(a.idx.taxByLaw.get(i.law_id)?.name ?? 'Unknown Law ID')}</td><td>${esc(i.item_type)}, ${esc(i.tracking_type)}</td><td>${esc(rateText(i))}</td><td>${esc(i.agency)}</td><td class="num">${users}</td></tr>`;
   }).join('');
   const PEOPLE_SHOWN = 10;
   const people = a.employees.slice(0, more.people ? undefined : PEOPLE_SHOWN).map((e) => {
@@ -884,8 +884,8 @@ function viewAnalysis(s) {
       <ul class="marks">${a.dataIssues.map((i) => `<li>${mark('warn')}<span>${esc(i.text)}</span></li>`).join('')}</ul>
     </section>` : ''}
     <section class="section" aria-labelledby="items-h">
-      <div class="section-head"><h2 id="items-h">Desktop payroll items</h2><p>Law ID 177 or 0: created by the employer.</p></div>
-      <div class="table-wrap"><table><thead><tr><th>Item label</th><th>Law ID</th><th>Kind</th><th>Desktop setting</th><th>Rate</th><th>Agency on file</th><th class="num">Employees</th></tr></thead><tbody>${items}</tbody></table></div>
+      <div class="section-head"><h2 id="items-h">Desktop payroll items</h2><p>A Law ID names the tax. 177 or 0: created by the employer, so the address decides.</p></div>
+      <div class="table-wrap"><table><thead><tr><th>Item label</th><th>Law ID</th><th>Tax by Law ID</th><th>Desktop setting</th><th>Rate</th><th>Agency on file</th><th class="num">Employees</th></tr></thead><tbody>${items}</tbody></table></div>
     </section>
     <section class="section" aria-labelledby="people-h">
       <div class="section-head"><h2 id="people-h">Employees and their expected taxes</h2></div>
@@ -1223,13 +1223,13 @@ function targetLabel(c) {
 
 function caseFlow(c) {
   const item = c.item;
-  const from = flowSide('from', 'Desktop payroll', esc(labelOf(item.label)), esc(`Law ID ${item.law_id} · ${item.origin === 'custom' ? 'custom item' : 'system item'} · ${deskRate(item)}`));
+  const from = flowSide('from', 'Desktop payroll', esc(labelOf(item.label)), esc(`Law ID ${item.law_id} · ${item.origin === 'custom' ? 'custom item, names no tax' : 'system item'} · ${deskRate(item)}`));
   const label = targetLabel(c);
   let to;
   if (c.route === 'local_tax') {
     const title = c.proposal.map((p) => `${esc(p.tax.name)}${c.proposal.length > 1 ? ` <span class="flow-when">${esc(monthSpan(p.months))}</span>` : ''}`).join('<br>');
     const p = c.proposal[0];
-    const meta = c.proposal.length > 1 ? 'Split by the move' : `${p.tax.type === 'school_district' ? `SD ${p.tax.code} · ` : ''}${rateFmt(p.tax.rate)} · ${basisText(p.basis)}`;
+    const meta = c.proposal.length > 1 ? `Law ID ${c.proposal.map((x) => x.tax.law_id).join(' then ')} · split by the move` : `Law ID ${p.tax.law_id} · ${rateFmt(p.tax.rate)} · ${basisText(p.basis)}`;
     to = flowSide('to', label, title, esc(meta), c.verified || c.stage === 'confirmed' ? 'good' : 'warn');
   } else if (c.route === 'not_a_tax') to = flowSide('to', label, 'Non-tax deduction', 'Moves to deductions; never filed as a tax', 'neutral');
   else if (c.route === 'custom_entry') to = flowSide('to', label, esc(c.entry.name), esc(`Custom entry · employer-managed · ${c.entry.flat ? `${money(c.entry.flat)} a year` : `${c.entry.rate}%`}`), 'blue');
@@ -1301,7 +1301,8 @@ function caseMapping(c, s) {
     const fromExpert = c.proposal.some((p) => p.fromExpert);
     rows.push(['Tax item', srcItem, target((p) => `${p.tax.name}${p.tax.type === 'school_district' ? ` · SD ${p.tax.code}` : ''}${c.proposal.length > 1 ? ` · ${monthSpan(p.months)}` : ''}`),
       fromExpert ? note('blue', 'user', 'Mapped by an expert') : custom ? note('good', 'check', `Model suggested: ${(c.model?.entry_label ?? 'a defined tax').toLowerCase()}`) : note('good', 'check', 'Intuit-defined item')]);
-    rows.push(['Jurisdiction', custom ? none('Not recorded in Desktop') : src(s.a.idx.taxes.get(item.system_tax_id)?.name ?? item.system_tax_id), target((p) => `${p.tax.place} · ${basisText(p.basis)}`), note('good', 'pin', 'From the address lookup')]);
+    rows.push(['Law ID', src(`${item.law_id}${custom ? ' (custom)' : ''}`), target((p) => String(p.tax.law_id)), custom ? note('good', 'pin', 'Found from the address') : note('good', 'check', 'Same Law ID: mapped directly')]);
+    rows.push(['Jurisdiction', custom ? none('Not recorded in Desktop') : src(s.a.idx.taxByLaw.get(item.law_id)?.name ?? `Law ID ${item.law_id}`), target((p) => `${p.tax.place} · ${basisText(p.basis)}`), note('good', 'pin', 'From the address lookup')]);
     const sameAgency = c.proposal.every((p) => String(p.tax.agency).toLowerCase() === String(item.agency ?? '').toLowerCase());
     rows.push(['Agency', item.agency ? src(item.agency) : none('None on file'), target((p) => p.tax.agency), sameAgency ? note('good', 'check', 'Same agency') : note('', 'info', 'Replaced by the official agency')]);
     rows.push(['Rate', src(deskRate(item)), target((p) => `${rateFmt(p.tax.rate)}${p.tax.base ? ` ${p.tax.base.toLowerCase()}` : ''}`, (p) => (p.rate.status === 'over' || p.rate.status === 'under' ? 'warn' : '')), stack(c.proposal.map((p) => {
@@ -1343,7 +1344,8 @@ function caseMapping(c, s) {
   const other = c.duplicateOf ? s.cases.find((x) => x.case_id === c.duplicateOf) : null;
   rows.push(['Tax item', srcItem, none('No target yet'), note(REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn', 'alert', REASON_SHORT[c.reason] ?? 'Needs an expert')]);
   if (other) rows.push(['Already withheld by', none('This line'), tgt(`"${labelOf(other.item.label)}"`, 'warn'), note('bad', 'alert', 'Keeping both would withhold twice')]);
-  rows.push(['Desktop setting', src(`${item.item_type}, ${item.tracking_type}`), none('An expert decides'), note('', 'info', `Law ID ${item.law_id}${custom ? ', custom item' : ''}`)]);
+  rows.push(['Law ID', src(`${item.law_id}${custom ? ' (custom)' : ''}`), none('An expert decides'), note('', 'info', custom ? 'Names no tax' : 'Tax not expected here')]);
+  rows.push(['Desktop setting', src(`${item.item_type}, ${item.tracking_type}`), none('An expert decides'), note('', 'info', 'From Desktop')]);
   if (c.model) rows.push(['Model suggestion', none('Label only'), c.model.entry_label ? tgt(c.model.entry_label, 'blue') : none('No defined entry'), note(c.model.shown ? 'blue' : '', 'spark', `A suggestion only, ${c.model.confidence} confidence${c.model.shown ? '' : ' (hidden from the employer)'}`)]);
   rows.push(['Rate', src(rateText(item)), none('After the decision'), note('', 'info', 'Checked once a tax is chosen')]);
   rows.push(ytdRow(['<span class="none">Not migrated yet</span>', note('warn', 'alert', 'Stays off until decided')]));
@@ -1802,11 +1804,11 @@ function viewAudit(s) {
 
 const EXAMPLES = [
   ['Lines by route', 'SELECT route, COUNT(*) AS lines\nFROM results\nGROUP BY route\nORDER BY lines DESC'],
+  ['Items by Law ID', 'SELECT p.label, p.law_id, t.name AS tax_by_law_id, COUNT(l.employee_id) AS employees\nFROM payroll_items p\nLEFT JOIN taxes t ON t.law_id = p.law_id\nLEFT JOIN desktop_lines l ON l.item_id = p.item_id\nGROUP BY p.item_id\nORDER BY employees DESC'],
+  ['Law ID before and after', 'SELECT e.name AS employee, p.label AS desktop_item, p.law_id AS desktop_law_id, r.law_id AS online_law_id, t.name AS online_tax, r.decided_by\nFROM desktop_lines l\nJOIN employees e ON e.employee_id = l.employee_id\nJOIN payroll_items p ON p.item_id = l.item_id\nJOIN results r ON r.employee_id = l.employee_id AND r.item_id = l.item_id\nLEFT JOIN taxes t ON t.law_id = r.law_id\nLIMIT 50'],
+  ['The address picks the tax', 'SELECT a.street, a.city, a.school_district, t.law_id, t.name AS school_tax, t.rate\nFROM addresses a\nJOIN taxes t ON t.code = a.school_district\nLIMIT 50'],
   ['Who decided', 'SELECT COALESCE(decided_by, \'nobody yet\') AS decided_by, COUNT(*) AS lines\nFROM results\nGROUP BY 1\nORDER BY lines DESC'],
-  ['Desktop label to Online tax', 'SELECT e.name AS employee, p.label AS desktop_item, a.school_district, t.name AS online_tax, r.decided_by\nFROM desktop_lines l\nJOIN employees e ON e.employee_id = l.employee_id\nJOIN payroll_items p ON p.item_id = l.item_id\nLEFT JOIN addresses a ON a.address_id = e.home_address_id\nJOIN results r ON r.employee_id = l.employee_id AND r.item_id = l.item_id\nLEFT JOIN taxes t ON t.tax_id = r.tax_id\nLIMIT 50'],
-  ['The address picks the tax', 'SELECT a.street, a.city, a.school_district, t.name AS school_tax, t.rate\nFROM addresses a\nJOIN taxes t ON t.code = a.school_district\nLIMIT 50'],
   ['Open lines by reason', 'SELECT reason, COUNT(*) AS lines\nFROM results\nWHERE status = \'with_expert\'\nGROUP BY reason\nORDER BY lines DESC'],
-  ['Desktop items', 'SELECT p.label, p.law_id, COUNT(l.employee_id) AS employees\nFROM payroll_items p\nLEFT JOIN desktop_lines l ON l.item_id = p.item_id\nGROUP BY p.item_id\nORDER BY employees DESC'],
   ['Who moved', 'SELECT name, moved_month, home_address_id, new_home_address_id\nFROM employees\nWHERE new_home_address_id IS NOT NULL'],
   ['No home address', 'SELECT employee_id, name\nFROM employees\nWHERE home_address_id IS NULL'],
 ];
@@ -1843,7 +1845,7 @@ function schemaCard(groups) {
       </div>
       <label class="sr-only" for="schema-box">schema.sql</label><textarea class="copy-box" id="schema-box" readonly hidden></textarea>
     </div>
-    ${fold('layers', 'Diagram of the tables', '<img class="erd" src="./schema-diagram.svg" alt="Entity-relationship diagram of the seven tables: company, employees, addresses, payroll items, Desktop lines, taxes and results, with their keys." loading="lazy" width="949" height="1011">')}
+    ${fold('layers', 'Diagram of the tables', '<img class="erd" src="./schema-diagram.svg" alt="Entity-relationship diagram of the seven tables: company, employees, addresses, payroll items, Desktop lines, taxes (keyed by Law ID) and results, with their keys." loading="lazy" width="1188" height="1011">')}
   </section>`;
 }
 

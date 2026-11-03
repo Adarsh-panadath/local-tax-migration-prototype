@@ -40,6 +40,7 @@ The sign-in is a demo: in a real product customers would use their Intuit accoun
 Desktop payroll file
   │
   ├─ 0. Check the file ............ stop on broken data; clean up and report smaller problems
+  ├─ Law ID of a known tax ........ maps straight to that tax (Law ID 177 or 0 = employer-created: carry on below)
   ├─ 1. Find the state ............ from the item label, else the home address, else the work address
   ├─ 2. List expected taxes ....... home address → school district, work address → city
   ├─ 3. Cluster custom labels ..... per state; name each cluster after the closest defined entry
@@ -66,7 +67,7 @@ The data lives in a **SQLite database inside the page** (sql.js, compiled to Web
 | From Intuit's lookup | `addresses`, `taxes` | Which school district and city each address is in; the exact taxes and rates |
 | Our result | `results` | Where each Desktop line went, the Online tax, and who decided |
 
-The story in one line: a **Desktop line** (employee × item) → the employee's **address** gives the school district → that matches a **tax** → the engine writes the **result**.
+**Law ID** is each tax's unique identifier and the key of `taxes`. A Desktop item QuickBooks already knows carries its tax's Law ID and maps straight to it; an item the employer created carries 177 (or 0), which names no tax. The story in one line: a **Desktop line** with Law ID 177 → the employee's **address** gives the school district → that matches a **tax** and its Law ID (5305) → the engine writes the **result**. (Law ID numbers in the demo are illustrative.)
 
 ![The seven tables and how they link](web/schema-diagram.svg)
 
@@ -128,7 +129,7 @@ It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, 
    - **Engine**: what each step found for Buckeye: 289 expected taxes, 274 custom lines clustered, 266 local tax, 34 not a tax, 13 to an expert, 5 owed but not withheld.
    - **Model**: Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
-   - **Data**: the schema (7 tables), the five rule checks, **Desktop label to Online tax** and **The address picks the tax**, and **Download the database**.
+   - **Data**: the schema (7 tables), the five rule checks, **Items by Law ID**, **Law ID before and after** and **The address picks the tax**, and **Download the database**.
    - **Scenarios**: 76 of 76 pass.
 
 ## Scenario coverage

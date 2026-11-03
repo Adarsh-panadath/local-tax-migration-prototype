@@ -10,6 +10,10 @@ Each decision below follows the BRD v3 handoff summary. Where the prototype had 
 - **Clean up and report** smaller problems: an address the lookup has never seen (lines that need it go to an expert), an item reference that does not exist (left out), an item listed twice for one person (counted once), a missing item name (treated as blank).
 - Labels are always plain text. A label with code or a spreadsheet formula goes to an expert, and the CSV export puts an apostrophe in front of any cell starting with `=`, `+`, `-` or `@`.
 
+## 0a. The Law ID names the tax
+
+Every tax has a **Law ID**, its unique identifier. A Desktop payroll item that QuickBooks already knows carries its tax's Law ID (Columbus City Tax: 4140), so it maps straight to the tax: no label reading, no clustering. An item the employer created carries **177 or 0**, which names no tax. Those are the hard lines, and everything below (addresses, clustering, experts) exists to turn a 177 into a real Law ID. In the database, `taxes` is keyed by `law_id`, `results.law_id` names the Online tax of every line, and `payroll_items.law_id` matches `taxes` for system items only (so it is not a foreign key). A system item whose Law ID no tax has stops the file. The Law ID numbers in the demo are illustrative, not Intuit's.
+
 ## 1. Addresses first, labels second
 
 A Desktop label like "School Tax" names a type of tax, not a jurisdiction. Online payroll needs the exact jurisdiction. So the prototype starts from each employee's addresses:
