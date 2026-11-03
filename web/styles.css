@@ -1171,3 +1171,55 @@ tr.spotlight { outline-offset: -2px; }
   .tdetail { padding: 14px; }
   .rule-list li { flex-direction: column; gap: 8px; }
 }
+
+/* ---------- Model page: try the clustering ---------- */
+.try-form { display: flex; flex-direction: column; gap: 16px; }
+.try-set { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 12px 16px; align-items: end; }
+.try-set legend { padding: 0; margin-bottom: 10px; font-size: 13px; font-weight: 700; color: var(--ink); }
+.try-emp { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); }
+.try-item { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 0.5fr); }
+.try-go { display: flex; }
+@media (max-width: 860px) {
+  .try-emp, .try-item { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .try-item .try-label { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+  .try-emp, .try-item { grid-template-columns: minmax(0, 1fr); }
+}
+.try-examples { margin-top: 14px; align-items: center; }
+.try-out { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-direction: column; gap: 14px; }
+.try-out:focus { outline: none; }
+.try-out:focus-visible { outline: 2px solid var(--brand); outline-offset: 4px; border-radius: 4px; }
+.try-steps { margin: 0; padding: 0; list-style: none; counter-reset: trystep; display: flex; flex-direction: column; gap: 14px; }
+.try-steps > li { counter-increment: trystep; position: relative; padding-left: 38px; min-width: 0; font-size: 13.5px; color: var(--ink-2); }
+.try-steps > li::before { content: counter(trystep); position: absolute; left: 0; top: 0; width: 26px; height: 26px; border-radius: 50%; background: var(--brand-soft); color: var(--brand-text); font-weight: 700; font-size: 13px; display: grid; place-items: center; }
+.try-steps > li > strong { display: block; color: var(--ink); font-size: 14px; margin: 3px 0 6px; }
+.try-steps p { margin: 0 0 6px; overflow-wrap: anywhere; }
+.try-steps .ic { width: 16px; height: 16px; vertical-align: -3px; color: var(--muted); }
+.tok { display: inline-block; font-family: var(--mono); font-size: 12.5px; background: var(--brand-soft); color: var(--brand-text); border-radius: 6px; padding: 1px 8px; margin: 2px 0; }
+.tok.src { background: var(--sunken); color: var(--ink); font-family: var(--font); }
+.closeness { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-width: 40rem; }
+.closeness li { display: grid; grid-template-columns: minmax(0, 18rem) minmax(4rem, 1fr) 2.6rem; gap: 10px; align-items: center; font-size: 13px; }
+.closeness .cl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.closeness .cl-bar { height: 8px; border-radius: 4px; background: var(--sunken); overflow: hidden; }
+.closeness .cl-bar > span { display: block; height: 100%; background: var(--faint); border-radius: 4px; }
+.closeness li.best .cl-name { font-weight: 700; color: var(--ink); }
+.closeness .cl-name .muted { font-weight: 400; }
+.closeness li.best .cl-bar > span { background: var(--brand); }
+.closeness b { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.try-verdict { border-radius: var(--r-s); border: 1px solid var(--good-line); background: var(--good-soft); padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; color: var(--ink-2); }
+.try-verdict strong { color: var(--good); font-size: 15px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.try-verdict strong .ic { width: 16px; height: 16px; }
+.try-verdict.warn { border-color: var(--warn-line); background: var(--warn-soft); }
+.try-verdict.warn strong { color: var(--warn); }
+.try-verdict.info { border-color: var(--info-line); background: var(--info-soft); }
+.try-verdict.info strong { color: var(--info); }
+.try-added { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.try-added ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.try-added li { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13.5px; }
+.label-chip.try { background: var(--amber); color: var(--amber-ink); font-weight: 600; }
+.label-chip.try b { color: var(--amber-ink); }
+@media (max-width: 520px) {
+  .closeness li { grid-template-columns: minmax(0, 1fr) 2.6rem; row-gap: 4px; }
+  .closeness .cl-name { grid-column: 1 / -1; white-space: normal; }
+}

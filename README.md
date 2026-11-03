@@ -119,6 +119,17 @@ The admin's **ML Lab** answers "does the clustering work beyond 53 labels?" with
 
 It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, the confusion matrix, every wrong answer, and the clusters with their purity. With seed 2026 the model is right on 98.4% of its suggestions and suggests for 78.8% of labels; word matching is right on 98.2% and suggests for 90.8%. The silhouette is 0.462, below the gate, so on a set this messy the state would stay in shadow mode. The screen states these numbers and does not claim a winner: across seeds neither method wins every time. What clustering adds is grouping hundreds of spellings into a few dozen families an expert names once, and a confidence that says when to defer.
 
+## Try the clustering yourself
+
+The admin's **Model** page starts with **Try the clustering**. Make up an employee (where they live, where they work) and the Desktop item on their paycheck (the label as typed, its Law ID, its rate), then click **Run clustering**. The real engine shows every step:
+
+1. **Clean the label**: `Sch Dist Wthld` becomes the words `school district wthld`.
+2. **Compare with every cluster**: a closeness bar for each cluster; the nearest one wins (School-district income tax, 0.41). The label is then shown in amber inside that cluster's card.
+3. **How sure is it?**: the silhouette, (b − a) ÷ the larger of the two, against the 0.25 floor (0.39: confident).
+4. **The address picks the exact tax**: the home address is in school district 2307, so Law ID 177 becomes **Law ID 5307**, Pickerington Local School District.
+
+The example buttons show the other outcomes: the same label for someone living in Bremen becomes 5304 (the label says *what kind* of tax, the address says *which one*); union dues are not a tax; a misspelt `Pickrngtn Schl W/H` is nearest the right cluster but scores 0.24, below the floor, so it goes to an expert; a system item (Law ID 4140) needs no clustering. **Add to Buckeye** makes the person a real employee: the line appears in the owner's To do or the expert's queue, and **Remove** takes them out again.
+
 ## Demo script (about six minutes)
 
 1. **Sign in as the business owner.** **Move**: Get started; the check says 313 of 318 items settle by rule, 3 need an address from the employer and 2 need an expert. Click **Move to Online payroll**.
@@ -127,7 +138,7 @@ It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, 
 4. **Sign in as the owner again.** **Go live**: every check passes; all $255,817.53 withheld in Desktop this year has a destination; the reconcile shows 9 local taxes on Online paychecks and groups the 200 notes by kind (wrong past rates, tax withheld but not owed). The W-2 cards show the local boxes.
 5. **Sign in as the admin**:
    - **Engine**: what each step found for Buckeye: 289 expected taxes, 274 custom lines clustered, 266 local tax, 34 not a tax, 13 to an expert, 5 owed but not withheld.
-   - **Model**: Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
+   - **Model**: **Try the clustering**: run the example labels, then add one person to Buckeye and open their record. Below it, Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
    - **Data**: the schema (7 tables), the five rule checks, **Items by Law ID**, **Law ID before and after** and **The address picks the tax**, and **Download the database**.
    - **Scenarios**: 76 of 76 pass.
@@ -178,7 +189,7 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | Path | What it does |
 | --- | --- |
 | `web/engine/text.mjs` | Label clean-up (abbreviations, place names) and TF-IDF vectors |
-| `web/engine/cluster.mjs` | Average-linkage clustering, silhouette, naming clusters, scoring a new label |
+| `web/engine/cluster.mjs` | Average-linkage clustering, silhouette, naming clusters, scoring and explaining a new label |
 | `web/engine/analysis.mjs` | File checks, expected taxes, rollout gates, routing, rate checks, gaps |
 | `web/engine/workflow.mjs` | Decisions, automation rules, go-live checks, dollar tie-out, W-2, reconciliation |
 | `web/db.mjs` | The database (one per migration): schema, loading, reading the business back with SQL, results, queries, CSV import, added addresses |
@@ -189,6 +200,6 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/report.mjs` | JSON report and CSV export |
 | `web/app.mjs`, `web/styles.css` | The app |
 | `data/` | Catalog, address lookup, the six scenario test files, expert-labelled label pool |
-| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, and scale (generated data, added addresses, ML Lab) |
+| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab) and "Try the clustering" |
 | `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |

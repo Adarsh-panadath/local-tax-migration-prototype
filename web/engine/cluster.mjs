@@ -136,19 +136,26 @@ export function clusterLabels(labels, entries, placeNames, options = {}) {
 /**
  * Score a new label against clusters that were fitted without it (the state model is fitted once,
  * on the expert-labelled pool). The label joins the cluster with the smallest average distance
- * (average linkage), and its own silhouette is (b - a) / max(a, b) against the fitted clusters.
+ * (average linkage), and its own silhouette is (b - a) / max(a, b) against the fitted clusters:
+ * a = average distance to its own cluster, b = to the nearest other cluster.
  * A label with no words left after clean-up joins no cluster.
+ * explainLabel keeps every step so the screen can show the working; assignLabel is the short answer.
  */
-export function assignLabel(fitted, label) {
+export function explainLabel(fitted, label) {
   const tokens = normalize(label, fitted.placeNames);
-  if (!tokens.length || !fitted.clusters.length) return { cluster: -1, silhouette: 0, tokens, empty: !tokens.length };
+  if (!tokens.length || !fitted.clusters.length) return { cluster: -1, silhouette: 0, tokens, empty: !tokens.length, distances: [], a: null, b: null };
   const v = fitted.vectorize(tokens);
-  const means = fitted.clusters.map((c) => c.members.reduce((s, i) => s + (1 - cosine(v, fitted.vectors[i])), 0) / c.members.length);
+  const distances = fitted.clusters.map((c) => c.members.reduce((s, i) => s + (1 - cosine(v, fitted.vectors[i])), 0) / c.members.length);
   let best = 0;
-  means.forEach((m, i) => { if (m < means[best]) best = i; });
-  const a = means[best];
-  const others = means.filter((_, i) => i !== best);
+  distances.forEach((m, i) => { if (m < distances[best]) best = i; });
+  const a = distances[best];
+  const others = distances.filter((_, i) => i !== best);
   const b = others.length ? Math.min(...others) : a;
   const denom = Math.max(a, b);
-  return { cluster: best, silhouette: denom === 0 ? 0 : (b - a) / denom, tokens, empty: false };
+  return { cluster: best, silhouette: denom === 0 ? 0 : (b - a) / denom, tokens, empty: false, distances, a, b };
+}
+
+export function assignLabel(fitted, label) {
+  const x = explainLabel(fitted, label);
+  return { cluster: x.cluster, silhouette: x.silhouette, tokens: x.tokens, empty: x.empty };
 }
