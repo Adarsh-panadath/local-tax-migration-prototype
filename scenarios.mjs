@@ -1,9 +1,9 @@
 // Every scenario the BRD v3 design has to handle, with a live check against the demo data.
 // The website's Scenario coverage page and the automated tests both run this list.
-import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=d39ae3749f';
-import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=d39ae3749f';
-import { monthSpan, rateCheck } from './engine/util.mjs?v=d39ae3749f';
-import { buildReport, casesCSV } from './report.mjs?v=d39ae3749f';
+import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=ed8bd37835';
+import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=ed8bd37835';
+import { monthSpan, rateCheck } from './engine/util.mjs?v=ed8bd37835';
+import { buildReport, casesCSV } from './report.mjs?v=ed8bd37835';
 
 export const GROUPS = [
   { id: 'data', title: 'Before step 1: check the Desktop file' },
