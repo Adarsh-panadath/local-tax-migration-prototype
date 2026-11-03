@@ -88,7 +88,7 @@ A test (`tests/scale.test.mjs`) checks that the generator gives the same busines
 
 ## What the employer adds: addresses, work locations, account numbers
 
-The owner's **To do** asks under **Missing information** for what only the employer knows.
+The owner's **To do** asks, under **Needs you** and inside the record that waits for it, for what only the employer knows.
 
 **A home address**, for a line that needs one (`no_address`, or `address_unresolved` when the lookup cannot place it). Saving it:
 

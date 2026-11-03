@@ -1,4 +1,5 @@
-// Ask AI: the round button at the bottom right of every screen, and the chat window it opens. When it opens
+// Ask AI: the Ask AI button in the app's header (a round button at the bottom right where there is no header),
+// and the chat window it opens. When it opens
 // it first says what matters for this person on this screen (a briefing from context().brief(), instant and
 // built in), and posts a new one as they move to another screen or record. Then they ask questions: the
 // connected model answers (call()), or the built-in assistant does. A dot on the button means there is a
@@ -136,8 +137,21 @@ export function createChat({ situation, context, ai, call, connected, claudeOff,
     if (i >= 0 && (i === msgs.length - 1 || msgs[i].brief.key === c.key)) msgs[i] = m;
     else msgs.push(m);
     seen = c.key;
-    fab.classList.remove('tip');
+    sync();
   }
+
+  // Every Ask AI button (the header's, re-drawn with each screen, and the floating one) shows the same state.
+  const triggers = () => [fab, ...document.querySelectorAll('[data-ask-ai]')];
+  function sync() {
+    const isOpen = !panel.hidden;
+    const tip = !isOpen && situation() !== seen;
+    for (const t of triggers()) {
+      t.setAttribute('aria-expanded', String(isOpen));
+      t.classList.toggle('open', isOpen);
+      t.classList.toggle('tip', tip);
+    }
+  }
+  const opener = () => [...document.querySelectorAll('[data-ask-ai]')].find((t) => t.offsetParent) ?? fab;
 
   const bubble = (m, i) => (m.role === 'user'
     ? `<li class="chat-msg user"><div class="chat-bubble"><p>${esc(m.text)}</p></div></li>`
@@ -322,24 +336,23 @@ export function createChat({ situation, context, ai, call, connected, claudeOff,
   // ---------- events ----------
   function open() {
     panel.hidden = false;
-    fab.classList.add('open');
-    fab.setAttribute('aria-expanded', 'true');
     fab.querySelector('.chat-fab-ic').innerHTML = icon('close');
     fab.querySelector('.chat-fab-text').textContent = 'Close';
     restore();
     if (!busy) brief();
+    sync();
     drawAll();
     input.focus({ preventScroll: true });
   }
   function close() {
     panel.hidden = true;
-    fab.classList.remove('open');
-    fab.setAttribute('aria-expanded', 'false');
     fab.querySelector('.chat-fab-ic').innerHTML = icon('sparkles');
     fab.querySelector('.chat-fab-text').textContent = 'Ask AI';
-    fab.focus({ preventScroll: true });
+    sync();
+    opener().focus({ preventScroll: true });
   }
   fab.addEventListener('click', () => (panel.hidden ? open() : close()));
+  document.addEventListener('click', (e) => { if (e.target.closest('[data-ask-ai]')) { if (panel.hidden) open(); else close(); } });
   panel.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.stopPropagation(); if (!settings.hidden) showSettings(false); else close(); }
   });
@@ -364,7 +377,8 @@ export function createChat({ situation, context, ai, call, connected, claudeOff,
 
   return {
     refresh() {
-      if (panel.hidden) { fab.classList.toggle('tip', situation() !== seen); return; }
+      sync();
+      if (panel.hidden) return;
       drawHead();
       if (settings.hidden && !busy) { brief(); drawLog(); drawSugg(); }
     },

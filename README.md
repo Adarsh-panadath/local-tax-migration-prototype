@@ -10,7 +10,7 @@ A working prototype of the BRD v3 design for moving local payroll taxes from Qui
 
 **Website: https://adarsh-panadath.github.io/local-tax-migration-prototype/**
 
-Sign in with a demo account (no passwords). Progress is saved in your own browser only; **Reset** (two clicks) starts again.
+Sign in with a demo account (no passwords). Progress is saved in your own browser only; **Reset the demo** (in the account menu, top right; two clicks) starts again.
 
 **Product tour.** The front page is a short landing page for a business, with a **Watch the product tour** tile (0:57): a short film for businesses deciding whether to move. It shows the problem, what the product does for them, four real screens (see the result first, a few quick answers, Ask AI, go live) and the results. It plays in a window over the page; Esc or the close button stops it. The film is `web/media/tour.mp4` (1080p), narrated by a male voice, with on-screen captions and a quiet music bed. The voice is Kokoro (`am_michael`), an open-source text-to-speech model (Apache 2.0) run offline, reading the script in `docs/tour-script.md`.
 
@@ -28,7 +28,7 @@ Works on Windows, macOS and Linux. Nothing to install apart from Node.js: no pac
 
 | Sign in as | Their job | Screens |
 | --- | --- | --- |
-| **Business owner** (customer) | Move their own business, give the information only they have, confirm what is theirs | **Move** (start, check, summary), **To do** (with **Missing information**), **Go live** (with reconcile and W-2) |
+| **Business owner** (customer) | Move their own business, give the information only they have, confirm what is theirs | **Move** (start, check, summary), **To do** (one list: what only they can answer, each inside its record, and lines to confirm), **Go live** (with reconcile and W-2) |
 | **Payroll tax expert** (Intuit) | Decide the lines the rules leave, one label at a time | **Queue** |
 | **Admin** (Intuit) | See how the engine read the file, keep the model safe and the data right | **Engine**, **Model** (gates and thresholds), **ML Lab**, **Data**, **Scenarios**, **Log** |
 
@@ -106,9 +106,9 @@ For Buckeye Supply Co., the rules settle **311 of 318 items (98%)**: 313 Desktop
 
 When an unclear label sits on a Desktop item many employees share, the expert decides what it means once, and each employee's address picks the exact tax.
 
-## Missing information
+## What only the employer can answer
 
-Some facts only the employer has, so those lines wait for the employer, not an expert. The owner's To do lists them under **Missing information**, and the move summary has a button next to each:
+Some facts only the employer has, so those lines wait for the employer, not an expert. The owner's **To do** lists them under **Needs you**, and each record opens with its question and form, so the owner answers it right there; the move summary has a button next to each that opens it:
 
 | Kind | Why it is asked | What the owner does |
 | --- | --- | --- |
@@ -131,7 +131,7 @@ It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, 
 
 ## Ask AI
 
-A round **Ask AI** button sits at the bottom right of every screen. It opens **Payroll AI**, a chat window you can **drag anywhere** by its header (double-click the header to put it back), resize from its corner, and that becomes a bottom sheet on a phone. It is the only AI in the app.
+An **Ask AI** button sits in the header of every screen (a round button at the bottom right on the front page). It opens **Payroll AI**, a chat window you can **drag anywhere** by its header (double-click the header to put it back), resize from its corner, and that becomes a bottom sheet on a phone. It is the only AI in the app.
 
 **It speaks first.** When it opens, it gives a short briefing for who you are and what you are looking at, and posts a new one as you move:
 
@@ -172,8 +172,8 @@ The example buttons show the other outcomes: the same label for someone living i
 
 ## Demo script (about six minutes)
 
-1. **Sign in as the business owner.** Open **Ask AI** (bottom right): it already says what this screen is about. **Move**: Get started; the check says 311 of 318 items settle by rule, 6 things need the employer (3 home addresses, where 2 people work, 1 agency account number) and 2 need an expert. Click **Move to Online payroll**.
-2. Open **To do**. Under **Missing information**:
+1. **Sign in as the business owner.** Open **Ask AI** (in the header): it already says what this screen is about. **Move**: Get started; the check says 311 of 318 items settle by rule, 6 things need the employer (3 home addresses, where 2 people work, 1 agency account number) and 2 need an expert. Click **Move to Online payroll**.
+2. Open **To do**. **Needs you** lists six things; each opens with its form, and the next one opens after you answer:
    - Gabriel Bell, Imani Price, Kenji Lewis: **Fill a demo address**, then **Save**: the engine checks the line again and the rules settle it. (Type an address the lookup does not know, and the line stays with an expert.)
    - Tom Sanchez: Desktop withholds Columbus city tax, where he lives, not Lancaster's, where the site is. Answer **At Lancaster main site**: the Lancaster city tax nobody withheld is added, and Columbus becomes optional.
    - Maya Bell, the same question: answer **From home in Columbus**: Columbus city tax is the one owed.
@@ -244,7 +244,7 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |
 | `web/scenarios.mjs` | The 76 scenarios and their live checks |
 | `web/assistant.mjs` | What Ask AI knows about a record: the facts brief, the built-in opinion and answers, and the format a model is asked for |
-| `web/chat.mjs` | Ask AI: the floating, draggable chat window, its briefings and its settings |
+| `web/chat.mjs` | Ask AI: the header button, the draggable chat window, its briefings and its settings |
 | `web/llm.mjs` | Connecting a model with your own key (Gemini, OpenAI-compatible, Anthropic): streaming, model lists, errors |
 | `web/report.mjs` | JSON report and CSV export |
 | `web/media/` | The product tour film and its poster |

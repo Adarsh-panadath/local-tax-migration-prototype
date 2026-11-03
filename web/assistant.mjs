@@ -253,7 +253,7 @@ export function answer(f, question) {
 
   const w = f.engine?.work_question;
   if (w && has(q, /work|home|remote|office|matter|answer|next|happen|why|where/)) {
-    return `Desktop withholds ${w.desktop_withholds}, but not ${w.work_site_tax}. A city tax is owed where the work is done, so it depends on where ${who} works. From home: ${w.if_works_from_home}. At the site: ${w.if_works_at_the_site}. The employer answers under Missing information, and the engine checks the line again.`;
+    return `Desktop withholds ${w.desktop_withholds}, but not ${w.work_site_tax}. A city tax is owed where the work is done, so it depends on where ${who} works. From home: ${w.if_works_from_home}. At the site: ${w.if_works_at_the_site}. The employer answers on To do, and the engine checks the line again.`;
   }
   if (has(q, /india|visa|immigra|citizen|nationalit|foreign|abroad|country|green card|h-?1b/)) {
     return `Here local taxes follow only where ${who} lives and works in Ohio, and the months ${who} is on this payroll (${p.on_this_payroll}); nationality or visa does not change them. Federal and state tax residency for someone new to the US is outside this prototype.`;
