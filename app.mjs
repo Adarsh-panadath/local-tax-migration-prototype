@@ -1,13 +1,13 @@
 // Browser app for the local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=e979bfd711';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=e979bfd711';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_ADDRESS } from './engine/workflow.mjs?v=e979bfd711';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=e979bfd711';
-import { buildReport, casesCSV } from './report.mjs?v=e979bfd711';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=e979bfd711';
-import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=e979bfd711';
-import { generateBusinesses, SEED } from './generate.mjs?v=e979bfd711';
-import { runLab, KEY_NAMES } from './mllab.mjs?v=e979bfd711';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=05fd6e104a';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=05fd6e104a';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_ADDRESS } from './engine/workflow.mjs?v=05fd6e104a';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=05fd6e104a';
+import { buildReport, casesCSV } from './report.mjs?v=05fd6e104a';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=05fd6e104a';
+import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=05fd6e104a';
+import { generateBusinesses, SEED } from './generate.mjs?v=05fd6e104a';
+import { runLab, KEY_NAMES } from './mllab.mjs?v=05fd6e104a';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
@@ -52,11 +52,13 @@ let lookupIdx = null;       // address lookup by street and ZIP, for addresses t
 let outcomesKey = null;     // the state the outcome tables were last written for
 let lab = { seed: SEED, total: 1200, result: null, running: false, error: null };
 const more = {};            // "Show all" toggles for long lists
+// The Model page's "Try the clustering" panel: one made-up employee and Desktop item, run through the real engine.
+let trial = { label: 'Sch Dist Wthld', law: '177', kind: 'tax', town: 'Pickerington', site: '', rate: '1', name: 'Asha Verma', result: null, opened: null };
 
 // ---------- state ----------
 
 function freshState() {
-  return { role: null, companyId: 'G-001', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filters: { review: 'todo', expert: 'open' }, sel: {}, selIndex: {}, query: {}, moveStep: {}, detailOpen: false, corrections: [] };
+  return { role: null, companyId: 'G-001', settings: { forceShadow: {}, thresholds: {} }, decisions: {}, audit: [], filters: { review: 'todo', expert: 'open' }, sel: {}, selIndex: {}, query: {}, moveStep: {}, detailOpen: false, corrections: [], added: [] };
 }
 function loadUploads() {
   try { return JSON.parse(localStorage.getItem(UPLOADS) ?? '[]').slice(-1); } catch { return []; }
@@ -70,7 +72,7 @@ function loadState() {
     if (raw) {
       const saved = JSON.parse(raw);
       const fresh = freshState();
-      return { ...fresh, ...saved, role: ROLES[saved.role] ? saved.role : null, settings: { ...fresh.settings, ...(saved.settings ?? {}) }, filters: { ...fresh.filters, ...(saved.filters ?? {}) }, sel: saved.sel ?? {}, selIndex: saved.selIndex ?? {}, query: saved.query ?? {}, moveStep: saved.moveStep ?? {}, corrections: saved.corrections ?? [] };
+      return { ...fresh, ...saved, role: ROLES[saved.role] ? saved.role : null, settings: { ...fresh.settings, ...(saved.settings ?? {}) }, filters: { ...fresh.filters, ...(saved.filters ?? {}) }, sel: saved.sel ?? {}, selIndex: saved.selIndex ?? {}, query: saved.query ?? {}, moveStep: saved.moveStep ?? {}, corrections: saved.corrections ?? [], added: saved.added ?? [] };
     }
   } catch { /* storage unavailable: start fresh */ }
   return freshState();
@@ -1713,12 +1715,135 @@ function thresholdPanel(s) {
   </section>`;
 }
 
+// ---------- try the clustering (admin, Model page) ----------
+// Type a Desktop label, say where the person lives and works, and run it through the same engine as
+// everything else: the clean-up, the closeness to each cluster, the confidence, and the tax the address picks.
+
+const TRY_EXAMPLES = [
+  { text: 'A new school-tax label', label: 'Sch Dist Wthld', law: '177', kind: 'tax', town: 'Pickerington', rate: '1' },
+  { text: 'Same label, lives in Bremen', label: 'Sch Dist Wthld', law: '177', kind: 'tax', town: 'Bremen', rate: '2' },
+  { text: 'City tax', label: 'City Inc Tax W/H', law: '177', kind: 'tax', town: 'Lancaster', rate: '2.3' },
+  { text: 'Union dues', label: 'Local 9 Union Dues', law: '0', kind: 'deduction', town: 'Ashville', rate: '1' },
+  { text: 'Misspelt label', label: 'Pickrngtn Schl W/H', law: '177', kind: 'tax', town: 'Pickerington', rate: '1' },
+  { text: 'System item', label: 'Columbus City Tax', law: '4140', kind: 'tax', town: 'Pickerington', rate: '2.5', site: 1 },
+];
+const isCustomLaw = (law) => Number(law) === 177 || Number(law) === 0;
+
+// One address the lookup knows for each Ohio town and school district, so the address is real and placeable.
+function homeChoices() {
+  const out = new Map();
+  for (const a of data.geocoder.addresses) {
+    if (a.state !== 'OH' || a.missing || a.school_district === 'UNRESOLVED' || lookupIdx.get(addressKey(a.line1, a.zip)) !== a.address_id) continue;
+    const key = `${a.city}|${a.school_district}`;
+    if (out.has(key)) continue;
+    out.set(key, { address_id: a.address_id, town: a.city, address: a, text: a.city });
+  }
+  return [...out.values()].sort((x, y) => x.text.localeCompare(y.text));
+}
+
+function runTrial() {
+  const co = companyById();
+  const law = Number(trial.law);
+  const homes = homeChoices();
+  const home = homes.find((h) => h.town === trial.town) ?? null;
+  const site = co.worksites.find((w) => w.site_id === trial.site) ?? co.worksites[0];
+  const item = { item_id: 'I-TRY', label: trial.label, law_id: law, origin: isCustomLaw(law) ? 'custom' : 'system', item_type: trial.kind === 'deduction' ? 'Deduction' : 'Other Tax', tracking_type: trial.kind === 'deduction' ? 'None' : 'Local Income Tax', calc: { kind: 'percent', rate: Number(trial.rate) }, agency: '' };
+  const emp = { employee_id: 'TRY', name: trial.name.trim() || 'New employee', site_id: site.site_id, monthly_wages: 4000, addresses: home ? [{ address_id: home.address_id, from_month: 1 }] : [], items: ['I-TRY'] };
+  try {
+    const ta = analyseCompany({ ...co, items: [...co.items, item], employees: [...co.employees, emp] }, data, state.settings);
+    const c = effectiveAll(ta, emptyDecisions()).find((x) => x.employee_id === 'TRY');
+    const model = item.origin === 'custom' && c.state ? ta.models[c.state] : null;
+    trial.result = { item, emp, c, model, explain: model ? model.explain(trial.label) : null, home, site };
+  } catch (err) {
+    if (err.name !== 'DataError') throw err;
+    trial.result = { error: err.issues.map((x) => x.text) };
+  }
+}
+
+function trialCard(s) {
+  const co = s.a.company;
+  const taxes = data.catalog.states.OH.taxes;
+  const sel = (v, cur) => (String(v) === String(cur) ? ' selected' : '');
+  const lawOpts = [['177', "177, the employer's own item"], ['0', "0, the employer's own item"], ...taxes.map((t) => [String(t.law_id), `${t.law_id}, ${t.name}`])]
+    .map(([v, t]) => `<option value="${v}"${sel(v, trial.law)}>${esc(t)}</option>`).join('');
+  const homeOpts = `<option value=""${sel('', trial.town)}>No home address on file</option>${homeChoices().map((h) => `<option value="${esc(h.town)}"${sel(h.town, trial.town)}>${esc(h.text)}</option>`).join('')}`;
+  const siteOpts = co.worksites.map((w) => `<option value="${esc(w.site_id)}"${sel(w.site_id, trial.site || co.worksites[0].site_id)}>${esc(w.name)}</option>`).join('');
+  const form = `<form class="try-form" data-action="try-run">
+      <fieldset class="try-set try-emp"><legend>The new employee</legend>
+        <label class="field" for="try-name">Name<input type="text" id="try-name" name="name" value="${esc(trial.name)}" autocomplete="off"></label>
+        <label class="field" for="try-town">Lives in<select id="try-town" name="town">${homeOpts}</select></label>
+        <label class="field" for="try-site">Works at<select id="try-site" name="site">${siteOpts}</select></label>
+      </fieldset>
+      <fieldset class="try-set try-item"><legend>Their Desktop payroll item</legend>
+        <label class="field try-label" for="try-label">Label, as typed in Desktop<input type="text" id="try-label" name="label" value="${esc(trial.label)}" autocomplete="off" spellcheck="false" required></label>
+        <label class="field" for="try-law">Law ID<select id="try-law" name="law">${lawOpts}</select></label>
+        <label class="field" for="try-kind">Desktop sets it up as<select id="try-kind" name="kind"><option value="tax"${sel('tax', trial.kind)}>A local income tax</option><option value="deduction"${sel('deduction', trial.kind)}>An after-tax deduction</option></select></label>
+        <label class="field" for="try-rate">Rate %<input type="number" id="try-rate" name="rate" min="0" max="100" step="0.01" value="${esc(trial.rate)}" required></label>
+      </fieldset>
+      <div class="try-go"><button class="btn primary" type="submit">${icon('spark')}Run clustering</button></div>
+    </form>
+    <div class="chips try-examples"><span class="small muted">Examples:</span>${TRY_EXAMPLES.map((x, i) => `<button type="button" class="chip-btn" data-action="try-example" data-key="${i}">${esc(x.text)}</button>`).join('')}</div>`;
+  const added = state.added.filter((x) => x.company_id === co.company_id);
+  const addedList = added.length ? `<div class="try-added"><span class="label">Added in this browser</span><ul>${added.map((x) => `<li><span><strong>${esc(x.employee.name)}</strong> <span class="small muted">"${esc(labelOf(x.label))}", Law ID ${x.law}</span></span><button class="btn quiet" type="button" data-action="try-remove" data-id="${esc(x.employee.employee_id)}">Remove</button></li>`).join('')}</ul></div>` : '';
+  return `<section class="card try-card" aria-labelledby="try-h">
+    <div class="card-head"><div><h2 id="try-h">Try the clustering</h2><p class="card-sub">Make up an employee and a Desktop item. The real engine shows where it lands.</p></div></div>
+    <div class="card-body">${form}${trialResult(co)}${addedList}</div>
+  </section>`;
+}
+
+function trialResult(co) {
+  const r = trial.result;
+  if (!r) return '';
+  if (r.error) return `<div class="banner bad" id="try-out" tabindex="-1">${icon('alert', 'lg')}<div><strong>The engine stops on this item</strong><ul>${r.error.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div></div>`;
+  const { c, explain: x, item, model } = r;
+  const steps = [];
+  if (x) {
+    const floor = model.thresholds.itemFloor;
+    const sug = x.suggestion;
+    const best = x.clusters[0];
+    steps.push(['Clean the label', x.empty
+      ? `<p>Nothing is left after removing place names and punctuation, so there is nothing to compare.</p>`
+      : `<p><span class="tok src">${esc(labelOf(item.label))}</span> ${icon('arrow')} ${x.tokens.map((t) => `<span class="tok">${esc(t)}</span>`).join(' ')}</p><p class="small muted">Lower case; known short forms spelled out (W/H: withholding, Schl: school, Dist: district); place names and punctuation removed.</p>`]);
+    if (!x.empty) {
+      const rows = x.clusters.slice(0, 4).map((k, i) => `<li${i === 0 ? ' class="best"' : ''}><span class="cl-name">${esc(k.name)} <span class="muted">(${plural(k.size, 'label')})</span></span><span class="cl-bar"><span style="width:${(Math.max(0, k.closeness) * 100).toFixed(1)}%"></span></span><b>${k.closeness.toFixed(2)}</b></li>`).join('');
+      steps.push(['Compare with every cluster', `<p class="small muted">Closeness: how much the words overlap with the ${plural(model.poolSize, 'labelled example')}, cluster by cluster (1 = the same words). The nearest cluster wins; your label is shown in amber in that cluster's card below.</p><ul class="closeness">${rows}</ul>`]);
+      const sure = sug.confidence === 'high';
+      steps.push(['How sure is it?', `<p>Silhouette = (b − a) ÷ the larger of the two = <b>${x.silhouette.toFixed(2)}</b>${x.inPool ? ' (this exact label is one of the labelled examples)' : `, where a = ${x.a.toFixed(2)} is the distance to "${esc(best.name)}" and b = ${x.b.toFixed(2)} to the next nearest cluster`}.</p>
+        <p>${sure ? `${pill('Confident', 'good')} ${x.silhouette.toFixed(2)} is at least the ${floor} floor, so the label belongs to <b>${esc(sug.entry.label)}</b>.` : `${pill('Not sure', 'warn')} ${sug.entry ? `${x.silhouette.toFixed(2)} is below the ${floor} floor: too close to call, so a person decides.` : 'The nearest cluster has no defined name, so a person decides.'}`}${model.mode !== 'assisted' ? ` ${esc(model.name)} is in shadow mode, so the suggestion is logged and a person decides.` : ''}</p>`]);
+    }
+  } else {
+    const tax = data.catalog.states.OH.taxes.find((t) => t.law_id === item.law_id);
+    steps.push(['The Law ID names the tax', `<p>Law ID <b>${item.law_id}</b> is <b>${esc(tax?.name ?? 'unknown')}</b>. No label reading and no clustering needed: the item maps by its Law ID.</p>`]);
+  }
+  if (c.route === 'local_tax') {
+    const a = r.home?.address;
+    const home = a ? `${esc(a.line1)}, ${esc(a.city)}${/^\d+$/.test(a.school_district) ? ` (school district ${esc(a.school_district)})` : ''}` : 'none on file';
+    steps.push([item.origin === 'system' ? 'The tax applies at this address' : 'The address picks the exact tax', `<p>Home: ${home}. Work: ${esc(r.site.name)}.</p>
+      <p>${icon('arrow')} ${c.proposal.map((p) => `<b>${esc(p.tax.name)}</b>, Law ID ${p.tax.law_id}, ${rateFmt(p.tax.rate)} (from the ${p.basis === 'home' ? 'home' : 'work'} address)`).join('; ')}</p>`]);
+  }
+  const verdict = c.route === 'local_tax'
+    ? `<strong>${item.origin === 'system' ? `Local tax: Law ID ${item.law_id}, unchanged` : `Local tax: Law ID ${item.law_id} ${icon('arrow')} ${c.proposal.map((p) => p.tax.law_id).join(' + ')}`}</strong><span>${esc(c.proposal.map((p) => p.tax.name).join(' + '))}. ${c.verified ? 'Every check passes: ready to confirm.' : 'The employer checks it in To do.'}</span>`
+    : c.route === 'not_a_tax' ? `<strong>Not a tax: moves to deductions</strong><span>${esc(c.reasonText)}</span>`
+      : `<strong>Goes to an expert: ${esc(REASON_SHORT[c.reason] ?? c.reason)}</strong><span>${esc(c.reasonText)}</span>`;
+  const tone = c.route === 'local_tax' ? 'good' : c.route === 'not_a_tax' ? 'info' : 'warn';
+  const live = decisionsFor().live;
+  const open = trial.opened ? `<button class="btn quiet" type="button" data-action="goto" data-view="${trial.opened.view}" data-key="c|${esc(trial.opened.case_id)}">Open ${esc(trial.opened.name)}'s record</button>` : '';
+  return `<div class="try-out" id="try-out" tabindex="-1">
+    <ol class="try-steps">${steps.map(([h, body]) => `<li><strong>${esc(h)}</strong>${body}</li>`).join('')}</ol>
+    <div class="try-verdict ${tone}">${verdict}</div>
+    <div class="row"><button class="btn" type="button" data-action="try-add"${live ? ' disabled title="The business is live"' : ''}>${icon('users')}Add ${esc(trial.name.trim() || 'this employee')} to ${esc(co.name)}</button>${open}</div>
+  </div>`;
+}
+
 function viewModel(s) {
   const used = statesInUse(s.a);
   const panels = Object.values(s.a.models).filter((m) => used.has(m.state)).map((m) => {
     const t = m.thresholds;
     const gate = (name, rule, measured, pass) => `<tr><td><strong>${name}</strong></td><td>${rule}</td><td>${measured}</td><td>${pill(pass ? 'Pass' : 'Fail', pass ? 'good' : 'bad')}</td></tr>`;
     const chip = (x, extra = '') => `<span class="label-chip${extra}${x.silhouette < t.itemFloor ? ' weak' : ''}">${esc(x.label)}<b>${x.silhouette.toFixed(2)}</b></span>`;
+    // The label from "Try the clustering", shown in the cluster it lands in.
+    const tx = trial.result?.explain;
+    const tryChip = (model, c) => (tx && !tx.empty && trial.result.c.state === model.state && tx.suggestion.cluster_index === c.index ? `<span class="label-chip try" title="Your label">${esc(labelOf(trial.label))}<b>${tx.silhouette.toFixed(2)}</b></span>` : '');
     // A label alone in its cluster has silhouette 0 by definition: list those together instead of one card each.
     const lone = (c) => c.members.length + c.assigned.length <= 1;
     const singles = m.clusters.filter(lone);
@@ -1731,7 +1856,7 @@ function viewModel(s) {
         <div class="cluster-head"><strong>${esc(c.name)}</strong><span class="small muted">${plural(c.size, 'label')}</span></div>
         <div class="meter${c.meanSilhouette < t.silhouetteFloor ? ' low' : ''}" role="img" aria-label="Mean silhouette ${c.meanSilhouette.toFixed(2)}"><span style="width:${Math.max(0, c.meanSilhouette) * 100}%"></span></div>
         <span class="small muted">Mean silhouette ${c.meanSilhouette.toFixed(2)}${c.kind ? `, ${c.kind === 'tax' ? 'tax' : 'non-tax'} entry` : ', no entry close enough'}</span>
-        <div class="label-chips">${c.members.map((x) => chip(x, x.fromCompany ? ' mine' : '')).join('')}${c.assigned.map((x) => chip(x, ' mine assigned')).join('')}</div>
+        <div class="label-chips">${c.members.map((x) => chip(x, x.fromCompany ? ' mine' : '')).join('')}${c.assigned.map((x) => chip(x, ' mine assigned')).join('')}${tryChip(m, c)}</div>
       </div>`).join('');
     const unassigned = m.unassigned.length ? `<p class="small warn-text">Not assigned to any cluster, because no words are left to compare after removing place names: ${m.unassigned.map((l) => `"${esc(l)}"`).join(', ')}. These go to an expert.</p>` : '';
     return `<section class="panel state-panel" aria-labelledby="st-${m.state}">
@@ -1751,6 +1876,7 @@ function viewModel(s) {
   }).join('');
   return `<div class="page-head"><h1>Model</h1>
     <p class="lede">Suggestions show only where every gate passes; otherwise people decide (shadow mode).</p></div>
+    ${trialCard(s)}
     ${thresholdPanel(s)}
     ${panels}`;
 }
@@ -2193,6 +2319,58 @@ function handle(action, el) {
       state.filters[el.dataset.view] = el.dataset.value;
       state.selIndex[el.dataset.view] = 0;
       break;
+    case 'try-run':
+    case 'try-example': {
+      if (action === 'try-run') {
+        const f = new FormData(el);
+        const label = String(f.get('label') ?? '').trim();
+        const rate = Number(f.get('rate'));
+        if (!label) { toast('Type the Desktop item label.'); el.elements.label.focus(); return; }
+        if (!Number.isFinite(rate) || rate < 0 || rate > 100) { toast('Enter a rate from 0 to 100.'); el.elements.rate.focus(); return; }
+        trial = { ...trial, label, law: String(f.get('law')), kind: String(f.get('kind')), name: String(f.get('name') ?? ''), town: String(f.get('town') ?? ''), site: String(f.get('site') ?? ''), rate: String(rate) };
+      } else {
+        const x = TRY_EXAMPLES[Number(el.dataset.key)];
+        const sites = companyById().worksites;
+        trial = { ...trial, label: x.label, law: x.law, kind: x.kind, town: x.town, rate: x.rate, site: sites[x.site ?? 0]?.site_id ?? sites[0].site_id };
+      }
+      trial.opened = null;
+      runTrial();
+      afterRender = () => document.getElementById('try-out')?.focus({ preventScroll: false });
+      break;
+    }
+    case 'try-add': {
+      const r = trial.result;
+      if (!r?.c) return;
+      if (d.live) { toast('This business is live. Undo go-live to add an employee.'); return; }
+      const co = companyById();
+      let n = 1;
+      while (co.employees.some((e) => e.employee_id === `E-ADD${n}`)) n += 1;
+      const { item_id, item } = itemFor(co, r.item);
+      const employee = { ...r.emp, employee_id: `E-ADD${n}`, items: [item_id] };
+      state.added.push({ company_id: co.company_id, site: r.site.name, employee, item, label: r.item.label, law: r.item.law_id, at: new Date().toISOString() });
+      rebuildData();
+      let c = analysisFor().cases.find((x) => x.employee_id === employee.employee_id);
+      log('Admin', 'Added an employee', employee.name, `"${labelOf(r.item.label)}", Law ID ${r.item.law_id}${item ? ' (a new Desktop item)' : ''}`);
+      const steps = d.autoRun && !d.live ? runAutomationFor(state.companyId).actions.length : 0;
+      c = summary().cases.find((x) => x.employee_id === employee.employee_id) ?? c;
+      const view = c.stage === 'with_expert' ? 'expert' : 'review';
+      trial.opened = { view, case_id: c.case_id, name: employee.name };
+      toast(`${employee.name} added to ${co.name.replace(/\.$/, '')}. ${view === 'expert' ? 'The line is in the expert queue.' : steps ? `Your rules settled ${plural(steps, 'item')}.` : 'The line is in To do.'}`);
+      afterRender = () => document.querySelector('#try-out [data-action="goto"]')?.focus({ preventScroll: true });
+      break;
+    }
+    case 'try-remove': {
+      const x = state.added.find((a) => a.employee.employee_id === id && a.company_id === state.companyId);
+      if (!x) return;
+      if (d.live) { toast('This business is live. Undo go-live to remove an employee.'); return; }
+      state.added = state.added.filter((a) => a !== x);
+      if (trial.opened?.case_id?.includes(`:${id}:`)) trial.opened = null;
+      rebuildData();
+      log('Admin', 'Removed an added employee', x.employee.name);
+      toast(`${x.employee.name} removed`);
+      afterRender = () => document.getElementById('try-h')?.focus({ preventScroll: true });
+      break;
+    }
     case 'goto': {
       const view = el.dataset.view;
       state.sel[view] = el.dataset.key;
@@ -2450,7 +2628,31 @@ function scrollToDetail() {
 
 let SQLlib = null;
 // The business being moved: the uploaded Desktop file if there is one, otherwise Buckeye Supply Co.
-const currentFile = () => uploads[0] ?? { company: generated.companies[0], addresses: [] };
+// Employees added from the Model page's "Try the clustering" panel join it on every rebuild.
+const currentFile = () => {
+  const biz = uploads[0] ?? { company: generated.companies[0], addresses: [] };
+  return { ...biz, company: withAdded(biz.company) };
+};
+function withAdded(co) {
+  const mine = state.added.filter((x) => x.company_id === co.company_id);
+  if (!mine.length) return co;
+  const items = [...co.items];
+  const employees = [...co.employees];
+  for (const x of mine) {
+    const site = co.worksites.find((w) => w.site_id === x.site || w.name === x.site) ?? co.worksites[0];
+    if (x.item && !items.some((i) => i.item_id === x.item.item_id)) items.push(x.item);
+    employees.push({ ...x.employee, site_id: site.site_id });
+  }
+  return { ...co, items, employees };
+}
+// The same Desktop item if the business already has it (same label, Law ID and rate), otherwise a new one.
+function itemFor(co, item) {
+  const same = co.items.find((i) => i.label === item.label && i.law_id === item.law_id && i.tracking_type === item.tracking_type && i.calc?.kind === 'percent' && Number(i.calc.rate) === Number(item.calc.rate));
+  if (same) return { item_id: same.item_id, item: null };
+  let n = 1;
+  while (co.items.some((i) => i.item_id === `I-ADD${n}`) || state.added.some((x) => x.item?.item_id === `I-ADD${n}`)) n += 1;
+  return { item_id: `I-ADD${n}`, item: { ...item, item_id: `I-ADD${n}` } };
+}
 const lookupAddresses = () => [...files.geocoder.addresses, ...(generated?.addresses ?? [])];
 
 // Build the database for the business being moved, and read the engine's input back from it.
@@ -2551,7 +2753,7 @@ async function uploadFile(input) {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=e979bfd711`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=05fd6e104a`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };

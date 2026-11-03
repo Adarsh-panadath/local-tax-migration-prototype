@@ -1,8 +1,8 @@
 // The BRD v3 pipeline for one company:
 //   1 find the state · 2 list expected taxes · 3 cluster custom items · 4 route every item · (5 employer confirms, see workflow.mjs)
-import { clusterLabels, assignLabel, MODEL_VERSION } from './cluster.mjs?v=e979bfd711';
-import { normalize } from './text.mjs?v=e979bfd711';
-import { desktopMonths, cloudMonths, employedMonths, itemAmount, monthSpan, range, round2, sum, rateCheck } from './util.mjs?v=e979bfd711';
+import { clusterLabels, assignLabel, MODEL_VERSION, explainLabel } from './cluster.mjs?v=05fd6e104a';
+import { normalize } from './text.mjs?v=05fd6e104a';
+import { desktopMonths, cloudMonths, employedMonths, itemAmount, monthSpan, range, round2, sum, rateCheck } from './util.mjs?v=05fd6e104a';
 
 export const DEFAULT_THRESHOLDS = {
   silhouetteFloor: 0.5,   // state-level cluster quality needed before suggestions are shown
@@ -348,6 +348,22 @@ export function runModels(company, idx, pools, settings = {}) {
       forced,
       mode,
       suggest: (label) => companySuggestions.get(label) ?? null,
+      // Every step for one label, for the Model page's "Try the clustering" panel.
+      explain: (label) => {
+        const x = explainLabel(fitted, label);
+        const at = poolLabels.indexOf(label);
+        return {
+          tokens: x.tokens,
+          empty: x.empty,
+          a: x.a,
+          b: x.b,
+          silhouette: at >= 0 ? poolSuggestions[at].item_silhouette : x.silhouette,
+          inPool: at >= 0,
+          suggestion: at >= 0 ? poolSuggestions[at] : describe(x.cluster, x.silhouette, label, x.empty),
+          clusters: x.distances.map((d, i) => ({ index: fitted.clusters[i].index, name: fitted.clusters[i].entry?.label ?? 'Unnamed cluster', kind: fitted.clusters[i].entry?.kind ?? null, size: fitted.clusters[i].size, closeness: 1 - d }))
+            .sort((p, q) => q.closeness - p.closeness),
+        };
+      },
     };
   }
   return models;
