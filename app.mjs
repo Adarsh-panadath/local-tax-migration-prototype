@@ -1,28 +1,27 @@
 // Browser app for the local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=ee2bce43e2';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=ee2bce43e2';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=ee2bce43e2';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=ee2bce43e2';
-import { buildReport, casesCSV } from './report.mjs?v=ee2bce43e2';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=ee2bce43e2';
-import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=ee2bce43e2';
-import { generateBusinesses, SEED } from './generate.mjs?v=ee2bce43e2';
-import { lineFacts, gapFacts, personFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=ee2bce43e2';
-import { USE_CASES, useCaseCompany } from './usecases.mjs?v=ee2bce43e2';
-import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=ee2bce43e2';
-import { createChat } from './chat.mjs?v=ee2bce43e2';
-import { runLab, KEY_NAMES } from './mllab.mjs?v=ee2bce43e2';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=f10f95f20c';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=f10f95f20c';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=f10f95f20c';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=f10f95f20c';
+import { buildReport, casesCSV } from './report.mjs?v=f10f95f20c';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=f10f95f20c';
+import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=f10f95f20c';
+import { generateBusinesses, SEED } from './generate.mjs?v=f10f95f20c';
+import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=f10f95f20c';
+import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=f10f95f20c';
+import { createChat } from './chat.mjs?v=f10f95f20c';
+import { runLab, KEY_NAMES } from './mllab.mjs?v=f10f95f20c';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
-const VIEWS = ['move', 'review', 'expert', 'golive', 'analysis', 'usecases', 'model', 'lab', 'data', 'scenarios', 'audit'];
+const VIEWS = ['move', 'review', 'expert', 'golive', 'analysis', 'model', 'lab', 'data', 'scenarios', 'audit'];
 
 // Demo sign-in: each role sees only its own screens. All three work on the same business:
 // the owner moves it, the expert decides what the rules leave, the admin looks under the hood.
 const ROLES = {
   owner: { icon: 'building', label: 'Business owner', side: 'Customer', blurb: 'Moves their own business to Online payroll', tabs: [['move', 'Move'], ['review', 'To do'], ['golive', 'Go live']] },
   expert: { icon: 'user', label: 'Payroll tax expert', side: 'Intuit staff', blurb: 'Decides the lines the rules leave', tabs: [['expert', 'Queue']] },
-  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'The engine, the model and the data', tabs: [['analysis', 'Engine'], ['usecases', 'Use cases'], ['model', 'Model'], ['lab', 'ML Lab'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
+  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'The engine, the model and the data', tabs: [['analysis', 'Engine'], ['model', 'Model'], ['lab', 'ML Lab'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
 };
 const roleOf = () => ROLES[state.role];
 const canOpen = (view) => state.role === 'admin' || Boolean(roleOf()?.tabs.some(([id]) => id === view));
@@ -179,6 +178,7 @@ const ICONS = {
   send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/>',
   sliders: '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  play: '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.4-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/>',
   grip: '<circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   list: '<path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
@@ -279,7 +279,7 @@ function render() {
   const listScroll = lastView === view ? document.querySelector('.records')?.scrollTop : null;
   let body;
   try {
-    body = { move: viewMove, lab: viewLab, analysis: viewAnalysis, usecases: viewUseCases, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
+    body = { move: viewMove, lab: viewLab, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
   } catch (err) { crashed(err); return; }
   app.innerHTML = `<button class="skip" type="button" data-action="skip">Skip to main content</button>${appbar(view, s)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
   lastView = view;
@@ -412,6 +412,33 @@ function appbar(view, s) {
 
 // ---------- sign in (demo accounts, no passwords) ----------
 
+// The product tour: a short film on the front page, what the product does and then a walkthrough of the
+// real screens. It plays in a dialog that lives outside the app's markup, so a re-render never stops it.
+const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '1:49' };
+let tourDialog = null;
+function openTour(from) {
+  if (!tourDialog) {
+    tourDialog = document.createElement('dialog');
+    tourDialog.className = 'tour-dialog';
+    tourDialog.setAttribute('aria-labelledby', 'tour-h');
+    tourDialog.innerHTML = `<div class="tour-box">
+      <header class="tour-head"><h2 id="tour-h">Product tour</h2><span>${TOUR.length}</span><button type="button" class="tour-close" aria-label="Close the tour">${icon('close')}</button></header>
+      <video class="tour-video" controls playsinline preload="none" poster="${TOUR.poster}"><source src="${TOUR.video}" type="video/mp4"><p>This browser cannot play the video.</p></video>
+    </div>`;
+    document.body.append(tourDialog);
+    const video = tourDialog.querySelector('video');
+    tourDialog.querySelector('.tour-close').addEventListener('click', () => tourDialog.close());
+    // A click on the dark area around the player closes it.
+    tourDialog.addEventListener('click', (e) => { if (e.target === tourDialog) tourDialog.close(); });
+    tourDialog.addEventListener('close', () => { video.pause(); tourDialog.opener?.focus({ preventScroll: true }); });
+  }
+  tourDialog.opener = from ?? null;
+  tourDialog.showModal();
+  const video = tourDialog.querySelector('video');
+  video.play().catch(() => { /* the person presses play */ });
+  video.focus({ preventScroll: true });
+}
+
 function signIn() {
   const account = (id, extra = '') => {
     const r = ROLES[id];
@@ -421,6 +448,11 @@ function signIn() {
   return `<main class="signin" id="main" tabindex="-1">
     <section class="signin-brand">
       <span class="logo-tile">${icon('landmark')}</span>
+      <button class="tour" type="button" data-action="tour" aria-label="Watch the product tour (${TOUR.length})">
+        <img src="${TOUR.thumb}" alt="" width="960" height="540" decoding="async">
+        <span class="tour-play" aria-hidden="true">${icon('play')}</span>
+        <span class="tour-label"><b>Watch the product tour</b><span>${TOUR.length} · what it does, then a walkthrough</span></span>
+      </button>
       <h1>Local Tax Migration</h1>
       <p>Desktop to Online payroll, with every local tax checked line by line.</p>
       <ul class="signin-points">
@@ -1838,91 +1870,7 @@ function thresholdPanel(s) {
   </section>`;
 }
 
-// ---------- use cases (admin): six people, the same engine ----------
-
-// The six people as a small business of their own, analysed and then settled by the default rules,
-// exactly as a real migration would be. Cached with the analyses.
-function useCases() {
-  const key = `usecases|${settingsKey()}`;
-  if (!cache.has(key)) {
-    const co = useCaseCompany(data.geocoder.addresses);
-    let v = null;
-    if (co) {
-      try {
-        const a = analyseCompany(co, data, state.settings);
-        const d = automate(a, emptyDecisions(), DEFAULT_POLICY).decisions;
-        v = { a, d, cases: effectiveAll(a, d) };
-      } catch (err) { if (err.name !== 'DataError') throw err; }
-    }
-    cache.set(key, v);
-  }
-  return cache.get(key);
-}
-
-const MONTH_LETTERS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const taxShortName = (t) => (t.type === 'school_district' ? `${t.name.replace(/ (Local|City|Exempted Village) School District$/, '').replace(/ School District$/, '')} schools` : `${t.place} city tax`);
-
-// One row per tax, one cell per month: filled where the tax is owed.
-function taxTimeline(e, migrationMonth) {
-  const employed = new Set(e.expected.employed ?? []);
-  const head = `<div class="tl-row tl-head" aria-hidden="true"><span class="tl-name"></span>${MONTH_LETTERS.map((m, i) => `<span class="tl-m${i + 1 >= migrationMonth ? ' online' : ''}${i + 1 === migrationMonth ? ' first' : ''}">${m}</span>`).join('')}</div>`;
-  const rows = e.expected.list.map((x) => {
-    const on = new Set(x.months);
-    const kind = x.basis === 'home' ? 'home' : 'work';
-    const label = `${taxShortName(x.tax)}, ${rateFmt(x.tax.rate)}, ${monthSpan(x.months)}, because of the ${x.basis === 'home' ? 'home' : e.expected.remote ? 'home office' : 'work location'}`;
-    return `<div class="tl-row" role="listitem" aria-label="${esc(label)}"><span class="tl-name" aria-hidden="true"><b>${esc(taxShortName(x.tax))}</b><small>Law ID ${x.tax.law_id} · ${rateFmt(x.tax.rate)} · ${x.basis === 'home' ? 'home' : e.expected.remote ? 'home office' : 'work'}</small></span>${MONTH_LETTERS.map((_, i) => `<span class="tl-c ${on.has(i + 1) ? `on ${kind}` : employed.has(i + 1) ? 'off' : 'out'}${i + 1 === migrationMonth ? ' first' : ''}" aria-hidden="true"></span>`).join('')}</div>`;
-  }).join('');
-  return `<div class="tl" role="list" aria-label="Local taxes by month">${head}${rows || '<p class="small muted">No local tax applies.</p>'}</div>`;
-}
-
-// What the migration does with each Desktop line, in one sentence each.
-function lineOutcome(c) {
-  const from = `"${labelOf(c.item.label)}" (Law ID ${c.item.law_id})`;
-  const to = c.proposal.map((p) => `${taxShortName(p.tax)} (Law ID ${p.tax.law_id})`).join(' then ');
-  const off = c.proposal.filter((p) => p.rate.status === 'over' || p.rate.status === 'under');
-  if (c.stage === 'confirmed') return [from, `${to}: confirmed by rule${off.length ? `, at the official ${off.map((p) => rateFmt(p.tax.rate)).join(' / ')} (Desktop used ${off[0].rate.desktop})` : ''}.`, off.length ? 'warn' : 'good'];
-  if (c.stage === 'stopped') return [from, `not owed: withholding stopped; ${money(c.ytd)} withheld this year to correct with the agency.`, 'bad'];
-  if (c.stage === 'moved_to_deduction') return [from, 'not a tax: moved to deductions.', ''];
-  if (c.stage === 'with_expert') return [from, `waits for an expert (${REASON_SHORT[c.reason] ?? c.reason}).`, 'warn'];
-  return [from, `${to || 'proposal'}: waits for the employer.`, 'warn'];
-}
-
-function viewUseCases() {
-  const uc = useCases();
-  if (!uc) return `<div class="page-head"><h1>Use cases</h1></div><div class="empty"><strong>The use cases need the demo address lookup, which did not load.</strong></div>`;
-  const mm = uc.a.company.migration_month;
-  const cards = USE_CASES.map((u, i) => {
-    const e = uc.a.employees[i];
-    const site = uc.a.company.worksites.find((w) => w.site_id === e.site_id);
-    const homes = (e.expected.periods ?? []).map((p) => { const a = addressById(p.address_id); return `${esc(a?.city ?? 'Unknown')} <span class="muted">(${esc(monthSpan(p.months))})</span>`; }).join(' then ');
-    const lines = uc.cases.filter((c) => c.employee_id === e.employee_id).map(lineOutcome);
-    const gaps = uc.a.gaps.filter((g) => g.employee_id === e.employee_id).map((g) => [`Nothing in Desktop`, `${taxShortName(g.tax)} (Law ID ${g.tax.law_id}) added from the first Online payroll.`, 'warn']);
-    const total = e.expected.list.reduce((sum, x) => sum + (e.monthly_wages * x.tax.rate * x.months.length) / 100, 0);
-    return `<article class="card uc-card" aria-labelledby="uc-h-${u.id}">
-      <header class="uc-head"><span class="uc-n">${i + 1}</span><div><h2 id="uc-h-${u.id}">${esc(u.title)}</h2><p><b>${esc(u.name)}</b>. ${esc(u.story)}</p></div></header>
-      <dl class="uc-facts">
-        <div><dt>${icon('home')}Lives in</dt><dd>${homes || 'No home address'}</dd></div>
-        <div><dt>${icon('building')}Works</dt><dd>${e.expected.remote ? `From home <span class="muted">(employer: ${esc(site?.name ?? '')})</span>` : esc(site?.name ?? '')}</dd></div>
-        <div><dt>${icon('calendar')}On the payroll</dt><dd>${esc(monthSpan(e.expected.employed ?? []))}</dd></div>
-      </dl>
-      ${taxTimeline(e, mm)}
-      <p class="uc-total">About <b>${money(total)}</b> of local tax for the year, on ${money(e.monthly_wages)} a month.</p>
-      <p class="uc-lesson">${esc(u.lesson)}</p>
-      ${u.scope ? `<p class="uc-scope">${icon('info')}${esc(u.scope)}</p>` : ''}
-      <div class="uc-lines"><span class="label">What the migration does with the Desktop lines</span><ul>${[...lines, ...gaps].map(([from, out, tone]) => `<li class="${tone}"><span>${esc(from)}</span>${icon('arrow')}<span>${esc(out)}</span></li>`).join('')}</ul></div>
-    </article>`;
-  }).join('');
-  return `<div class="page-head"><h1>Use cases</h1>
-    <p class="lede">Which local taxes a person owes depends on where they live, where they work, and when. Six people, run through the same engine as Buckeye.</p></div>
-    <ul class="uc-rules">
-      <li>${icon('home')}<span><b>School-district tax follows the home.</b> Some places, such as Columbus, have none.</span></li>
-      <li>${icon('building')}<span><b>City tax follows where the work is done:</b> the office, or the home for someone who works from home.</span></li>
-      <li>${icon('calendar')}<span><b>Only the months on the payroll count.</b> Joining, leaving or moving splits the year.</span></li>
-    </ul>
-    <div class="uc-legend" aria-hidden="true"><span><i class="sw work"></i>City tax (work)</span><span><i class="sw home"></i>School-district tax (home)</span><span><i class="sw out"></i>Not on the payroll</span><span><i class="sw online"></i>Online payroll from ${MONTHS_LONG[mm - 1]}</span></div>
-    <div class="uc-grid">${cards}</div>`;
-}
 
 // ---------- Ask AI ----------
 
@@ -1983,11 +1931,11 @@ function aiConnected(cfg) {
 // screen shows. It changes as they move around. Then they ask questions; a connected model answers from the
 // same facts, or the built-in assistant does.
 
-const VIEW_NAMES = { move: 'Move', review: 'To do', expert: 'Expert queue', golive: 'Go live', analysis: 'Engine', usecases: 'Use cases', model: 'Model', lab: 'ML Lab', data: 'Data', scenarios: 'Scenarios', audit: 'Log' };
+const VIEW_NAMES = { move: 'Move', review: 'To do', expert: 'Expert queue', golive: 'Go live', analysis: 'Engine', model: 'Model', lab: 'ML Lab', data: 'Data', scenarios: 'Scenarios', audit: 'Log' };
 const APP_GUIDE = `How the app works:
 - Business owner (the customer): Move (start, check, move, summary), To do (lines that need the employer, and Missing information: home addresses, where someone works, agency account numbers), Go live (four checks, dollar tie-out, agency accounts, W-2 preview, reconcile).
 - Payroll tax expert (Intuit staff): a queue of the lines the rules could not settle; one decision per unclear label; the employer confirms.
-- Admin (Intuit staff): Engine (what each step found), Use cases (six example people), Model (clustering gates and "Try the clustering"), ML Lab (the clustering tested on 1,200 labels), Data (the SQLite database, 7 tables), Scenarios (checks on six test files), Log (audit trail).
+- Admin (Intuit staff): Engine (what each step found), Model (clustering gates and "Try the clustering"), ML Lab (the clustering tested on 1,200 labels), Data (the SQLite database, 7 tables), Scenarios (checks on six test files), Log (audit trail).
 - The engine lists each employee's expected local taxes from the home and work addresses. A Desktop item with a real Law ID maps straight to its tax; an item the employer created (Law ID 177 or 0) is read by a clustering model (TF-IDF words and letter trigrams, average linkage, silhouette score). Every Desktop line goes to a local tax, to deductions (not a tax), or to a person. Rules the employer approved settle most lines; nothing switches on until the employer confirms.`;
 
 const CHAT_SUGGESTIONS = {
@@ -1997,7 +1945,6 @@ const CHAT_SUGGESTIONS = {
   expert: ['How do I decide an unclear label?', 'Why are these lines with an expert?'],
   golive: ['Am I ready to go live?', 'What is the dollar tie-out?'],
   analysis: ['Explain the engine steps', 'What does "to a person" mean?'],
-  usecases: ['Why does Ananya pay only one tax?', 'Compare Rahul and Sara', 'Does a visa change local tax?'],
   model: ['How does the clustering work?', 'What is a silhouette score?', 'Why the 0.25 floor?'],
   lab: ['What does the ML Lab prove?', 'Clustering or word matching: which is better?'],
   data: ['Explain the seven tables', 'What is a Law ID?'],
@@ -2098,7 +2045,6 @@ function chatBrief({ s, view, record }) {
     return `**${fails.length ? `${fails.length} of ${r.checks.length} checks still open.` : 'Ready to go live.'}**\n${r.checks.map((c) => `- ${c.pass ? 'Done' : '**Open**'}: ${c.label}. ${c.detail}`).join('\n')}\nNext: ${fails.length ? (fails.some((c) => c.id === 'accounts' || c.id === 'employer') ? 'fill in **To do**, Missing information first.' : 'an expert decides what is left.') : 'press **Go live with confirmed taxes**.'}`;
   }
   if (view === 'analysis') return `**What the engine found for ${co.name}**\n- ${plural(s.cases.length, 'Desktop line')}: ${s.routes.local_tax} local tax, ${s.routes.not_a_tax} not a tax, ${s.routes.not_in_database} to a person.\n- ${plural(s.a.gaps.length, 'expected tax', 'expected taxes')} nobody withheld.\nOpen a step to see what it checked and why.`;
-  if (view === 'usecases') return '**Six people, one engine.** Their local taxes differ only by where they live, where they work and when.\n- School-district tax follows the home; some towns, like Columbus, have none.\n- City tax follows where the work is done.\nAsk me about any of them.';
   if (view === 'model') {
     const m = s.a.models.OH;
     return m ? `**Ohio label model:** ${m.k} clusters, silhouette ${m.silhouette.toFixed(2)}, ${m.mode === 'assisted' ? 'suggestions shown' : 'shadow mode'}.\n- A label below ${m.thresholds.itemFloor} confidence goes to a person.\nTry a label of your own in **Try the clustering**.` : '**No Ohio model** was built for this business.';
@@ -2130,8 +2076,6 @@ function chatContext() {
   let where = state.role ? VIEW_NAMES[view] : 'Sign in';
   if (record) where = `${VIEW_NAMES[view]}: ${record.title}`;
   let facts = record?.facts ?? null;
-  const uc = view === 'usecases' ? useCases() : null;
-  if (uc) facts = USE_CASES.map((u, i) => ({ situation: u.title, story: u.story, lesson: u.lesson, ...personFacts(uc.a.employees[i], uc.a.company, addressById) }));
   if (s && view === 'model') {
     const m = s.a.models.OH;
     if (m) facts = { state: 'Ohio', silhouette: m.silhouette.toFixed(3), clusters: m.k, precision: pct(m.precision), labelled_examples: m.poolSize, mode: m.mode === 'assisted' ? 'suggestions shown' : 'shadow mode', gates: m.gates, label_confidence_floor: m.thresholds.itemFloor, cluster_names: m.clusters.map((k) => `${k.name} (${k.size})`) };
@@ -2161,11 +2105,11 @@ ${facts ? `Facts of what is on screen (JSON):\n${JSON.stringify(facts, null, 1)}
 How to answer: plain text, short (under 120 words unless asked for more); bullets starting with "- " are fine. For anything about this business, its people, lines or numbers, use only the facts above and say so when they do not cover the question. For general ideas (Law ID, clustering, silhouette, local taxes, digital transformation, how a migration like this works) explain simply. Never invent rates, addresses, laws or dollar amounts. This is not tax advice.`;
   const suggestions = record ? aiSuggestions(record.facts, record.c).slice(0, 3) : CHAT_SUGGESTIONS[state.role ? view : 'signin'] ?? [];
   const check = record ? `Check ${record.title} for me and give your own opinion.\n${opinionFormat(record.facts)}` : s ? 'Look at this screen and tell me, in under 100 words, what matters most and what I should do next.' : null;
-  return { key: chatKey(), where, brief: () => chatBrief({ s, view, record }), prompt, suggestions, check, builtIn: (q) => chatBuiltIn(q, { s, view, record, uc }) };
+  return { key: chatKey(), where, brief: () => chatBrief({ s, view, record }), prompt, suggestions, check, builtIn: (q) => chatBuiltIn(q, { s, view, record }) };
 }
 
 // The built-in chat answers: the open record first, then common questions about the app.
-function chatBuiltIn(q, { s, view, record, uc }) {
+function chatBuiltIn(q, { s, view, record }) {
   const t = ` ${String(q).toLowerCase()} `;
   const counts = () => {
     const withExpert = s.expert - s.info;
@@ -2178,12 +2122,7 @@ function chatBuiltIn(q, { s, view, record, uc }) {
     const a = builtInAnswer(record.facts, q);
     if (a) return a;
   }
-  const named = USE_CASES.map((u, i) => ({ u, i })).filter(({ u }) => t.includes(u.name.split(' ')[0].toLowerCase()));
-  if (named.length) {
-    const ucs = uc ?? useCases();
-    if (ucs) return named.map(({ u, i }) => builtInAnswer({ person: personFacts(ucs.a.employees[i], ucs.a.company, addressById) }, /compare|and/.test(t) ? 'why these taxes' : q) ?? `${u.name}: ${u.lesson}`).join('\n\n');
-  }
-  if (/visa|india|immigra|citizen|nationalit/.test(t)) return 'Local taxes here follow only where a person lives and works in Ohio, and the months they are on the payroll; nationality or visa does not change them. Federal and state tax residency for someone new to the US is outside this prototype. See Ananya on the Use cases screen.';
+  if (/visa|india|immigra|citizen|nationalit/.test(t)) return 'Local taxes here follow only where a person lives and works in Ohio, and the months they are on the payroll; nationality or visa does not change them. Federal and state tax residency for someone new to the US is outside this prototype.';
   if (/what does this app|what is this|about this app|purpose|what can you do/.test(t)) return 'It moves one business\'s local payroll taxes (Ohio city and school-district taxes) from QuickBooks Desktop to Online payroll. For every employee it works out the taxes owed from the home and work addresses, reads unclear Desktop labels with a clustering model, and sends each line to a local tax, to deductions or to a person. Rules the employer approves settle most lines; nothing switches on until the employer confirms.';
   if (/which role|start with|demo|where do i start/.test(t)) return 'Start as the Business owner: Move, Get started, Move to Online payroll. Fill in Missing information on To do. Then the Payroll tax expert decides the unclear labels once. Back as the owner, Go live shows everything settled and reconciled. The Admin screens explain the engine, the model and the data.';
   if (/where (someone|they|he|she|people) works?|work location|works? from home|remote/.test(t)) return 'A city tax is owed where the work is done: the work site, or the home for someone who works from home. When Desktop withholds the city tax of the town where a person lives instead of the work site\'s, only the employer knows which is right. They answer under Missing information: from home, the home town\'s tax stays; at the site, the site\'s tax is added and the home town\'s becomes optional.';
@@ -2772,6 +2711,9 @@ function handle(action, el) {
       location.hash = '#review';
       return;
     }
+    case 'tour':
+      openTour(el);
+      return;
     case 'show-more':
       more[el.dataset.key] = !more[el.dataset.key];
       break;
@@ -3309,7 +3251,7 @@ async function uploadFile(input) {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=ee2bce43e2`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=f10f95f20c`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };
