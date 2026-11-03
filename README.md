@@ -12,7 +12,7 @@ A working prototype of the BRD v3 design for moving local payroll taxes from Qui
 
 Sign in with a demo account (no passwords). Progress is saved in your own browser only; **Reset** (two clicks) starts again.
 
-**Product tour.** The front page has a **Watch the product tour** tile (1:49): what the product does, then a walkthrough of the real screens from sign-in to go-live. It plays in a window over the page; Esc or the close button stops it. The film is `web/media/tour.mp4` (1080p, with a quiet music bed and on-screen captions, no voice-over).
+**Product tour.** The front page has a **Watch the product tour** tile (2:22): what the product does, then a walkthrough of the real screens from sign-in to go-live. It plays in a window over the page; Esc or the close button stops it. The film is `web/media/tour.mp4` (1080p): narrated, with on-screen captions and a quiet music bed. The voice is Kokoro, an open-source text-to-speech model (Apache 2.0), run offline from a written script; the narration script is in `docs/tour-script.md`.
 
 To run it on your computer (Node.js 20 or later; no install step, no API keys):
 
@@ -225,6 +225,7 @@ The same checks run in `npm test`, together with exact boundaries: a gate value 
 | The business, employees, wages, account numbers | Fictional |
 | Copying employees, pay items and totals in the Move step | Simulated; the local tax checks are real |
 | Which taxes QuickBooks pays and files | A demo assumption, not an Intuit statement |
+| Product tour narration | A synthetic voice (Kokoro, open-source text-to-speech) reading our script; nobody recorded it |
 | Connection to QuickBooks | None |
 
 This prototype is not affiliated with Intuit and is not tax advice. Synthetic labels are not real customer labels: the ML Lab shows the method and how the gates react, not production accuracy, which needs real Desktop files labelled by experts.

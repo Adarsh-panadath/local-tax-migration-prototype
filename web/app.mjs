@@ -414,7 +414,7 @@ function appbar(view, s) {
 
 // The product tour: a short film on the front page, what the product does and then a walkthrough of the
 // real screens. It plays in a dialog that lives outside the app's markup, so a re-render never stops it.
-const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '1:49' };
+const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '2:22' };
 let tourDialog = null;
 function openTour(from) {
   if (!tourDialog) {
