@@ -1,15 +1,14 @@
 // Browser app for the local-tax migration prototype. No framework, no build step.
 import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs';
 import { MODEL_VERSION } from './engine/cluster.mjs';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_ADDRESS } from './engine/workflow.mjs';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs';
 import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs';
 import { buildReport, casesCSV } from './report.mjs';
 import { GROUPS, runScenarios } from './scenarios.mjs';
 import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs';
 import { generateBusinesses, SEED } from './generate.mjs';
-import { lineFacts, gapFacts, personFacts, lineOpinion, gapOpinion, personOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionPrompt, chatTurns, opinionText, NO_ANSWER } from './assistant.mjs';
+import { lineFacts, gapFacts, personFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs';
 import { USE_CASES, useCaseCompany } from './usecases.mjs';
-import { RULES } from './assistant.mjs';
 import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs';
 import { createChat } from './chat.mjs';
 import { runLab, KEY_NAMES } from './mllab.mjs';
@@ -60,11 +59,11 @@ const more = {};            // "Show all" toggles for long lists
 // The Model page's "Try the clustering" panel: one made-up employee and Desktop item, run through the real engine.
 let trial = { label: 'Sch Dist Wthld', law: '177', kind: 'tax', town: 'Pickerington', site: '', rate: '1', name: 'Asha Verma', result: null, opened: null };
 
-// The AI assistant. In the hosted app on claude.ai, Claude answers (the page's `sample` capability, on the
-// viewer's own account); anywhere else, or if the viewer says no, the built-in assistant answers from the
-// same facts. Conversations live in memory for this visit.
+// Ask AI. In the hosted app on claude.ai, Claude answers (the page's `sample` capability, on the viewer's own
+// account); on the website or a local copy, a model the user connected with their own key; otherwise, or if
+// the viewer says no, the built-in assistant answers from the same facts.
 // via: 'claude' (hosted app), 'key' (a model the user connected with their own API key) or null (built-in).
-const ai = { state: 'checking', sample: null, note: '', via: null, label: '', cfg: null, hosted: false };
+const ai = { state: 'checking', sample: null, via: null, label: '', cfg: null, hosted: false };
 let chat = null;
 const aiName = () => (ai.via === 'claude' ? 'Claude' : ai.via === 'key' ? PROVIDERS[ai.cfg.provider].short : 'The built-in assistant');
 // One call for both kinds of real model: a prompt string or [{role, content}] turns ending on the user.
@@ -73,10 +72,6 @@ function aiCall(input, { onText, signal, cache } = {}) {
   if (ai.via === 'key') return completeWithKey(ai.cfg, input, { onText, signal });
   return Promise.reject({ code: 'not_granted', message: 'No AI model is connected.' });
 }
-const aiChats = new Map(); // key -> { op: {text, source} | null, turns: [{q, a, source, failed}], busy, draft, notice, ctl }
-const aiCtx = new Map();   // key -> { facts, op, sugg }, refreshed on every render
-const ucOpen = new Set();  // use-case cards whose assistant is open
-const aiChat = (key) => { if (!aiChats.has(key)) aiChats.set(key, { op: null, turns: [], busy: false, draft: '', notice: '' }); return aiChats.get(key); };
 
 // ---------- state ----------
 
@@ -147,6 +142,7 @@ const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' 
 const money = (n) => usd.format(n);
 const pct = (x, digits = 1) => `${(x * 100).toFixed(digits)}%`;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const listAnd = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
 const initials = (name) => String(name).split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
 const avatar = (name, size = '') => `<span class="avatar${size ? ` ${size}` : ''}" aria-hidden="true">${esc(initials(name))}</span>`;
 const MARK = { pass: '✓', fail: '×', warn: '!', info: 'i' };
@@ -236,7 +232,8 @@ function summary(id = state.companyId) {
     a, d, cases, routes,
     awaiting: cases.filter((c) => c.stage === 'awaiting_employer').length + openGaps,
     expert: cases.filter((c) => c.stage === 'with_expert').length,
-    info: cases.filter((c) => c.stage === 'with_expert' && NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert).length, // waiting for an address from the employer
+    info: cases.filter(waitsForEmployer).length, // waiting for a home address or a work location from the employer
+    accounts: d.live ? 0 : agencyAccounts(a, d).filter((x) => !x.complete).length, // agencies with no account number yet
     verified: cases.filter((c) => c.stage === 'awaiting_employer' && c.verified).length,
     status: d.reconciled ? 'Reconciled' : d.live ? 'Live' : touched ? 'In review' : 'Not started',
   };
@@ -374,10 +371,10 @@ function appbar(view, s) {
   const role = roleOf();
   // A step shows a tick once nothing is left in it, so the customer's tabs double as a progress tracker.
   const moved = Boolean(s.d.autoRun || s.d.live);
-  const finished = { move: moved, review: moved && s.awaiting === 0 && s.info === 0, golive: Boolean(s.d.reconciled), expert: s.expert - s.info === 0 };
+  const finished = { move: moved, review: moved && s.awaiting === 0 && s.info === 0 && s.accounts === 0, golive: Boolean(s.d.reconciled), expert: s.expert - s.info === 0 };
   const steps = state.role === 'owner';
   const tab = ([id, text], i) => {
-    const n = s.status === 'Not started' && steps ? 0 : id === 'review' ? s.awaiting + s.info : id === 'expert' ? s.expert - s.info : 0;
+    const n = s.status === 'Not started' && steps ? 0 : id === 'review' ? s.awaiting + s.info + s.accounts : id === 'expert' ? s.expert - s.info : 0;
     const done = steps && finished[id];
     const mark = steps ? `<span class="step">${done ? `${icon('tick')}<span class="sr-only">Done:</span>` : i + 1}</span>` : '';
     return `<a href="#${id}"${view === id ? ' aria-current="page"' : ''}${done ? ' class="done"' : ''}>${mark}${text}${n ? `<span class="count" aria-label="${n} open">${n}</span>` : ''}${id === 'scenarios' ? `<span class="count ok">${scenarioCount()}</span>` : ''}</a>`;
@@ -396,7 +393,7 @@ function appbar(view, s) {
   const status = COMPANY_VIEWS.has(view) ? `<div class="batchbar">
       <span class="status ${statusTone}"><span class="dot"></span>${esc(s.status)}</span>
       <span class="batch-progress"><span class="progress" role="img" aria-label="${items - action} of ${items} items settled"><span style="width:${(items ? ((items - action) / items) * 100 : 0).toFixed(1)}%"></span></span><span><b>${items - action}</b> of ${items} settled</span></span>
-      ${s.status === 'Not started' ? '' : action ? `${lines + gaps ? `<span class="batch-need warn"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.info ? `<span class="batch-need warn"><b>${s.info}</b> waiting for an address</span>` : ''}${expertOnly ? `<span class="batch-need blue"><b>${expertOnly}</b> with an expert</span>` : ''}` : `<span class="batch-need done">${icon('tick')}Nothing waiting</span>`}
+      ${s.status === 'Not started' ? '' : action ? `${lines + gaps ? `<span class="batch-need warn"><b>${lines + gaps}</b> with the employer</span>` : ''}${s.info ? `<span class="batch-need warn"><b>${s.info}</b> waiting for information</span>` : ''}${expertOnly ? `<span class="batch-need blue"><b>${expertOnly}</b> with an expert</span>` : ''}` : `<span class="batch-need done">${icon('tick')}Nothing waiting</span>`}
       ${s.d.autoRun ? `<span class="batch-auto">${icon('spark')}<b>${pct(automationStats(s.a, s.d).share, 0)}</b> automated</span>` : ''}
     </div>` : '';
   return `<header class="appbar">
@@ -454,7 +451,7 @@ function footnote() {
 
 const policyOf = (d) => ({ ...DEFAULT_POLICY, ...(d.policy ?? {}) });
 const ruleLabel = (id) => AUTOMATION_RULES.find((r) => r.id === id)?.label ?? id;
-const EXCEPTION_TEXT = { held: 'Held after an undo', rule_off: 'Its rule is switched off', account_missing: 'Agency account number missing' };
+const EXCEPTION_TEXT = { held: 'Held after an undo', rule_off: 'Its rule is switched off', account_missing: 'No account number' };
 const exceptionText = (x) => EXCEPTION_TEXT[x.reason] ?? REASON_SHORT[x.reason] ?? x.reason;
 
 // Run the employer's automation rules for one company and record every automatic step in the log.
@@ -644,6 +641,13 @@ function startMoving(cid) {
   afterRender = () => window.scrollTo(0, 0);
 }
 
+// "7 items and 1 agency account need": an account number is not one of the tax items, so it is counted apart.
+function needText(left) {
+  const accounts = left.filter((x) => x.kind === 'account').length;
+  const items = left.length - accounts;
+  return `${listAnd([items ? plural(items, 'item') : '', accounts ? plural(accounts, 'agency account') : ''].filter(Boolean))} ${left.length === 1 ? 'needs' : 'need'}`;
+}
+
 function moveSummary(s) {
   const a = s.a;
   const d = s.d;
@@ -657,28 +661,32 @@ function moveSummary(s) {
   const headline = d.live
     ? `Every local tax is settled${d.reconciled ? ', live and reconciled' : ' and live'}.`
     : left.length
-      ? `${st.auto} of ${plural(st.total, 'local tax item')} settled by rule. ${plural(left.length, 'item needs', 'items need')} a person before the first Online payroll in ${f.first}.`
+      ? `${st.auto} of ${plural(st.total, 'local tax item')} settled by rule. ${needText(left)} a person before the first Online payroll in ${f.first}.`
       : 'Every local tax item is settled. The go-live checks are next.';
   const waitTone = expert.length && !employer.length ? 'blue' : left.length ? 'warn' : 'good';
   const waitSub = left.length ? [expert.length ? `${expert.length} with an expert` : '', employer.length ? `${employer.length} with the employer` : ''].filter(Boolean).join(', ') : 'Nothing waiting';
   // A customer cannot open the expert queue: their row says who has it instead.
-  const open = (x) => (x.kind === 'account' ? '<a class="btn" href="#golive">Add it</a>'
+  const open = (x) => (x.kind === 'account' ? `<button class="btn" type="button" data-action="focus-missing" data-agency="${esc(x.item)}">Add it</button>`
     : x.needs === 'address' ? `<button class="btn" type="button" data-action="focus-missing" data-employee="${esc(x.employee_id)}">Add address</button>`
+    : x.needs === 'work_location' ? `<button class="btn" type="button" data-action="focus-missing" data-employee="${esc(x.employee_id)}">Answer</button>`
       : x.owner === 'expert' && !canOpen('expert') ? ''
         : `<button class="btn" type="button" data-action="goto" data-view="${x.owner === 'expert' ? 'expert' : 'review'}" data-key="${esc(x.kind === 'gap' ? `g|${x.gap_id}` : `c|${x.case_id}`)}">Open</button>`);
-  const waitHref = employer.length ? (employer.every((x) => x.kind === 'account') ? '#golive' : '#review') : expert.length && canOpen('expert') ? '#expert' : null;
+  const waitHref = employer.length ? '#review' : expert.length && canOpen('expert') ? '#expert' : null;
   const rules = AUTOMATION_RULES.map((r) => `<label class="rule"><input type="checkbox" data-action="auto-rule" data-rule="${r.id}"${policy[r.id] ? ' checked' : ''}${d.live ? ' disabled' : ''}><span><strong>${esc(r.label)}</strong><span>${esc(r.help)}</span></span></label>`).join('');
   const report = left.length
     ? `<ul class="exc-list">${left.map((x) => `<li>${x.employee ? avatar(x.employee) : `<span class="avatar">${icon('landmark')}</span>`}<span class="who"><strong>${esc(x.employee ?? x.item)}</strong>${x.employee ? `<span>"${esc(labelOf(x.item))}"</span>` : '<span>Agency account</span>'}</span><span class="exc-tags">${badge(exceptionText(x), x.owner === 'expert' ? 'blue' : 'warn')}<span class="owner ${x.owner === 'expert' ? 'blue' : 'warn'}">${x.owner === 'expert' ? 'Expert' : 'Employer'}</span></span>${open(x)}</li>`).join('')}</ul>`
     : `<p class="auto-done flat">${icon('check')}No exceptions. Nothing needs a person.</p>`;
   const accounts = employer.filter((x) => x.kind === 'account').length;
-  const addresses = new Set(employer.filter((x) => x.needs === 'address').map((x) => x.employee_id)).size;
-  const decides = employer.length - accounts - employer.filter((x) => x.needs === 'address').length;
-  const employerText = [
+  const people = (need) => new Set(employer.filter((x) => x.needs === need).map((x) => x.employee_id)).size;
+  const addresses = people('address');
+  const workplaces = people('work_location');
+  const decides = employer.filter((x) => x.kind !== 'account' && !x.needs).length;
+  const employerText = listAnd([
     addresses ? `adds ${plural(addresses, 'home address', 'home addresses')}` : '',
+    workplaces ? `says where ${plural(workplaces, 'person works', 'people work')}` : '',
     accounts ? `adds ${plural(accounts, 'agency account number')}` : '',
     decides ? `decides ${plural(decides, 'item')}` : '',
-  ].filter(Boolean).join(' and ');
+  ].filter(Boolean));
   const next = [
     { done: !expert.length, text: expert.length ? `An expert decides ${plural(expert.length, 'line')}` : 'No line needs an expert' },
     { done: !employer.length, text: employer.length ? `The employer ${employerText}` : 'Nothing waits for the employer' },
@@ -968,18 +976,19 @@ function employmentText(e) {
 const OPEN_STAGES = new Set(['awaiting_employer', 'with_expert']);
 const REASON_SHORT = {
   shadow: 'Shadow mode', weak_signal: 'Weak signal', conflict: 'Conflict', not_expected: 'Not expected', duplicate: 'Duplicate',
-  state_conflict: 'Wrong state', no_address: 'No address', address_unresolved: 'Address not placed', ambiguous: 'Ambiguous', employer_sent: 'Sent by employer',
+  state_conflict: 'Wrong state', no_address: 'No address', address_unresolved: 'Address not placed', work_location: 'Work location', ambiguous: 'Ambiguous', employer_sent: 'Sent by employer',
 };
 const REASON_TONE = {
   conflict: 'bad', duplicate: 'bad', state_conflict: 'bad', not_expected: 'bad',
-  no_address: 'warn', address_unresolved: 'warn', weak_signal: 'warn', ambiguous: 'warn', shadow: 'info', employer_sent: 'blue',
+  no_address: 'warn', address_unresolved: 'warn', work_location: 'warn', weak_signal: 'warn', ambiguous: 'warn', shadow: 'info', employer_sent: 'blue',
 };
 const FILTERS = {
   review: [['todo', 'Needs you'], ['verified', 'Ready to confirm'], ['expert', 'With expert', 'warn'], ['done', 'Done'], ['all', 'All']],
-  expert: [['open', 'Open', 'warn'], ['address', 'Waiting for an address'], ['decided', 'Decided'], ['all', 'All']],
+  expert: [['open', 'Open', 'warn'], ['address', 'Waiting for the employer'], ['decided', 'Decided'], ['all', 'All']],
 };
-// A line with no usable home address waits for the employer (Missing information), not for an expert.
-const waitsForAddress = (c) => c.stage === 'with_expert' && NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert;
+// A line that needs a home address or a work location waits for the employer (Missing information), not for an expert.
+const waitsForEmployer = (c) => c.stage === 'with_expert' && NEEDS_EMPLOYER.has(c.reason) && !c.decision.sentToExpert;
+const waitText = (c) => (c.reason === 'work_location' ? 'Waiting for the work location' : 'Waiting for the home address');
 const badge = (text, tone = '') => `<span class="badge ${tone}">${esc(text)}</span>`;
 const rateFmt = (r) => `${Number(r).toFixed(2)}%`;
 const taxCode = (t) => (t.type === 'school_district' ? `SD ${t.code}` : t.place);
@@ -1033,7 +1042,7 @@ function caseTo(c) {
   if (c.route === 'not_a_tax') return ['Deduction', ''];
   if (c.route === 'custom_entry') return [c.entry.name, 'blue'];
   if (c.route === 'stop') return ['Stop withholding', 'bad'];
-  if (waitsForAddress(c)) return ['Waiting for the home address', 'muted'];
+  if (waitsForEmployer(c)) return [waitText(c), 'muted'];
   return ['Expert decides', 'muted'];
 }
 
@@ -1045,7 +1054,7 @@ function recordList(view, s) {
     const e = c.employee;
     const [b, tone] = caseBadge(c);
     const groups = new Set(['all']);
-    const needsAddress = waitsForAddress(c);
+    const needsAddress = waitsForEmployer(c);
     if (view === 'review') {
       if (c.stage === 'awaiting_employer' || needsAddress) groups.add('todo');
       if (c.stage === 'awaiting_employer' && c.verified) groups.add('verified');
@@ -1123,7 +1132,7 @@ function workspace(view, s) {
   }).join('');
   const emptyText = {
     todo: 'Nothing needs you.', verified: 'No lines are ready to confirm.', expert: 'No lines are with an expert.',
-    done: 'No decisions yet.', all: 'No records.', open: 'Nothing is waiting for an expert.', address: 'No line is waiting for an address.', decided: 'No expert decisions yet.',
+    done: 'No decisions yet.', all: 'No records.', open: 'Nothing is waiting for an expert.', address: 'No line is waiting for the employer.', decided: 'No expert decisions yet.',
   }[filter];
   const title = view === 'review' ? 'To do' : 'Expert queue';
   const blurb = view === 'review' ? plural(all.length, 'record') : `${all.filter((r) => r.groups.has('open')).length} open`;
@@ -1136,7 +1145,7 @@ function workspace(view, s) {
   let detail;
   const withExpert = s.expert - s.info;
   const reviewEmpty = [
-    s.info ? `${plural(s.info, 'line waits', 'lines wait')} for an address under Missing information.` : '',
+    s.info ? `${plural(s.info, 'line waits', 'lines wait')} for Missing information.` : '',
     withExpert ? `${plural(withExpert, 'line')} ${withExpert === 1 ? 'is' : 'are'} with an expert; ${withExpert === 1 ? 'it stays' : 'they stay'} off until an expert decides and you confirm.` : '',
   ].filter(Boolean).join(' ') || 'Every line has a decision.';
   if (!sel) detail = `${mobileBack(view)}<div class="empty"><strong>${esc(emptyText)}</strong><span>${view === 'review' ? esc(reviewEmpty) : 'Every line the system could not settle has an expert decision.'}</span>${canOpen('golive') ? '<a class="btn" href="#golive">Go to go-live checks</a>' : ''}</div>`;
@@ -1161,19 +1170,26 @@ const mobileBack = () => `<div class="mobile-back"><button class="btn quiet" typ
 
 
 // ---------- missing information (owner): what only the employer can give ----------
-// A missing or unplaceable home address leaves the school-district lines with an expert. The owner adds it
-// here: it is saved in the database, the engine checks that employee's lines again, and the rules finish them.
+// Three kinds of fact only the employer has. A missing or unplaceable home address leaves the school-district
+// lines with an expert; a city tax withheld for the home town instead of the work site needs to know where the
+// person works; an agency with no account number cannot be paid. The owner gives them here: addresses and work
+// locations are saved in the database, the engine checks that employee's lines again, and the rules finish them.
+
+const FREQUENCIES = ['Monthly', 'Quarterly', 'Semi-monthly', 'Annually'];
 
 function missingInfo(s) {
   const people = new Map();
   for (const c of s.cases) {
-    if (c.stage !== 'with_expert' || !NEEDS_ADDRESS.has(c.reason) || c.decision.sentToExpert) continue;
-    const p = people.get(c.employee_id) ?? { e: c.employee, reason: c.reason, lines: 0 };
+    if (!waitsForEmployer(c)) continue;
+    const kind = c.reason === 'work_location' ? 'work' : 'address';
+    const key = `${kind}|${c.employee_id}`;
+    const p = people.get(key) ?? { kind, e: c.employee, reason: c.reason, lines: 0, c };
     p.lines += 1;
-    people.set(c.employee_id, p);
+    people.set(key, p);
   }
-  const accounts = s.d.live ? [] : readiness(s.a, s.d).accounts.filter((a) => !a.complete);
-  return { people: [...people.values()], accounts };
+  const accounts = s.d.live ? [] : agencyAccounts(s.a, s.d).filter((a) => !a.complete);
+  const list = [...people.values()];
+  return { addresses: list.filter((p) => p.kind === 'address'), work: list.filter((p) => p.kind === 'work'), accounts };
 }
 
 // The address on file that the lookup could not place, to correct rather than retype.
@@ -1185,31 +1201,68 @@ function unplacedAddress(e) {
   return null;
 }
 
+// The two places a person may work: the site on file, or home (the town whose tax Desktop withholds).
+function workChoices(c, s) {
+  const e = c.employee;
+  const site = siteOf(e, s.a);
+  const home = c.workProposal?.[0]?.tax ?? null;
+  const homeAddr = addressById(e.expected.periods.at(-1)?.address_id ?? e.addresses?.[0]?.address_id);
+  const work = e.expected.list.find((x) => x.basis === 'work' && x.tax.type === 'municipal')?.tax ?? null;
+  return { site, siteTown: addressById(site.address_id)?.city ?? site.name, homeTown: homeAddr?.city ?? home?.place ?? 'home', home, work };
+}
+
+const miTag = (text, tone) => `<span class="mi-kind ${tone}">${esc(text)}</span>`;
+
 function missingCard(s) {
-  const { people, accounts } = missingInfo(s);
-  if (!people.length && !accounts.length) return '';
-  const rows = people.map(({ e, reason, lines }) => {
+  const { addresses, work, accounts } = missingInfo(s);
+  const total = addresses.length + work.length + accounts.length;
+  if (!total) return '';
+  const off = s.d.live ? ' disabled' : '';
+  const addressRows = addresses.map(({ e, reason, lines }) => {
     const cur = reason === 'address_unresolved' ? unplacedAddress(e) : null;
     const id = domId(e.employee_id);
     const st = cur?.state ?? addressById(siteOf(e, s.a).address_id)?.state ?? 'OH';
     const why = reason === 'no_address' ? 'No home address in Desktop' : `The lookup cannot place ${[cur?.line1, cur?.city, cur?.zip].filter(Boolean).join(', ') || 'the address on file'}`;
     return `<li class="mi-row" id="mi-${esc(id)}">
-      <div class="mi-who">${avatar(e.name)}<div><strong>${esc(e.name)}</strong><span>${esc(why)}. ${plural(lines, 'line waits', 'lines wait')} for it.</span></div></div>
+      <div class="mi-who">${avatar(e.name)}<div>${miTag('Home address', 'warn')}<strong>${esc(e.name)}</strong><span>${esc(why)}. ${plural(lines, 'line waits', 'lines wait')} for it.</span></div></div>
       <form class="mi-form" data-action="fix-address" data-employee="${esc(e.employee_id)}">
-        <label class="mi-street"><span class="sr-only">Street for ${esc(e.name)}</span><input type="text" name="line1" id="mi-line1-${esc(id)}" placeholder="Street" value="${esc(cur?.line1 ?? '')}" autocomplete="off"${s.d.live ? ' disabled' : ''}></label>
-        <label><span class="sr-only">City for ${esc(e.name)}</span><input type="text" name="city" placeholder="City" value="${esc(cur?.city ?? '')}" autocomplete="off"${s.d.live ? ' disabled' : ''}></label>
-        <label class="mi-st"><span class="sr-only">State for ${esc(e.name)}</span><select name="state"${s.d.live ? ' disabled' : ''}>${['OH', 'PA'].map((x) => `<option${x === st ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
-        <label class="mi-zip"><span class="sr-only">ZIP code for ${esc(e.name)}</span><input type="text" name="zip" placeholder="ZIP" value="${esc(cur?.zip ?? '')}" inputmode="numeric" maxlength="5" autocomplete="off"${s.d.live ? ' disabled' : ''}></label>
-        <button class="btn primary" type="submit"${s.d.live ? ' disabled' : ''}>Save</button>
-        <button class="btn quiet" type="button" data-action="sample-address" data-employee="${esc(e.employee_id)}"${s.d.live ? ' disabled' : ''}>Fill a demo address</button>
+        <label class="mi-street"><span class="sr-only">Street for ${esc(e.name)}</span><input type="text" name="line1" id="mi-line1-${esc(id)}" placeholder="Street" value="${esc(cur?.line1 ?? '')}" autocomplete="off"${off}></label>
+        <label><span class="sr-only">City for ${esc(e.name)}</span><input type="text" name="city" placeholder="City" value="${esc(cur?.city ?? '')}" autocomplete="off"${off}></label>
+        <label class="mi-st"><span class="sr-only">State for ${esc(e.name)}</span><select name="state"${off}>${['OH', 'PA'].map((x) => `<option${x === st ? ' selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label class="mi-zip"><span class="sr-only">ZIP code for ${esc(e.name)}</span><input type="text" name="zip" placeholder="ZIP" value="${esc(cur?.zip ?? '')}" inputmode="numeric" maxlength="5" autocomplete="off"${off}></label>
+        <button class="btn primary" type="submit"${off}>Save</button>
+        <button class="btn quiet" type="button" data-action="sample-address" data-employee="${esc(e.employee_id)}"${off}>Fill a demo address</button>
       </form>
     </li>`;
   }).join('');
-  const acct = accounts.map((a) => `<li class="mi-row"><div class="mi-who"><span class="avatar">${icon('landmark')}</span><div><strong>${esc(a.agency)}</strong><span>${esc([a.account ? '' : 'Account number', a.frequency ? '' : 'deposit frequency'].filter(Boolean).join(' and '))} missing. Needed to pay and file.</span></div></div><a class="btn" href="#golive">Add it</a></li>`).join('');
+  const workRows = work.map(({ e, c }) => {
+    const id = domId(e.employee_id);
+    const w = workChoices(c, s);
+    const first = e.name.split(' ')[0];
+    return `<li class="mi-row" id="mi-${esc(id)}">
+      <div class="mi-who">${avatar(e.name)}<div>${miTag('Work location', 'warn')}<strong>${esc(e.name)}</strong><span>Desktop withholds ${esc(w.homeTown)} city tax, where ${esc(first)} lives, not ${esc(w.siteTown)}'s, where the site is.</span></div></div>
+      <div class="mi-form mi-choice" role="group" aria-label="Where does ${esc(e.name)} work?">
+        <span class="mi-q">Where does ${esc(first)} work?</span>
+        <button class="btn" type="button" id="mi-work-${esc(id)}" data-action="work-answer" data-employee="${esc(e.employee_id)}" data-remote="0"${off}>${icon('building')}At ${esc(w.site.name)}</button>
+        <button class="btn" type="button" data-action="work-answer" data-employee="${esc(e.employee_id)}" data-remote="1"${off}>${icon('home')}From home in ${esc(w.homeTown)}</button>
+      </div>
+    </li>`;
+  }).join('');
+  const accountRows = accounts.map((a) => {
+    const id = domId(a.agency);
+    return `<li class="mi-row" id="mi-acct-${esc(id)}">
+      <div class="mi-who"><span class="avatar">${icon('landmark')}</span><div>${miTag('Agency account', 'warn')}<strong>${esc(a.agency)}</strong><span>No ${esc(listAnd([a.account ? '' : 'account number', a.frequency ? '' : 'deposit frequency'].filter(Boolean)))} in Desktop. Needed to pay and file ${esc(listAnd(a.taxes.map((t) => t.replace(/ income tax$/, ''))))}.</span></div></div>
+      <form class="mi-form" data-action="save-account" data-agency="${esc(a.agency)}">
+        <label class="mi-street"><span class="sr-only">Account number for ${esc(a.agency)}</span><input type="text" name="account" id="mi-account-${esc(id)}" placeholder="Account number" value="${esc(a.account)}" autocomplete="off"${off}></label>
+        <label class="mi-freq"><span class="sr-only">Deposit frequency for ${esc(a.agency)}</span><select name="frequency"${off}><option value="">Deposit frequency</option>${FREQUENCIES.map((f) => `<option${f === a.frequency ? ' selected' : ''}>${f}</option>`).join('')}</select></label>
+        <button class="btn primary" type="submit"${off}>Save</button>
+        <button class="btn quiet" type="button" data-action="sample-account" data-agency="${esc(a.agency)}"${off}>Fill a demo number</button>
+      </form>
+    </li>`;
+  }).join('');
   return `<section class="panel missing" data-open="${state.detailOpen ? 'true' : 'false'}" aria-labelledby="mi-h">
-    <div class="section-head"><h2 id="mi-h" tabindex="-1">Missing information <span class="count">${people.length + accounts.length}</span></h2><p>Only you can give these.</p></div>
-    <ul class="mi-list">${rows}${acct}</ul>
-    ${people.length ? '' : ''}
+    <div class="section-head"><h2 id="mi-h" tabindex="-1">Missing information <span class="count">${total}</span></h2><p>Only you can give these. The lines waiting for them finish by themselves.</p></div>
+    <ul class="mi-list">${addressRows}${workRows}${accountRows}</ul>
   </section>`;
 }
 
@@ -1229,20 +1282,27 @@ function demoAddressFor(employeeId) {
   return pool[h % pool.length] ?? null;
 }
 
-// Save an address the employer gave: in the database (then read that business back), or in memory without one.
+// Save what the employer gave, a home address or where someone works: in the database (then read that business
+// back), or in memory without one. A later answer of the same kind replaces the earlier one.
+const correctionKind = (x) => x.kind ?? 'address';
 function addCorrection(corr) {
-  state.corrections = [...state.corrections.filter((x) => !(x.company_id === corr.company_id && x.employee_id === corr.employee_id)), corr];
+  state.corrections = [...state.corrections.filter((x) => !(x.company_id === corr.company_id && x.employee_id === corr.employee_id && correctionKind(x) === correctionKind(corr))), corr];
   let found;
   if (db) {
     const r = applyCorrection(db, corr, lookupIdx, lookupAddresses());
     data.companies = [readCompany(db)];
-    if (!r.found) unplaced(r.addressId, corr);
+    if (!r.found && corr.kind !== 'work') unplaced(r.addressId, corr);
     found = r.found;
   } else found = correctInMemory(corr);
   forgetCompany(corr.company_id);
   return found;
 }
 function correctInMemory(corr) {
+  if (corr.kind === 'work') {
+    data.companies = data.companies.map((c) => (c.company_id !== corr.company_id ? c
+      : { ...c, employees: c.employees.map((e) => (e.employee_id === corr.employee_id ? { ...e, remote: Boolean(corr.remote) } : e)) }));
+    return true;
+  }
   const found = lookupIdx.get(addressKey(corr.line1, corr.zip));
   const addressId = found ?? `${corr.company_id}-C-${corr.employee_id}`;
   data.companies = data.companies.map((c) => (c.company_id !== corr.company_id ? c
@@ -1296,7 +1356,7 @@ function caseFlow(c) {
   } else if (c.route === 'not_a_tax') to = flowSide('to', label, 'Non-tax deduction', 'Moves to deductions; never filed as a tax', 'neutral');
   else if (c.route === 'custom_entry') to = flowSide('to', label, esc(c.entry.name), esc(`Custom entry · employer-managed · ${c.entry.flat ? `${money(c.entry.flat)} a year` : `${c.entry.rate}%`}`), 'blue');
   else if (c.route === 'stop') to = flowSide('to', label, 'Stop withholding', esc(c.ytd ? `${money(c.ytd)} to correct with the agency` : 'Nothing was withheld'), 'bad');
-  else if (waitsForAddress(c)) to = flowSide('to', label, 'Waiting for the home address', esc(`${REASON_SHORT[c.reason]}: the employer adds it under Missing information`), 'warn');
+  else if (waitsForEmployer(c)) to = flowSide('to', label, waitText(c), esc(c.reason === 'work_location' ? 'The employer answers under Missing information' : `${REASON_SHORT[c.reason]}: the employer adds it under Missing information`), 'warn');
   else to = flowSide('to', label, 'Waiting for an expert', esc(REASON_SHORT[c.reason] ?? 'Needs an expert'), REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn');
   return flow(from, to);
 }
@@ -1308,7 +1368,7 @@ function nextStep(c, view, live) {
     if (c.stage === 'with_expert') return EXPERT_HINT[c.reason] ?? 'Decide how this line should migrate.';
     return `Decided: ${expertText(c)}. The employer ${c.stage === 'awaiting_employer' ? 'confirms it next' : 'has confirmed it'}.`;
   }
-  if (c.stage === 'with_expert' && NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert) return 'Add the home address under Missing information. The engine then checks this line again.';
+  if (waitsForEmployer(c)) return c.reason === 'work_location' ? `Say where ${c.employee_name} works under Missing information. The engine then checks this line again.` : 'Add the home address under Missing information. The engine then checks this line again.';
   if (c.stage === 'with_expert') return c.decision.sentToExpert && !c.decision.expert ? 'You sent this to an expert. Take it back from More actions if that was a mistake.' : 'Nothing to do yet. An expert decides first, then you confirm.';
   if (c.stage === 'awaiting_employer') {
     if (c.decision.expert) return `An expert decided: ${expertText(c)}. Confirm to accept it.`;
@@ -1405,10 +1465,11 @@ function caseMapping(c, s) {
     return mappingTable(rows);
   }
   const other = c.duplicateOf ? s.cases.find((x) => x.case_id === c.duplicateOf) : null;
+  const decides = waitsForEmployer(c) ? 'After the employer answers' : 'An expert decides';
   rows.push(['Tax item', srcItem, none('No target yet'), note(REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn', 'alert', REASON_SHORT[c.reason] ?? 'Needs an expert')]);
   if (other) rows.push(['Already withheld by', none('This line'), tgt(`"${labelOf(other.item.label)}"`, 'warn'), note('bad', 'alert', 'Keeping both would withhold twice')]);
-  rows.push(['Law ID', src(`${item.law_id}${custom ? ' (custom)' : ''}`), none('An expert decides'), note('', 'info', custom ? 'Names no tax' : 'Tax not expected here')]);
-  rows.push(['Desktop setting', src(`${item.item_type}, ${item.tracking_type}`), none('An expert decides'), note('', 'info', 'From Desktop')]);
+  rows.push(['Law ID', src(`${item.law_id}${custom ? ' (custom)' : ''}`), none(decides), note('', 'info', c.reason === 'work_location' ? 'The home town\'s tax, not the work site\'s' : custom ? 'Names no tax' : 'Tax not expected here')]);
+  rows.push(['Desktop setting', src(`${item.item_type}, ${item.tracking_type}`), none(decides), note('', 'info', 'From Desktop')]);
   if (c.model) rows.push(['Model suggestion', none('Label only'), c.model.entry_label ? tgt(c.model.entry_label, 'blue') : none('No defined entry'), note(c.model.shown ? 'blue' : '', 'spark', `A suggestion only, ${c.model.confidence} confidence${c.model.shown ? '' : ' (hidden from the employer)'}`)]);
   rows.push(['Rate', src(rateText(item)), none('After the decision'), note('', 'info', 'Checked once a tax is chosen')]);
   rows.push(ytdRow(['<span class="none">Not migrated yet</span>', note('warn', 'alert', 'Stays off until decided')]));
@@ -1465,8 +1526,7 @@ function caseDetail(c, s, view) {
   if (c.decision.expert) steps.push({ tone: 'info', text: `Expert decision: ${expertText(c)}.` });
   const open = !c.verified && OPEN_STAGES.has(c.stage);
   return `${mobileBack(view)}
-    ${recordHeader({ name: c.employee_name, id: e.employee_id, meta, badgeHtml: badge(b, tone), flow: caseFlow(c), stage: waitsForAddress(c) ? 'Waiting for the home address' : STAGE_LABEL[c.stage], next: nextStep(c, view, live) })}
-    ${caseAssistant(c, s, view)}
+    ${recordHeader({ name: c.employee_name, id: e.employee_id, meta, badgeHtml: badge(b, tone), flow: caseFlow(c), stage: waitsForEmployer(c) ? waitText(c) : STAGE_LABEL[c.stage], next: nextStep(c, view, live) })}
     ${checksBanner(c)}
     ${view === 'expert' && c.stage === 'with_expert' && !live ? expertTools(c, s) : ''}
     ${caseMapping(c, s)}
@@ -1490,7 +1550,7 @@ function caseActions(c, s, view) {
   }
   if (c.stage === 'with_expert') {
     const items = c.decision.sentToExpert && !c.decision.expert ? [`<button class="btn" type="button" data-action="unsend-expert" data-id="${id}">Take it back from the expert</button>`] : [];
-    const addAddress = NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert ? `<button class="btn primary" type="button" data-action="focus-missing" data-employee="${esc(c.employee_id)}">Add the address</button>` : '';
+    const addAddress = waitsForEmployer(c) ? `<button class="btn primary" type="button" data-action="focus-missing" data-employee="${esc(c.employee_id)}">${c.reason === 'work_location' ? 'Answer where they work' : 'Add the address'}</button>` : '';
     return `<div class="action-bar">${logNote}${moreMenu(items)}${addAddress || toExpert}</div>`;
   }
   if (c.stage === 'awaiting_employer') {
@@ -1538,7 +1598,6 @@ function gapDetail(g, s) {
   if (by) steps.push({ tone: 'info', text: `Covered by the expert mapping of "${by.item.label}".` });
   return `${mobileBack('review')}
     ${recordHeader({ name: g.employee_name, id: e.employee_id, meta: `${esc(site.name)} · ${money(e.monthly_wages)} a month`, badgeHtml: badge(b, tone), flow: gapFlow, stage: stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? 'Added' : 'Covered', next })}
-    ${gapAssistant(g, e, s, stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? (s.d.gaps[g.gap_id]?.auto ? 'Added by a rule the employer approved' : 'Added by the employer') : 'Covered by an expert mapping', next)}
     ${banner}
     ${mappingTable(rows)}
     ${evidenceCard(s, { employee: e, state: g.tax.state, match: new Set([g.tax_id]), steps, historyTarget: `${g.employee_name}: ${g.tax.name}`, openSteps: stage === 'awaiting_employer' })}
@@ -1564,6 +1623,7 @@ const EXPERT_HINT = {
   state_conflict: 'The employee has no address in the state the label names. Usually not owed; use a custom entry only if they really work there.',
   no_address: 'The employer is asked for the home address on their To do; once it is added, the engine checks this line again. If you already have it, map the line to that district.',
   address_unresolved: 'The employer is asked to correct the address on their To do. If it is a new build missing from boundary files, map the line to the right district.',
+  work_location: 'Desktop withholds the city tax of the town where this person lives, not the work site\'s. The employer is asked where they work. If you already know, map the line: the home town\'s tax if they work from home.',
   ambiguous: 'More than one expected tax fits. Pick the right one from the list.',
   employer_sent: 'The employer disagreed with the suggestion. Check the address and the Desktop item, then decide.',
 };
@@ -1572,7 +1632,7 @@ const TYPE_NAME = { school_district: 'School-district tax', municipal: 'City tax
 // Open lines with the same Desktop item that an expert can decide together (not the ones waiting for an
 // address, and not one the employer sent back on purpose).
 function sameLabelOpen(c, s) {
-  return s.cases.filter((x) => x.item.item_id === c.item.item_id && x.stage === 'with_expert' && !x.decision.expert && !x.decision.sentToExpert && !NEEDS_ADDRESS.has(x.reason));
+  return s.cases.filter((x) => x.item.item_id === c.item.item_id && x.stage === 'with_expert' && !x.decision.expert && !x.decision.sentToExpert && !NEEDS_EMPLOYER.has(x.reason));
 }
 
 function expertTools(c, s) {
@@ -1588,7 +1648,7 @@ function expertTools(c, s) {
   const basisGuess = suggestType === 'local_services' ? 'work' : suggestType === 'earned_income' ? 'higher' : suggestType === 'municipal' ? 'work' : 'home';
   const flat = c.item.calc.kind === 'flat_annual';
   // The action the hint recommends gets the primary style; a conflict has no default answer.
-  const recommended = { not_expected: 'stop', duplicate: 'stop', state_conflict: 'stop', weak_signal: 'map', no_address: 'map', address_unresolved: 'map', ambiguous: 'map', employer_sent: 'map' }[c.reason] ?? null;
+  const recommended = { not_expected: 'stop', duplicate: 'stop', state_conflict: 'stop', weak_signal: 'map', no_address: 'map', address_unresolved: 'map', work_location: 'map', ambiguous: 'map', employer_sent: 'map' }[c.reason] ?? null;
   const sel = (name, values, current) => `<select id="${name}-${id}" name="${name}">${values.map(([v, t]) => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
   // The same Desktop item is usually on many employees. The expert decides what the label means once,
   // and each employee's own address picks the exact tax: the BRD's "label says which kind, address says which one".
@@ -1643,7 +1703,7 @@ function viewGoLive(s) {
   const accounts = r.accounts.map((a, i) => `<tr>
       <td><strong>${esc(a.agency)}</strong><div class="small muted">${a.taxes.map(esc).join(', ')}</div></td>
       <td><label class="sr-only" for="acct-${i}">Account number for ${esc(a.agency)}</label><input type="text" id="acct-${i}" value="${esc(a.account)}" placeholder="Required" data-action="account" data-agency="${esc(a.agency)}" data-field="account"${live ? ' disabled' : ''}></td>
-      <td><label class="sr-only" for="freq-${i}">Deposit frequency for ${esc(a.agency)}</label><select id="freq-${i}" data-action="account" data-agency="${esc(a.agency)}" data-field="frequency"${live ? ' disabled' : ''}>${['', 'Monthly', 'Quarterly', 'Semi-monthly', 'Annually'].map((f) => `<option value="${f}"${f === a.frequency ? ' selected' : ''}>${f || 'Choose'}</option>`).join('')}</select></td>
+      <td><label class="sr-only" for="freq-${i}">Deposit frequency for ${esc(a.agency)}</label><select id="freq-${i}" data-action="account" data-agency="${esc(a.agency)}" data-field="frequency"${live ? ' disabled' : ''}>${['', ...FREQUENCIES].map((f) => `<option value="${f}"${f === a.frequency ? ' selected' : ''}>${f || 'Choose'}</option>`).join('')}</select></td>
       <td class="small muted">${a.source ? `From ${esc(a.source)}` : 'Enter from the agency letter'}</td>
     </tr>`).join('');
   return `<div class="page-head"><h1>Go live</h1>
@@ -1838,7 +1898,6 @@ function viewUseCases() {
     const homes = (e.expected.periods ?? []).map((p) => { const a = addressById(p.address_id); return `${esc(a?.city ?? 'Unknown')} <span class="muted">(${esc(monthSpan(p.months))})</span>`; }).join(' then ');
     const lines = uc.cases.filter((c) => c.employee_id === e.employee_id).map(lineOutcome);
     const gaps = uc.a.gaps.filter((g) => g.employee_id === e.employee_id).map((g) => [`Nothing in Desktop`, `${taxShortName(g.tax)} (Law ID ${g.tax.law_id}) added from the first Online payroll.`, 'warn']);
-    const facts = { person: personFacts(e, uc.a.company, addressById) };
     const total = e.expected.list.reduce((sum, x) => sum + (e.monthly_wages * x.tax.rate * x.months.length) / 100, 0);
     return `<article class="card uc-card" aria-labelledby="uc-h-${u.id}">
       <header class="uc-head"><span class="uc-n">${i + 1}</span><div><h2 id="uc-h-${u.id}">${esc(u.title)}</h2><p><b>${esc(u.name)}</b>. ${esc(u.story)}</p></div></header>
@@ -1852,7 +1911,6 @@ function viewUseCases() {
       <p class="uc-lesson">${esc(u.lesson)}</p>
       ${u.scope ? `<p class="uc-scope">${icon('info')}${esc(u.scope)}</p>` : ''}
       <div class="uc-lines"><span class="label">What the migration does with the Desktop lines</span><ul>${[...lines, ...gaps].map(([from, out, tone]) => `<li class="${tone}"><span>${esc(from)}</span>${icon('arrow')}<span>${esc(out)}</span></li>`).join('')}</ul></div>
-      <details class="fold uc-ai" data-key="${u.id}"${ucOpen.has(u.id) ? ' open' : ''}><summary>${icon('spark')}Ask the AI assistant about ${esc(u.name.split(' ')[0])}${icon('chevron', 'chev')}</summary><div class="fold-body">${assistantCard(`uc:${u.id}`, facts, personOpinion(facts.person), aiSuggestions(facts), { subject: u.name.split(' ')[0] })}</div></details>
     </article>`;
   }).join('');
   return `<div class="page-head"><h1>Use cases</h1>
@@ -1866,9 +1924,9 @@ function viewUseCases() {
     <div class="uc-grid">${cards}</div>`;
 }
 
-// ---------- the AI assistant card ----------
+// ---------- Ask AI ----------
 
-// The answer as the page shows it: the Recommendation / Confidence / Why / Check shape, bullets and bold.
+// An answer as the chat shows it: the Recommendation / Confidence / Why / Check shape, bullets and bold.
 function aiText(text) {
   const inline = (x) => esc(x).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
   const out = [];
@@ -1895,114 +1953,6 @@ function aiText(text) {
   return out.join('');
 }
 
-function assistantCard(key, facts, op, sugg, { subject = 'this line' } = {}) {
-  aiCtx.set(key, { facts, op, sugg });
-  const ch = aiChat(key);
-  const id = domId(key);
-  const live = ai.state === 'on';
-  const busy = Boolean(ch.busy);
-  let opinion;
-  if (ch.op) opinion = aiText(ch.op.text);
-  else if (live && ch.busy === 'op') opinion = '<p class="ai-thinking">Thinking…</p>';
-  else if (live) opinion = `<div class="ai-start"><p>${esc(aiName())} reads the facts of ${esc(subject)} and gives its opinion first. Then ask it anything to check.</p>
-      <div class="row"><button class="btn primary" type="button" data-action="ai-opinion" data-key="${esc(key)}">${icon('sparkles')}Get ${ai.via === 'claude' ? 'Claude\'s' : 'the AI\'s'} opinion</button><span class="small muted">${ai.via === 'claude' ? 'Uses your Claude account; it asks permission the first time.' : `Uses ${esc(ai.label)} with your API key.`}</span></div></div>`;
-  else opinion = aiText(opinionText(op));
-  const thread = ch.turns.map((t, i) => `<li class="ai-q"><span class="sr-only">You asked: </span>${esc(t.q)}</li>
-      <li class="ai-a${t.failed ? ' failed' : ''}" id="ai-a-${id}-${i}">${t.a == null ? '<span class="ai-thinking">Thinking…</span>' : aiText(t.a)}</li>`).join('');
-  const chips = sugg.filter((q) => !ch.turns.some((t) => t.q === q)).slice(0, 4)
-    .map((q) => `<button type="button" class="chip-btn" data-action="ai-ask" data-key="${esc(key)}" data-q="${esc(q)}"${busy ? ' disabled' : ''}>${esc(q)}</button>`).join('');
-  const source = live ? `<span class="ai-source on">${icon('sparkles')}${esc(ai.via === 'claude' ? 'Claude' : aiName())}</span>` : '<span class="ai-source">Built-in</span>';
-  const foot = ch.notice || ai.note || (live ? `${aiName()} sees only the facts of this record. It suggests; people decide.` : ai.hosted ? 'Claude is not allowed here yet, so the built-in assistant answers from the same facts.' : 'No AI model is connected, so the built-in assistant answers from the same facts. Connect one in Ask AI, bottom right.');
-  return `<section class="card ai-card" aria-labelledby="ai-h-${id}">
-    <div class="ai-head"><span class="ai-mark">${icon('spark')}</span><div><h3 id="ai-h-${id}">AI assistant</h3><p>Its opinion first, then ask it to check anything.</p></div>${source}</div>
-    <div class="ai-body">
-      <div class="ai-op" id="ai-op-${id}" aria-live="polite">${opinion}</div>
-      ${thread ? `<ol class="ai-thread" aria-live="polite">${thread}</ol>` : ''}
-      ${chips ? `<div class="chips ai-sugg">${chips}</div>` : ''}
-      <form class="ai-form" data-action="ai-ask-form" data-key="${esc(key)}">
-        <label class="sr-only" for="ai-q-${id}">Ask the assistant about ${esc(subject)}</label>
-        <input type="text" class="ai-input" id="ai-q-${id}" name="q" data-key="${esc(key)}" maxlength="200" autocomplete="off" placeholder="Ask about ${esc(subject)}" value="${esc(ch.draft)}"${busy ? ' disabled' : ''}>
-        ${busy && live ? `<button class="btn" type="button" data-action="ai-stop" data-key="${esc(key)}">Stop</button>` : `<button class="btn primary" type="submit">Ask</button>`}
-      </form>
-      <p class="ai-foot">${esc(foot)}</p>
-    </div>
-  </section>`;
-}
-
-const streamTo = (id, text) => { const el = document.getElementById(id); if (el) { el.textContent = text; el.classList.add('streaming'); } };
-const focusAiInput = (key) => document.getElementById(`ai-q-${domId(key)}`)?.focus({ preventScroll: true });
-const AI_OFF = new Set(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed']);
-
-// A failed call: switch to the built-in assistant when Claude is not allowed here; otherwise say what happened.
-function aiFailed(e, ch, fallback, turn = null) {
-  const code = e?.code ?? 'upstream_error';
-  if (code === 'cancelled') { if (turn) { turn.a = e?.text || 'Stopped.'; turn.failed = !e?.text; } return; }
-  if (AI_OFF.has(code) && ai.via === 'claude') {
-    ai.state = 'off';
-    ai.via = null;
-    ai.note = 'Claude is not available here, so the built-in assistant answers from the same facts.';
-    fallback();
-    return;
-  }
-  const who = aiName();
-  const msg = ai.via === 'key' && e?.message ? e.message : { rate_limited: `${who} is busy right now. Try again in a minute.`, refused: `${who} did not answer that. Try asking it another way.`, empty_completion: `${who} gave no answer. Try asking it another way.`, session_expired: 'Sign in to claude.ai again to use Claude.', prompt_too_large: 'That was too long to send.' }[code] ?? `${who} could not be reached. Try again.`;
-  if (turn) { turn.a = e?.text ? `${e.text}\n\n(${msg})` : msg; turn.failed = true; } else ch.notice = msg;
-}
-
-async function aiOpinion(key) {
-  const ctx = aiCtx.get(key);
-  const ch = aiChat(key);
-  if (!ctx || ch.busy) return;
-  if (ai.state !== 'on') { render(); return; }
-  ch.busy = 'op';
-  ch.notice = '';
-  ch.ctl = new AbortController();
-  render();
-  try {
-    const { text } = await aiCall(opinionPrompt(ctx.facts), { signal: ch.ctl.signal, onText: ({ text: t }) => streamTo(`ai-op-${domId(key)}`, t) });
-    ch.op = { text, source: 'live' };
-  } catch (e) {
-    aiFailed(e, ch, () => {});
-  }
-  ch.busy = false;
-  ch.ctl = null;
-  render();
-}
-
-async function aiAsk(key, q) {
-  const ctx = aiCtx.get(key);
-  const ch = aiChat(key);
-  if (!ctx || ch.busy || !q) return;
-  ch.draft = '';
-  ch.notice = '';
-  const turn = { q, a: null, source: ai.state === 'on' ? 'live' : 'builtin' };
-  ch.turns.push(turn);
-  if (ai.state !== 'on') {
-    turn.a = builtInAnswer(ctx.facts, q) ?? NO_ANSWER;
-    afterRender = () => focusAiInput(key);
-    render();
-    return;
-  }
-  const at = ch.turns.length - 1;
-  ch.busy = 'ask';
-  ch.ctl = new AbortController();
-  render();
-  try {
-    const history = ch.turns.slice(0, -1).filter((t) => t.a && !t.failed && t.source === 'live');
-    const { text } = await aiCall(chatTurns(ctx.facts, ch.op?.source === 'live' ? ch.op.text : null, history, q), {
-      cache: false, signal: ch.ctl.signal, onText: ({ text: t }) => streamTo(`ai-a-${domId(key)}-${at}`, t),
-    });
-    turn.a = text;
-  } catch (e) {
-    aiFailed(e, ch, () => { turn.a = builtInAnswer(ctx.facts, q) ?? NO_ANSWER; turn.source = 'builtin'; }, turn);
-    if (turn.a == null) turn.a = builtInAnswer(ctx.facts, q) ?? NO_ANSWER;
-  }
-  ch.busy = false;
-  ch.ctl = null;
-  afterRender = () => focusAiInput(key);
-  render();
-}
-
 // Who answers: Claude inside a claude.ai viewer; elsewhere a model the user connected with their own key;
 // otherwise the built-in assistant.
 function useKey(cfg) {
@@ -2011,7 +1961,6 @@ function useKey(cfg) {
   ai.cfg = ok ? cfg : null;
   ai.label = ok ? configLabel(cfg) : '';
   ai.state = ai.via ? 'on' : 'off';
-  ai.note = '';
 }
 async function connectAI() {
   ai.hosted = Boolean(window.claude?.use);
@@ -2028,36 +1977,26 @@ function aiConnected(cfg) {
   render();
 }
 
-function caseAssistant(c, s, view) {
-  const decided = c.decision.expert ? `expert decided: ${expertText(c)}` : c.decision.employer ? (c.decision.employer.auto ? 'confirmed by a rule the employer approved' : 'confirmed by the employer') : '';
-  const facts = lineFacts(c, {
-    company: s.a.company, addressById, taxByLaw: (law) => s.a.idx.taxByLaw.get(law), view,
-    stage: waitsForAddress(c) ? 'Waiting for the home address' : STAGE_LABEL[c.stage], next: nextStep(c, view, s.d.live), decided,
-  });
-  return assistantCard(`line:${c.case_id}`, facts, lineOpinion(facts, c), aiSuggestions(facts, c), { subject: 'this line' });
-}
-
-function gapAssistant(g, e, s, stage, next) {
-  const facts = gapFacts(g, e, { company: s.a.company, addressById, view: 'review', stage, next });
-  return assistantCard(`gap:${g.gap_id}`, facts, gapOpinion(facts), aiSuggestions(facts), { subject: 'this missing tax' });
-}
-
-// ---------- Ask AI: the floating chat's view of the app ----------
+// ---------- Ask AI: what the chat sees, and what it tells you first ----------
+// When the chat opens it gives a short briefing for the person and the screen: the owner's next step, the
+// record open on To do or in the expert queue (the built-in opinion), the go-live checks, or what an admin
+// screen shows. It changes as they move around. Then they ask questions; a connected model answers from the
+// same facts, or the built-in assistant does.
 
 const VIEW_NAMES = { move: 'Move', review: 'To do', expert: 'Expert queue', golive: 'Go live', analysis: 'Engine', usecases: 'Use cases', model: 'Model', lab: 'ML Lab', data: 'Data', scenarios: 'Scenarios', audit: 'Log' };
 const APP_GUIDE = `How the app works:
-- Business owner (the customer): Move (start, check, move, summary), To do (lines that need the employer: decisions and missing home addresses), Go live (four checks, dollar tie-out, agency accounts, W-2 preview, reconcile).
+- Business owner (the customer): Move (start, check, move, summary), To do (lines that need the employer, and Missing information: home addresses, where someone works, agency account numbers), Go live (four checks, dollar tie-out, agency accounts, W-2 preview, reconcile).
 - Payroll tax expert (Intuit staff): a queue of the lines the rules could not settle; one decision per unclear label; the employer confirms.
-- Admin (Intuit staff): Engine (what each step found), Use cases (six example people), Model (clustering gates and "Try the clustering"), ML Lab (the clustering tested on 1,200 labels), Data (the SQLite database, 7 tables), Scenarios (76 checks), Log (audit trail).
-- The engine lists each employee's expected local taxes from the home and work addresses. A Desktop item with a real Law ID maps straight to its tax; an item the employer created (Law ID 177 or 0) is read by a clustering model (TF-IDF words and letter trigrams, average linkage, silhouette score). Every Desktop line goes to a local tax, to deductions (not a tax), or to an expert. Rules the employer approved settle most lines; nothing switches on until the employer confirms.`;
+- Admin (Intuit staff): Engine (what each step found), Use cases (six example people), Model (clustering gates and "Try the clustering"), ML Lab (the clustering tested on 1,200 labels), Data (the SQLite database, 7 tables), Scenarios (checks on six test files), Log (audit trail).
+- The engine lists each employee's expected local taxes from the home and work addresses. A Desktop item with a real Law ID maps straight to its tax; an item the employer created (Law ID 177 or 0) is read by a clustering model (TF-IDF words and letter trigrams, average linkage, silhouette score). Every Desktop line goes to a local tax, to deductions (not a tax), or to a person. Rules the employer approved settle most lines; nothing switches on until the employer confirms.`;
 
 const CHAT_SUGGESTIONS = {
   signin: ['What does this app do?', 'Which role should I start with?'],
-  move: ['What happens when I move?', 'How many lines settle by rule?', 'What does this app do?'],
-  review: ['What is waiting for me?', 'Why do some lines need an address?'],
-  expert: ['Why are these lines with an expert?', 'How do I decide an unclear label?'],
+  move: ['What happens when I move?', 'What is waiting for me?', 'What does this app do?'],
+  review: ['What is waiting for me?', 'Why does it matter where someone works?', 'Why do some lines need an address?'],
+  expert: ['How do I decide an unclear label?', 'Why are these lines with an expert?'],
   golive: ['Am I ready to go live?', 'What is the dollar tie-out?'],
-  analysis: ['Explain the engine steps', 'What does "to an expert" mean?'],
+  analysis: ['Explain the engine steps', 'What does "to a person" mean?'],
   usecases: ['Why does Ananya pay only one tax?', 'Compare Rahul and Sara', 'Does a visa change local tax?'],
   model: ['How does the clustering work?', 'What is a silhouette score?', 'Why the 0.25 floor?'],
   lab: ['What does the ML Lab prove?', 'Clustering or word matching: which is better?'],
@@ -2066,36 +2005,150 @@ const CHAT_SUGGESTIONS = {
   audit: ['Who decided the most lines?'],
 };
 
+// The record the person opened on To do or in the expert queue. Until they open one, the briefing is about
+// the whole screen (the one shown first on a computer is only the top of the list).
+function chatRecord(s, view) {
+  if (!s || (view !== 'review' && view !== 'expert') || !state.detailOpen) return null;
+  const key = state.sel[view];
+  const company = s.a.company;
+  const c = key?.startsWith('c|') ? s.cases.find((x) => `c|${x.case_id}` === key) : null;
+  if (c) {
+    const decided = c.decision.expert ? `expert decided: ${expertText(c)}` : c.decision.employer ? (c.decision.employer.auto ? 'confirmed by a rule the employer approved' : 'confirmed by the employer') : '';
+    const facts = lineFacts(c, { company, addressById, taxByLaw: (law) => s.a.idx.taxByLaw.get(law), view, stage: waitsForEmployer(c) ? waitText(c) : STAGE_LABEL[c.stage], next: nextStep(c, view, s.d.live), decided });
+    return { key, c, facts, op: lineOpinion(facts, c), title: `${c.employee_name}, "${labelOf(c.item.label)}"` };
+  }
+  const g = key?.startsWith('g|') ? s.a.gaps.find((x) => `g|${x.gap_id}` === key) : null;
+  if (g) {
+    const e = s.a.employees.find((x) => x.employee_id === g.employee_id);
+    const st = gapStage(g, s.d, s.cases);
+    const stage = st === 'awaiting_employer' ? 'Waiting for the employer' : st === 'added' ? (s.d.gaps[g.gap_id]?.auto ? 'Added by a rule the employer approved' : 'Added by the employer') : 'Covered by an expert mapping';
+    const next = s.d.live ? 'This company is live, so decisions are locked.' : st === 'awaiting_employer' ? 'Add it from the first Online payroll.' : 'Nothing to do.';
+    const facts = gapFacts(g, e, { company, addressById, view, stage, next });
+    return { key, g, facts, op: gapOpinion(facts), title: `${g.employee_name}, ${g.tax.name} not withheld` };
+  }
+  return null;
+}
+
+// What waits for the employer, in words: "3 home addresses, 2 work locations and 1 agency account".
+function employerWaits(s) {
+  const m = missingInfo(s);
+  const decide = s.awaiting;
+  return {
+    missing: m.addresses.length + m.work.length + m.accounts.length,
+    text: listAnd([
+      m.addresses.length ? plural(m.addresses.length, 'home address', 'home addresses') : '',
+      m.work.length ? `where ${plural(m.work.length, 'person works', 'people work')}` : '',
+      m.accounts.length ? plural(m.accounts.length, 'agency account number') : '',
+      decide ? plural(decide, 'item to confirm', 'items to confirm') : '',
+    ].filter(Boolean)),
+  };
+}
+
+
+function chatBrief({ s, view, record }) {
+  if (!state.role || !s) {
+    return '**Welcome.** This prototype moves one business\'s local payroll taxes from QuickBooks Desktop to Online payroll.\n- **Business owner**: moves the business and gives what only they know.\n- **Payroll tax expert**: decides the lines the rules cannot.\n- **Admin**: sees how the engine, the model and the data work.\nFor the demo, start as the Business owner.';
+  }
+  const co = s.a.company;
+  const wait = employerWaits(s);
+  const withExpert = s.expert - s.info;
+  if (record) {
+    const also = view === 'review' && wait.text ? `\nAlso waiting for you: ${wait.text}.` : view === 'expert' && withExpert > (record.c?.stage === 'with_expert' ? 1 : 0) ? `\n${plural(withExpert, 'line is', 'lines are')} open in your queue.` : '';
+    return opinionText(record.op) + also;
+  }
+  if (view === 'move') {
+    if (!s.d.autoRun && !s.d.live) {
+      const run = automate(s.a, s.d, policyOf(s.d));
+      const st = automationStats(s.a, run.decisions);
+      const left = openExceptions(s.a, run.decisions);
+      const expert = left.filter((x) => x.owner === 'expert').length;
+      const mine = left.filter((x) => x.owner !== 'expert');
+      return `**${co.name} is ready to move.** ${num(co.employees.length)} employees and ${plural(s.cases.length, 'local-tax line')} in Desktop.\n- Your rules would settle **${st.auto} of ${st.total}** items by themselves.\n- ${mine.length ? `For you: ${needText(mine).replace(/ needs?$/, '')}.` : 'Nothing for you.'} ${expert ? `For an expert: ${plural(expert, 'item')}.` : ''}\nNext: press **Move to Online payroll**.`;
+    }
+    const st = automationStats(s.a, s.d);
+    const next = s.d.reconciled ? 'nothing. The move is done.' : s.d.live ? 'reconcile after the first Online payroll, on **Go live**.'
+      : wait.text ? 'open **To do** and fill in Missing information; the lines waiting for it finish by themselves.'
+        : withExpert ? 'an expert decides; then you confirm.' : 'open **Go live**.';
+    return `**${st.auto} of ${st.total} items settled by rule.**\n- Waiting for you: ${wait.text || 'nothing'}.\n- With an expert: ${withExpert ? plural(withExpert, 'line') : 'nothing'}.\nNext: ${next}`;
+  }
+  if (view === 'review') {
+    if (!wait.text && !withExpert) return '**Nothing needs you.** Every line is decided. Next: open **Go live**.';
+    const m = missingInfo(s);
+    const lines = [
+      m.addresses.length ? `- **${plural(m.addresses.length, 'home address', 'home addresses')}**: a school-district tax follows the home, so those lines wait for it.` : '',
+      m.work.length ? `- **Where ${plural(m.work.length, 'person works', 'people work')}**: Desktop withholds their home town's city tax, not the work site's. Only you know which is right.` : '',
+      m.accounts.length ? `- **${plural(m.accounts.length, 'agency account number')}**: needed to pay and file ${listAnd(m.accounts.map((a) => a.agency))}.` : '',
+      s.awaiting ? `- **${plural(s.awaiting, 'item')} to confirm** in the list.` : '',
+      withExpert ? `- ${plural(withExpert, 'line is', 'lines are')} with an expert; you confirm after.` : '',
+    ].filter(Boolean);
+    return `**What needs you**\n${lines.join('\n')}\n${wait.missing ? 'Start with Missing information at the top: the lines waiting for it finish by themselves.' : 'Open a line to see my opinion on it.'}`;
+  }
+  if (view === 'expert') {
+    const open = s.cases.filter((c) => c.stage === 'with_expert' && !waitsForEmployer(c));
+    if (!open.length) return `**Your queue is empty.**${s.info ? ` ${plural(s.info, 'line waits', 'lines wait')} for the employer (an address or a work location); you can still map them.` : ''}`;
+    const byLabel = new Map();
+    for (const c of open) byLabel.set(c.item.label, [...(byLabel.get(c.item.label) ?? []), c]);
+    const rows = [...byLabel].map(([label, cs]) => `- "${labelOf(label)}": ${plural(cs.length, 'line')} (${listAnd([...new Set(cs.map((c) => (REASON_SHORT[c.reason] ?? c.reason).toLowerCase()))])})`);
+    return `**${plural(open.length, 'line waits', 'lines wait')} for you**, under ${plural(byLabel.size, 'label')}:\n${rows.join('\n')}\nOne decision per label covers all its lines; each person's address picks the exact tax.`;
+  }
+  if (view === 'golive') {
+    if (s.d.live) return `**Live.** Confirmed taxes switch on with the first Online payroll.\nNext: ${s.d.reconciled ? 'nothing. Reconciled.' : 'reconcile after the first payroll and the first quarter.'}`;
+    const r = readiness(s.a, s.d);
+    const fails = r.checks.filter((c) => !c.pass);
+    return `**${fails.length ? `${fails.length} of ${r.checks.length} checks still open.` : 'Ready to go live.'}**\n${r.checks.map((c) => `- ${c.pass ? 'Done' : '**Open**'}: ${c.label}. ${c.detail}`).join('\n')}\nNext: ${fails.length ? (fails.some((c) => c.id === 'accounts' || c.id === 'employer') ? 'fill in **To do**, Missing information first.' : 'an expert decides what is left.') : 'press **Go live with confirmed taxes**.'}`;
+  }
+  if (view === 'analysis') return `**What the engine found for ${co.name}**\n- ${plural(s.cases.length, 'Desktop line')}: ${s.routes.local_tax} local tax, ${s.routes.not_a_tax} not a tax, ${s.routes.not_in_database} to a person.\n- ${plural(s.a.gaps.length, 'expected tax', 'expected taxes')} nobody withheld.\nOpen a step to see what it checked and why.`;
+  if (view === 'usecases') return '**Six people, one engine.** Their local taxes differ only by where they live, where they work and when.\n- School-district tax follows the home; some towns, like Columbus, have none.\n- City tax follows where the work is done.\nAsk me about any of them.';
+  if (view === 'model') {
+    const m = s.a.models.OH;
+    return m ? `**Ohio label model:** ${m.k} clusters, silhouette ${m.silhouette.toFixed(2)}, ${m.mode === 'assisted' ? 'suggestions shown' : 'shadow mode'}.\n- A label below ${m.thresholds.itemFloor} confidence goes to a person.\nTry a label of your own in **Try the clustering**.` : '**No Ohio model** was built for this business.';
+  }
+  if (view === 'lab') return '**The ML Lab** tests the clustering on made-up labels whose answers are known, and compares it with simple word matching. Run it and compare the precision.';
+  if (view === 'data') return '**One SQLite database per migration, seven tables.**\n- From the Desktop file: company, employees, payroll_items, desktop_lines.\n- From the address lookup: addresses, taxes (keyed by Law ID).\n- Ours: results.\nRun a read-only query below.';
+  if (view === 'scenarios') return `**${scenarioCount()} scenarios pass.** They run live on six small test files, from file checks to reconcile.`;
+  if (view === 'audit') {
+    const mine = state.audit.filter((x) => x.company_id === state.companyId);
+    return mine.length ? `**${plural(mine.length, 'log entry', 'log entries')}** for ${co.name.replace(/\.$/, '')}. Latest: ${mine[0].actor}, ${mine[0].action.toLowerCase()}${mine[0].target ? `: ${mine[0].target}` : ''}.` : '**Nothing logged yet.** Every decision is logged here with its time and role.';
+  }
+  return `**${VIEW_NAMES[view] ?? 'This screen'}.** Ask me about it.`;
+}
+
+// Which briefing applies: the chat posts a new one when this changes.
+function chatKey() {
+  if (!state.role) return 'signin';
+  const view = currentView();
+  const rec = (view === 'review' || view === 'expert') && state.detailOpen ? state.sel[view] ?? '' : '';
+  return `${state.role}|${state.companyId}|${view}|${rec}`;
+}
+
 function chatContext() {
   const role = state.role ? ROLES[state.role].label : 'nobody (the sign-in page)';
   const view = state.role ? currentView() : null;
   let s = null;
   try { s = state.role ? summary() : null; } catch { s = null; }
+  const record = chatRecord(s, view);
   let where = state.role ? VIEW_NAMES[view] : 'Sign in';
-  let facts = null;
-  let record = null;
-  if (s && (view === 'review' || view === 'expert')) {
-    const key = state.sel[view];
-    const c = key?.startsWith('c|') ? s.cases.find((x) => `c|${x.case_id}` === key) : null;
-    const g = key?.startsWith('g|') ? s.a.gaps.find((x) => `g|${x.gap_id}` === key) : null;
-    if (c) { record = aiCtx.get(`line:${c.case_id}`); where = `${VIEW_NAMES[view]}: ${c.employee_name}, "${labelOf(c.item.label)}"`; }
-    if (g) { record = aiCtx.get(`gap:${g.gap_id}`); where = `${VIEW_NAMES[view]}: ${g.employee_name}, ${g.tax.name} not withheld`; }
-    facts = record?.facts ?? null;
-  }
+  if (record) where = `${VIEW_NAMES[view]}: ${record.title}`;
+  let facts = record?.facts ?? null;
   const uc = view === 'usecases' ? useCases() : null;
   if (uc) facts = USE_CASES.map((u, i) => ({ situation: u.title, story: u.story, lesson: u.lesson, ...personFacts(uc.a.employees[i], uc.a.company, addressById) }));
   if (s && view === 'model') {
     const m = s.a.models.OH;
     if (m) facts = { state: 'Ohio', silhouette: m.silhouette.toFixed(3), clusters: m.k, precision: pct(m.precision), labelled_examples: m.poolSize, mode: m.mode === 'assisted' ? 'suggestions shown' : 'shadow mode', gates: m.gates, label_confidence_floor: m.thresholds.itemFloor, cluster_names: m.clusters.map((k) => `${k.name} (${k.size})`) };
   }
+  if (s && (view === 'review' || view === 'move') && !record) {
+    const m = missingInfo(s);
+    facts = { missing_information: { home_addresses: m.addresses.map((x) => x.e.name), where_someone_works: m.work.map((x) => ({ name: x.e.name, ...(lineFacts(x.c, { company: s.a.company, addressById, taxByLaw: (law) => s.a.idx.taxByLaw.get(law), view, stage: waitText(x.c), next: '', decided: '' }).engine.work_question ?? {}) })), agency_accounts: m.accounts.map((a) => a.agency) } };
+  }
+  if (s && view === 'golive') facts = { checks: readiness(s.a, s.d).checks.map((c) => ({ check: c.label, done: c.pass, detail: c.detail })) };
   let business = '';
   if (s) {
     const co = s.a.company;
     const items = s.cases.length + s.a.gaps.length;
     const action = s.awaiting + s.expert;
-    business = `Business being moved: ${co.name} (${co.plan} plan), ${num(s.a.employees.length)} employees, ${num(s.cases.length)} Desktop local-tax lines and ${s.a.gaps.length} expected taxes nobody withheld. First Online payroll: ${MONTHS_LONG[co.migration_month - 1]}. Status: ${s.status}. Settled: ${items - action} of ${items}. Waiting for the employer: ${s.awaiting}. Waiting for a home address: ${s.info}. With an expert: ${s.expert - s.info}. The engine's routes: ${s.routes.local_tax} local tax, ${s.routes.not_a_tax} not a tax, ${s.routes.not_in_database} to an expert.`;
+    business = `Business being moved: ${co.name} (${co.plan} plan), ${num(s.a.employees.length)} employees, ${num(s.cases.length)} Desktop local-tax lines and ${s.a.gaps.length} expected taxes nobody withheld. First Online payroll: ${MONTHS_LONG[co.migration_month - 1]}. Status: ${s.status}. Settled: ${items - action} of ${items}. Waiting for the employer to decide: ${s.awaiting}. Waiting for missing information from the employer: ${employerWaits(s).missing}. With an expert: ${s.expert - s.info}. The engine's routes: ${s.routes.local_tax} local tax, ${s.routes.not_a_tax} not a tax, ${s.routes.not_in_database} to a person.`;
   }
-  const prompt = `You are "Payroll AI", the assistant built into a student prototype (SPJIMR, Business in the Digital Age, Case 19) that moves one business's local payroll taxes (Ohio city and school-district income taxes) from QuickBooks Desktop Payroll to QuickBooks Online Payroll. Every person and business in it is made up; Ohio tax rates are real. It is not affiliated with Intuit.
+  const prompt = () => `You are "Payroll AI", the assistant built into a student prototype (SPJIMR, Business in the Digital Age, Case 19) that moves one business's local payroll taxes (Ohio city and school-district income taxes) from QuickBooks Desktop Payroll to QuickBooks Online Payroll. Every person and business in it is made up; Ohio tax rates are real. It is not affiliated with Intuit.
 
 ${RULES}
 
@@ -2106,8 +2159,9 @@ ${business}
 ${facts ? `Facts of what is on screen (JSON):\n${JSON.stringify(facts, null, 1)}` : ''}
 
 How to answer: plain text, short (under 120 words unless asked for more); bullets starting with "- " are fine. For anything about this business, its people, lines or numbers, use only the facts above and say so when they do not cover the question. For general ideas (Law ID, clustering, silhouette, local taxes, digital transformation, how a migration like this works) explain simply. Never invent rates, addresses, laws or dollar amounts. This is not tax advice.`;
-  const suggestions = record ? ['Explain this line simply', 'What should I do with it?', ...aiSuggestions(record.facts).slice(0, 2)] : CHAT_SUGGESTIONS[state.role ? view : 'signin'] ?? [];
-  return { where: `Looking at: ${where}`, prompt, suggestions, builtIn: (q) => chatBuiltIn(q, { s, view, record, uc }) };
+  const suggestions = record ? aiSuggestions(record.facts, record.c).slice(0, 3) : CHAT_SUGGESTIONS[state.role ? view : 'signin'] ?? [];
+  const check = record ? `Check ${record.title} for me and give your own opinion.\n${opinionFormat(record.facts)}` : s ? 'Look at this screen and tell me, in under 100 words, what matters most and what I should do next.' : null;
+  return { key: chatKey(), where, brief: () => chatBrief({ s, view, record }), prompt, suggestions, check, builtIn: (q) => chatBuiltIn(q, { s, view, record, uc }) };
 }
 
 // The built-in chat answers: the open record first, then common questions about the app.
@@ -2115,11 +2169,12 @@ function chatBuiltIn(q, { s, view, record, uc }) {
   const t = ` ${String(q).toLowerCase()} `;
   const counts = () => {
     const withExpert = s.expert - s.info;
-    return `${s.a.company.name}: ${s.status}. ${s.awaiting ? `${s.awaiting} waiting for the employer. ` : ''}${s.info ? `${s.info} waiting for a home address. ` : ''}${withExpert ? `${withExpert} with an expert. ` : ''}${!s.awaiting && !s.info && !withExpert ? 'Nothing is waiting. ' : ''}Go live needs four checks: every line decided, every expected tax handled, every Desktop dollar given a destination, and every agency account complete.`;
+    const wait = employerWaits(s);
+    return `${s.a.company.name}: ${s.status}. ${wait.text ? `Waiting for you: ${wait.text}. ` : ''}${withExpert ? `${plural(withExpert, 'line')} with an expert. ` : ''}${!wait.text && !withExpert ? 'Nothing is waiting. ' : ''}Go live needs four checks: every line decided, every expected tax handled, every Desktop dollar given a destination, and every agency account complete.`;
   };
   if (s && /how many|status|progress|overall|in total|whole business/.test(t)) return counts();
   if (record) {
-    if (/explain|what should|what do i do|summar|simply/.test(t)) return opinionText(record.op);
+    if (/explain|what should|what do i do|summar|simply|opinion|check this/.test(t)) return opinionText(record.op);
     const a = builtInAnswer(record.facts, q);
     if (a) return a;
   }
@@ -2129,8 +2184,10 @@ function chatBuiltIn(q, { s, view, record, uc }) {
     if (ucs) return named.map(({ u, i }) => builtInAnswer({ person: personFacts(ucs.a.employees[i], ucs.a.company, addressById) }, /compare|and/.test(t) ? 'why these taxes' : q) ?? `${u.name}: ${u.lesson}`).join('\n\n');
   }
   if (/visa|india|immigra|citizen|nationalit/.test(t)) return 'Local taxes here follow only where a person lives and works in Ohio, and the months they are on the payroll; nationality or visa does not change them. Federal and state tax residency for someone new to the US is outside this prototype. See Ananya on the Use cases screen.';
-  if (/what does this app|what is this|about this app|purpose|what can you do/.test(t)) return 'It moves one business\'s local payroll taxes (Ohio city and school-district taxes) from QuickBooks Desktop to Online payroll. For every employee it works out the taxes owed from the home and work addresses, reads unclear Desktop labels with a clustering model, and sends each line to a local tax, to deductions or to an expert. Rules the employer approves settle most lines; nothing switches on until the employer confirms.';
-  if (/which role|start with|demo|where do i start/.test(t)) return 'Start as the Business owner: Move, Get started, Move to Online payroll. Add the 3 missing addresses in To do. Then the Payroll tax expert decides the 2 "Other Tax" lines once. Back as the owner, Go live shows everything settled and reconciled. The Admin screens explain the engine, the model and the data.';
+  if (/what does this app|what is this|about this app|purpose|what can you do/.test(t)) return 'It moves one business\'s local payroll taxes (Ohio city and school-district taxes) from QuickBooks Desktop to Online payroll. For every employee it works out the taxes owed from the home and work addresses, reads unclear Desktop labels with a clustering model, and sends each line to a local tax, to deductions or to a person. Rules the employer approves settle most lines; nothing switches on until the employer confirms.';
+  if (/which role|start with|demo|where do i start/.test(t)) return 'Start as the Business owner: Move, Get started, Move to Online payroll. Fill in Missing information on To do. Then the Payroll tax expert decides the unclear labels once. Back as the owner, Go live shows everything settled and reconciled. The Admin screens explain the engine, the model and the data.';
+  if (/where (someone|they|he|she|people) works?|work location|works? from home|remote/.test(t)) return 'A city tax is owed where the work is done: the work site, or the home for someone who works from home. When Desktop withholds the city tax of the town where a person lives instead of the work site\'s, only the employer knows which is right. They answer under Missing information: from home, the home town\'s tax stays; at the site, the site\'s tax is added and the home town\'s becomes optional.';
+  if (/account number|agency account|deposit/.test(t)) return 'Online payroll pays and files each local tax with its agency, so every agency needs an account number and a deposit frequency. Most come across from the Desktop items; one that is missing is asked for under Missing information.';
   if (/law ?id|\b177\b/.test(t)) return 'A Law ID is the unique number of each tax (the primary key of the taxes table). A Desktop item QuickBooks already knows carries its tax\'s Law ID and maps straight to it. An item the employer created carries 177 (or 0), which names no tax, so the address and the label decide. The migration turns every 177 into a real Law ID.';
   if (/cluster|silhouette|model|floor|word matching|ml lab/.test(t)) {
     const m = s?.a.models.OH;
@@ -2138,7 +2195,7 @@ function chatBuiltIn(q, { s, view, record, uc }) {
   }
   if (/table|database|schema|sql/.test(t)) return 'Seven tables, one database per migration. From the Desktop file: company, employees, payroll_items, desktop_lines. From the address lookup: addresses, taxes (keyed by Law ID). Our result: results (where each Desktop line went, its Law ID and who decided). The Data screen shows the keys and lets you run read-only queries.';
   if (/scenario/.test(t)) return `${scenarioCount()} scenarios run live on six small test files: file checks, finding the state, expected taxes, clustering and gates, routing, gaps, decisions, go-live checks, W-2 history, reconcile, joiners and leavers, and automation.`;
-  if (s && /waiting|settled|left|ready|go live|tie.?out|for me/.test(t)) return counts();
+  if (s && /waiting|settled|left|ready|go live|tie.?out|for me|check this|matters/.test(t)) return s && view && !record && /check this|matters/.test(t) ? chatBrief({ s, view, record }) : counts();
   if (/expert|unclear|decide/.test(t)) return 'The expert sees only what the rules could not settle: unclear labels, taxes the address does not support, conflicts. One decision covers every employee with the same label, and each employee\'s address picks the exact tax. The employer confirms it.';
   if (/address/.test(t)) return 'A school-district tax is owed where the person lives, so a line with no usable home address waits for the employer to add it (To do, Missing information). The engine then checks the line again by itself.';
   return `I'm the built-in assistant, so I answer common questions about this screen and the records. ${ai.hosted ? 'Allow Claude when asked to get real AI answers.' : 'Connect an AI model (the sliders button at the top of this chat) to ask anything.'}`;
@@ -2662,9 +2719,52 @@ function handle(action, el) {
       form.querySelector('[type="submit"]')?.focus();
       return;
     }
+    case 'work-answer': {
+      if (d.live) { toast('This business is live. Undo go-live to change where someone works.'); return; }
+      const remote = el.dataset.remote === '1';
+      const corr = { kind: 'work', company_id: state.companyId, employee_id: el.dataset.employee, remote, at: new Date().toISOString() };
+      const name = companyById().employees.find((x) => x.employee_id === corr.employee_id)?.name ?? corr.employee_id;
+      const before = analysisFor().employees.find((x) => x.employee_id === corr.employee_id);
+      const site = before ? siteOf(before, analysisFor()).name : 'the work site';
+      addCorrection(corr);
+      const emp = analysisFor().employees.find((x) => x.employee_id === corr.employee_id);
+      const city = (emp?.expected.list ?? []).find((x) => x.required && x.tax.type === 'municipal');
+      log('Employer', 'Said where someone works', name, `${remote ? 'From home' : `At ${site}`}. ${city ? `City tax owed: ${taxShort(city.tax)}.` : ''} The engine checked the lines again.`);
+      let steps = 0;
+      if (decisionsFor().autoRun && !decisionsFor().live) steps = runAutomationFor(state.companyId).actions.length;
+      toast(`Saved: ${name} works ${remote ? 'from home' : `at ${site}`}${city ? `, so ${taxShort(city.tax)} applies` : ''}. ${steps ? `Your rules settled ${plural(steps, 'more item')}.` : decisionsFor().autoRun ? 'Nothing more for the rules to settle.' : 'The line is ready to confirm.'}`);
+      afterRender = () => (document.querySelector('.mi-list button, .mi-list input') ?? document.getElementById('mi-h') ?? document.getElementById('main'))?.focus({ preventScroll: true });
+      break;
+    }
+    case 'save-account': {
+      if (d.live) { toast('This business is live. Undo go-live to change an account.'); return; }
+      const f = new FormData(el);
+      const account = String(f.get('account') ?? '').trim();
+      const frequency = String(f.get('frequency') ?? '');
+      if (!account || !frequency) {
+        toast(account ? 'Choose how often taxes are deposited.' : 'Enter the account number.');
+        el.querySelector(account ? '[name="frequency"]' : '[name="account"]')?.focus();
+        return;
+      }
+      d.accounts[el.dataset.agency] = { account, frequency };
+      log('Employer', 'Added an agency account', el.dataset.agency, `Account number and ${frequency.toLowerCase()} deposits`);
+      toast(`Saved the account for ${el.dataset.agency}.`);
+      afterRender = () => (document.querySelector('.mi-list button, .mi-list input') ?? document.getElementById('mi-h') ?? document.getElementById('main'))?.focus({ preventScroll: true });
+      break;
+    }
+    case 'sample-account': {
+      const form = el.closest('form');
+      if (!form) return;
+      const h = [...el.dataset.agency].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) >>> 0, 11);
+      form.elements.account.value = `${el.dataset.agency.replace(/^City of /, '').slice(0, 3).toUpperCase()}-${String(100000 + (h % 900000))}`;
+      if (!form.elements.frequency.value) form.elements.frequency.value = 'Monthly';
+      form.querySelector('[type="submit"]')?.focus();
+      return;
+    }
     case 'focus-missing': {
-      const target = `mi-line1-${domId(el.dataset.employee)}`;
-      const go = () => { const input = document.getElementById(target); if (!input) return; input.closest('.mi-row')?.scrollIntoView({ block: 'center' }); input.focus({ preventScroll: true }); };
+      const target = el.dataset.agency ? `mi-account-${domId(el.dataset.agency)}` : `mi-line1-${domId(el.dataset.employee)}`;
+      const alt = el.dataset.employee ? `mi-work-${domId(el.dataset.employee)}` : '';
+      const go = () => { const input = document.getElementById(target) ?? (alt && document.getElementById(alt)); if (!input) return; input.closest('.mi-row')?.scrollIntoView({ block: 'center' }); input.focus({ preventScroll: true }); };
       state.detailOpen = false;
       save();
       if (location.hash === '#review') { afterRender = go; break; }
@@ -2757,21 +2857,6 @@ function handle(action, el) {
       state.detailOpen = false;
       afterRender = () => window.scrollTo(0, listY);
       break;
-    case 'ai-opinion':
-      aiOpinion(el.dataset.key);
-      return;
-    case 'ai-ask':
-      aiAsk(el.dataset.key, el.dataset.q);
-      return;
-    case 'ai-ask-form': {
-      const q = String(new FormData(el).get('q') ?? '').trim();
-      if (!q) { el.querySelector('input')?.focus(); return; }
-      aiAsk(el.dataset.key, q);
-      return;
-    }
-    case 'ai-stop':
-      aiChat(el.dataset.key).ctl?.abort();
-      return;
     case 'log-who':
       logWho = el.dataset.value;
       more.audit = false;
@@ -3030,18 +3115,11 @@ app.addEventListener('submit', (ev) => {
   handle(form.dataset.action, form);
 });
 app.addEventListener('input', (ev) => {
-  if (ev.target.classList?.contains('ai-input')) { aiChat(ev.target.dataset.key).draft = ev.target.value; return; }
   if (ev.target.id !== 'queue-search') return;
   state.query[currentView()] = ev.target.value;
   save();
   applySearch(currentView());
 });
-// Remember which use-case assistants are open, so a re-render keeps them open.
-app.addEventListener('toggle', (ev) => {
-  const d = ev.target;
-  if (!d.classList?.contains('uc-ai')) return;
-  if (d.open) ucOpen.add(d.dataset.key); else ucOpen.delete(d.dataset.key);
-}, true);
 // Close an open "More actions" menu when clicking elsewhere or pressing Escape.
 document.addEventListener('click', (ev) => {
   for (const d of document.querySelectorAll('details.more[open]')) if (!d.contains(ev.target)) d.open = false;
@@ -3242,8 +3320,8 @@ async function boot() {
     rebuildData();
     render();
     chat = createChat({
-      context: chatContext, ai: () => ({ via: ai.via, label: ai.label, hosted: ai.hosted }), call: (turns, o) => aiCall(turns, { ...o, cache: false }),
-      connected: aiConnected, claudeOff: () => { ai.state = 'off'; ai.via = null; ai.note = 'Claude is not available here, so the built-in assistant answers from the same facts.'; render(); },
+      situation: chatKey, context: chatContext, ai: () => ({ via: ai.via, label: ai.label, name: aiName(), hosted: ai.hosted }), call: (turns, o) => aiCall(turns, { ...o, cache: false }),
+      connected: aiConnected, claudeOff: () => { ai.state = 'off'; ai.via = null; render(); },
       format: aiText, icon, esc,
     });
     connectAI();

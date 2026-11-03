@@ -1,28 +1,31 @@
-// Ask AI: the round button at the bottom right of every screen, and the chat window it opens. The window
-// can be dragged by its header anywhere on the screen (it remembers where; double-click the header to put
-// it back), resized from its corner on a computer, and becomes a bottom sheet on a phone. It reads what the
-// person is looking at (context()), answers with the connected model (call()) or the built-in assistant,
-// and lives outside the app's own markup, so re-rendering a screen never closes it or loses the chat.
+// Ask AI: the round button at the bottom right of every screen, and the chat window it opens. When it opens
+// it first says what matters for this person on this screen (a briefing from context().brief(), instant and
+// built in), and posts a new one as they move to another screen or record. Then they ask questions: the
+// connected model answers (call()), or the built-in assistant does. A dot on the button means there is a
+// new briefing. The window can be dragged by its header (it remembers where; double-click the header to put
+// it back), resized from its corner on a computer, and becomes a bottom sheet on a phone. It lives outside
+// the app's own markup, so re-rendering a screen never closes it or loses the chat.
 import { PROVIDERS, loadConfig, saveConfig, clearConfig, listModels, suggestedModel, configLabel, complete } from './llm.mjs';
 
 const POS = 'local-tax-migration:chat-pos';
 const CLAUDE_OFF = new Set(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed']);
 
 /**
- * context()   -> { where, prompt, suggestions, builtIn(question) } for the current screen
- * ai()        -> { via: 'claude' | 'key' | null, label, hosted }
+ * situation() -> a key for the person, screen and record; a new key means a new briefing
+ * context()   -> { key, where, brief(), prompt(), suggestions, check, builtIn(question) } for the current screen
+ * ai()        -> { via: 'claude' | 'key' | null, label, name, hosted }
  * call(turns, {onText, signal}) -> Promise<{text}> with the connected model
  * connected(cfg | null) -> the page now uses this key (or none)
  * claudeOff() -> Claude was declined or is unavailable in this view
  * format(text) -> HTML for an answer; icon(name) -> SVG; esc(text) -> escaped text
  */
-export function createChat({ context, ai, call, connected, claudeOff, format, icon, esc }) {
+export function createChat({ situation, context, ai, call, connected, claudeOff, format, icon, esc }) {
   const fab = document.createElement('button');
   fab.type = 'button';
   fab.className = 'chat-fab';
   fab.setAttribute('aria-expanded', 'false');
   fab.setAttribute('aria-controls', 'chat-panel');
-  fab.innerHTML = `<span class="chat-fab-ic" aria-hidden="true">${icon('sparkles')}</span><span class="chat-fab-text">Ask AI</span>`;
+  fab.innerHTML = `<span class="chat-fab-ic" aria-hidden="true">${icon('sparkles')}</span><span class="chat-fab-text">Ask AI</span><span class="chat-fab-dot" aria-hidden="true"></span>`;
 
   const panel = document.createElement('section');
   panel.className = 'chat-panel';
@@ -42,7 +45,6 @@ export function createChat({ context, ai, call, connected, claudeOff, format, ic
         <button type="button" class="chat-icon" data-c="close" aria-label="Close the chat" title="Close (Esc)">${icon('close')}</button>
       </div>
     </header>
-    <div class="chat-where">${icon('pin')}<span></span></div>
     <div class="chat-body">
       <ol class="chat-log" aria-live="polite" aria-label="Conversation"></ol>
       <div class="chat-settings" hidden></div>
@@ -64,7 +66,8 @@ export function createChat({ context, ai, call, connected, claudeOff, format, ic
   const form = $('.chat-compose');
   const input = $('#chat-q');
   const send = $('.chat-send');
-  const msgs = []; // {role, text, source, failed}
+  const msgs = []; // {role, text, source, failed, brief: {key, where}}
+  let seen = null; // the situation whose briefing the person has seen
   let busy = null; // AbortController while an answer streams
   let note = '';
   let setMsg = null; // the settings' status line {tone, text}
@@ -121,31 +124,46 @@ export function createChat({ context, ai, call, connected, claudeOff, format, ic
   function drawHead() {
     const a = ai();
     $('.chat-dot').classList.toggle('on', Boolean(a.via));
-    $('.chat-status-text').textContent = a.via ? who() : a.hosted ? 'Built-in assistant (allow Claude to use real AI)' : 'Built-in assistant';
-    $('.chat-where span').textContent = context().where;
+    $('.chat-status-text').textContent = a.via ? who() : a.hosted ? 'Built-in assistant (allow Claude for real AI)' : 'Built-in assistant';
+  }
+
+  // The briefing for where the person is now: a new one when they move on, or the latest one brought up to
+  // date. A briefing nobody has replied to is replaced rather than stacked.
+  function brief() {
+    const c = context();
+    const m = { role: 'assistant', text: c.brief(), brief: { key: c.key, where: c.where } };
+    const i = msgs.findLastIndex((x) => x.brief);
+    if (i >= 0 && (i === msgs.length - 1 || msgs[i].brief.key === c.key)) msgs[i] = m;
+    else msgs.push(m);
+    seen = c.key;
+    fab.classList.remove('tip');
   }
 
   const bubble = (m, i) => (m.role === 'user'
     ? `<li class="chat-msg user"><div class="chat-bubble"><p>${esc(m.text)}</p></div></li>`
-    : `<li class="chat-msg assistant${m.failed ? ' failed' : ''}"><span class="chat-mini" aria-hidden="true">${icon('sparkles')}</span><div class="chat-bubble" id="chat-b-${i}">${m.text == null ? '<span class="chat-typing" role="img" aria-label="Thinking"><i></i><i></i><i></i></span>' : `${format(m.text)}${m.source ? `<span class="chat-src">${esc(m.source)}</span>` : ''}`}</div></li>`);
+    : `<li class="chat-msg assistant${m.failed ? ' failed' : ''}${m.brief ? ' brief' : ''}"><span class="chat-mini" aria-hidden="true">${icon('sparkles')}</span><div class="chat-bubble" id="chat-b-${i}">${m.brief ? `<span class="chat-tag">${icon('pin')}<span>${esc(m.brief.where)}</span></span>` : ''}${m.text == null ? '<span class="chat-typing" role="img" aria-label="Thinking"><i></i><i></i><i></i></span>' : `${format(m.text)}${m.source ? `<span class="chat-src">${esc(m.source)}</span>` : ''}`}</div></li>`);
 
   function drawLog() {
     const a = ai();
-    const hello = `<li class="chat-msg assistant"><span class="chat-mini" aria-hidden="true">${icon('sparkles')}</span><div class="chat-bubble">
-      <p><b>Hi, I'm Payroll AI.</b> I can see what you are looking at, so ask me about this screen, a line, a tax or how the prototype works.</p>
-      ${a.via ? `<p class="chat-hint">${esc(who())} answers, using only what this screen shows.</p>`
-        : a.hosted ? '<p class="chat-hint">Claude answers once you allow it. Until then the built-in assistant answers common questions.</p>'
-          : '<p class="chat-hint">No AI model is connected yet, so the built-in assistant answers common questions. <button type="button" class="chat-link" data-c="settings">Connect an AI model</button> to ask anything.</p>'}
-    </div></li>`;
-    log.innerHTML = hello + msgs.map(bubble).join('') + (note ? `<li class="chat-hint" role="note">${esc(note)}</li>` : '');
-    log.scrollTop = log.scrollHeight;
+    const intro = `<li class="chat-intro"><p>I look at your screen and tell you what matters first. Then ask me anything.</p>
+      ${a.via ? `<p>${esc(who())} answers, from what this screen shows.</p>`
+        : a.hosted ? '<p>Claude answers once you allow it; until then the built-in assistant does.</p>'
+          : '<p>The built-in assistant answers common questions. <button type="button" class="chat-link" data-c="settings">Connect an AI model</button> to ask anything.</p>'}</li>`;
+    log.innerHTML = intro + msgs.map(bubble).join('') + (note ? `<li class="chat-hint" role="note">${esc(note)}</li>` : '');
+    // A new briefing is read from its start; anything else from the latest answer.
+    const top = msgs.at(-1)?.brief ? [...log.querySelectorAll('.chat-msg.brief')].at(-1) : null;
+    log.scrollTop = top ? top.offsetTop - 10 : log.scrollHeight;
   }
 
   function drawSugg() {
+    const a = ai();
+    const c = context();
     const asked = new Set(msgs.filter((m) => m.role === 'user').map((m) => m.text));
-    const list = context().suggestions.filter((q) => !asked.has(q)).slice(0, 3);
-    sugg.hidden = !list.length || !settings.hidden;
-    sugg.innerHTML = list.map((q) => `<button type="button" class="chat-chip" data-q="${esc(q)}"${busy ? ' disabled' : ''}>${esc(q)}</button>`).join('');
+    const chips = c.suggestions.filter((q) => !asked.has(q)).slice(0, 3).map((q) => ({ q, text: q }));
+    // With a real model, one chip asks it for its own opinion on what is on screen.
+    if (a.via && c.check) chips.unshift({ q: c.check, text: `Check this with ${a.name}`, cls: ' check' });
+    sugg.hidden = !chips.length || !settings.hidden;
+    sugg.innerHTML = chips.map((x) => `<button type="button" class="chat-chip${x.cls ?? ''}" data-q="${esc(x.q)}" data-text="${esc(x.text)}"${busy ? ' disabled' : ''}>${x.cls ? icon('sparkles') : ''}${esc(x.text)}</button>`).join('');
   }
 
   function drawSettings() {
@@ -245,12 +263,12 @@ export function createChat({ context, ai, call, connected, claudeOff, format, ic
   }
 
   // ---------- asking ----------
-  async function ask(q) {
+  async function ask(q, shown = q) {
     q = String(q ?? '').trim();
     if (!q || busy) return;
     const c = context();
-    const history = msgs.filter((m) => m.text && !m.failed).slice(-8).map((m) => ({ role: m.role, content: m.text }));
-    msgs.push({ role: 'user', text: q });
+    const history = msgs.filter((m) => m.text && !m.failed && !m.brief).slice(-8).map((m) => ({ role: m.role, content: m.text }));
+    msgs.push({ role: 'user', text: String(shown).trim() });
     const m = { role: 'assistant', text: null, source: '' };
     msgs.push(m);
     note = '';
@@ -271,7 +289,7 @@ export function createChat({ context, ai, call, connected, claudeOff, format, ic
     const at = msgs.length - 1;
     drawLog();
     drawSugg();
-    const turns = [{ role: 'user', content: c.prompt }, { role: 'assistant', content: 'Understood. I will answer from these facts.' }, ...history, { role: 'user', content: q }];
+    const turns = [{ role: 'user', content: c.prompt() }, { role: 'assistant', content: 'Understood. I will answer from these facts.' }, ...history, { role: 'user', content: q }];
     try {
       const r = await call(turns, {
         signal: busy.signal,
@@ -309,6 +327,7 @@ export function createChat({ context, ai, call, connected, claudeOff, format, ic
     fab.querySelector('.chat-fab-ic').innerHTML = icon('close');
     fab.querySelector('.chat-fab-text').textContent = 'Close';
     restore();
+    if (!busy) brief();
     drawAll();
     input.focus({ preventScroll: true });
   }
@@ -328,14 +347,14 @@ export function createChat({ context, ai, call, connected, claudeOff, format, ic
   input.addEventListener('input', autosize);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
   form.addEventListener('submit', (e) => { e.preventDefault(); if (busy) busy.abort(); else ask(input.value); });
-  sugg.addEventListener('click', (e) => { const b = e.target.closest('.chat-chip'); if (b && !b.disabled) ask(b.dataset.q); });
+  sugg.addEventListener('click', (e) => { const b = e.target.closest('.chat-chip'); if (b && !b.disabled) ask(b.dataset.q, b.dataset.text); });
   panel.addEventListener('click', (e) => {
     const b = e.target.closest('[data-c]');
     if (!b) return;
     const c = b.dataset.c;
     if (c === 'close') close();
     else if (c === 'settings') showSettings(settings.hidden);
-    else if (c === 'clear') { busy?.abort(); msgs.length = 0; note = ''; drawAll(); input.focus(); }
+    else if (c === 'clear') { busy?.abort(); msgs.length = 0; note = ''; brief(); drawAll(); input.focus(); }
     else if (c === 'connect') connect();
     else if (c === 'disconnect') { clearConfig(); models = null; connected(null); setMsg = { tone: 'info', text: 'Disconnected. The key was removed from this browser.' }; drawAll(); }
   });
@@ -345,9 +364,9 @@ export function createChat({ context, ai, call, connected, claudeOff, format, ic
 
   return {
     refresh() {
-      if (panel.hidden) return;
+      if (panel.hidden) { fab.classList.toggle('tip', situation() !== seen); return; }
       drawHead();
-      if (settings.hidden && !busy) { drawLog(); drawSugg(); }
+      if (settings.hidden && !busy) { brief(); drawLog(); drawSugg(); }
     },
     open,
     close,

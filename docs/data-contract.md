@@ -86,15 +86,23 @@ The app moves one business, **Buckeye Supply Co.** (`G-001`, 152 employees), mad
 
 A test (`tests/scale.test.mjs`) checks that the generator gives the same businesses every time, that the app's one business equals the first of them, that each has at least 100 employees, that every one goes through the engine, and that they round-trip through the database exactly.
 
-## Addresses the employer adds
+## What the employer adds: addresses, work locations, account numbers
 
-A line that needs a home address (`no_address`, or `address_unresolved` when the lookup cannot place it) waits for the employer: the owner's **To do** lists it under **Missing information**. Saving an address:
+The owner's **To do** asks under **Missing information** for what only the employer knows.
+
+**A home address**, for a line that needs one (`no_address`, or `address_unresolved` when the lookup cannot place it). Saving it:
 
 1. Looks it up by street and ZIP in the address lookup.
 2. Writes it to the database: the employee's `home_address_id` (for the whole year), and the address in `addresses` (as the lookup placed it, or as `UNRESOLVED` if the lookup has never seen it). The app's log records it as "Added a home address".
 3. Reads the business back from the database, and the engine checks its lines again. If the business has moved, the employer's rules run and settle what they can.
 
-An address the lookup knows settles the line by rule; one it has never seen is kept, and the line stays with an expert as `address_unresolved`. Added addresses are kept in the browser and applied again whenever the database is rebuilt.
+An address the lookup knows settles the line by rule; one it has never seen is kept, and the line stays with an expert as `address_unresolved`.
+
+**Where someone works**, for a line routed `work_location`: Desktop withholds the city tax of the town the employee lives in, and no line withholds the work site's. The answer is written to `employees.remote` (1 from home, 0 at the site), the log records "Said where someone works", and the engine checks the lines again. In Buckeye Supply Co., two people at the Lancaster site who live in Columbus have the Columbus City Tax item instead of the Lancaster one.
+
+**An agency account number and deposit frequency**, for an agency QuickBooks will pay with neither on any Desktop item it was confirmed from. In Buckeye Supply Co. the Columbus City Tax item has no account number. The answer is kept with the employer's decisions, as on the Go live screen.
+
+Added addresses and work locations are kept in the browser and applied again whenever the database is rebuilt.
 
 ## ML Lab
 

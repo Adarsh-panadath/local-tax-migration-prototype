@@ -549,7 +549,7 @@ export function analyseCompany(rawCompany, data, settings = {}) {
         c.evidence.push({ step: 4, tone: 'pass', text: `On the expected list: ${p.tax.name}${p.tax.type === 'school_district' ? ` (${p.tax.code})` : ''}, from the ${where}, ${monthSpan(p.months)}.` });
         if (p.optional) {
           c.flags.push('optional');
-          c.evidence.push({ step: 4, tone: 'warn', text: `${p.tax.name} is optional courtesy withholding for where the employee lives. It is not required, so the employer decides whether to keep it.` });
+          c.evidence.push({ step: 4, tone: 'warn', kind: 'optional', text: `${p.tax.name} is optional courtesy withholding for where the employee lives. It is not required, so the employer decides whether to keep it.` });
         }
         if (p.rate.status === 'match') c.evidence.push({ step: 5, tone: 'pass', text: `Rate check: Desktop ${p.rate.desktop} = official ${p.rate.official} (${monthSpan(past)}).` });
         else if (p.rate.status === 'no_history') c.evidence.push({ step: 5, tone: 'info', text: `Rate check: no Desktop months for ${p.tax.name}, so nothing to compare. Online uses the official ${p.rate.official}${p.rate.setupDiffers ? ` (Desktop was set to ${p.rate.desktop})` : ''}.` });
@@ -594,8 +594,34 @@ export function analyseCompany(rawCompany, data, settings = {}) {
       for (const k of keys) seen.set(k, c);
     }
 
+    // Where does this person work? Desktop withholds only the city tax of the town they live in, not the work
+    // site's. Either they work from home (then the home town's tax is the one owed) or the work site's tax was
+    // never withheld. Only the employer knows, so the line waits for them, and the work site's tax is not
+    // flagged as missing until they answer. An answer is kept as the employee's remote flag (true or false).
+    const workCity = expected.list.find((x) => x.required && x.basis === 'work' && x.tax.type === 'municipal');
+    let workQuestion = false;
+    if (workCity && !expected.remote && employee.remote !== false) {
+      const coversWork = employeeCases.some((c) => c.route === 'local_tax' && c.proposal.some((p) => p.tax_id === workCity.tax_id));
+      const homeOnly = employeeCases.filter((c) => c.route === 'local_tax' && c.proposal.length && c.proposal.every((p) => p.optional && p.tax.type === 'municipal'));
+      if (!coversWork && homeOnly.length) {
+        workQuestion = true;
+        const site = company.worksites.find((w) => w.site_id === employee.site_id);
+        for (const c of homeOnly) {
+          const home = c.proposal[0].tax;
+          c.workProposal = c.proposal;
+          c.proposal = [];
+          c.flags = c.flags.filter((f) => f !== 'optional');
+          c.evidence = c.evidence.filter((x) => x.kind !== 'optional');
+          c.route = 'not_in_database';
+          c.reason = 'work_location';
+          c.reasonText = `Desktop withholds ${home.name} (where ${employee.name} lives), not ${workCity.tax.name} (the work site). Only the employer knows where ${employee.name} works.`;
+          c.evidence.push({ step: 4, tone: 'fail', text: `Work location: Desktop withholds ${home.name}, the tax of the town where ${employee.name} lives, but not ${workCity.tax.name}, the tax of ${site?.name ?? 'the work site'}. If ${employee.name} works from home, ${home.name} is the one owed; if at ${site?.name ?? 'the work site'}, ${workCity.tax.name} is owed and was not withheld. The employer answers.` });
+        }
+      }
+    }
+
     // Gaps the other way: required expected taxes that no Desktop item covers.
-    for (const e of expected.list.filter((x) => x.required)) {
+    for (const e of expected.list.filter((x) => x.required && !(workQuestion && x === workCity))) {
       const covered = new Set(employeeCases.filter((c) => c.route === 'local_tax').flatMap((c) => c.proposal.filter((p) => p.tax_id === e.tax_id).flatMap((p) => p.months)));
       const missing = e.months.filter((m) => !covered.has(m));
       if (!missing.length) continue;

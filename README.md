@@ -77,7 +77,7 @@ Customer payroll data stays fictional on purpose: real payroll files hold social
 
 ## The demo data
 
-**One business: Buckeye Supply Co.**, 152 employees at two sites (Lancaster and Columbus, Ohio), 12 Desktop payroll items, 313 Desktop local tax lines, moving to Online payroll in October. It is generated from a fixed seed, so every visit sees the same people. Names, people, wages and labels are synthetic; the towns, ZIP codes, school districts and rates are real. Like a real Desktop file it is messy: free-text labels ("Schl Dist W/H", "school_district_wh_ohio", "Other Tax"), two missing home addresses and one the lookup cannot place, people who moved, wrong rates, school tax withheld where none is owed, and taxes owed that nobody withheld.
+**One business: Buckeye Supply Co.**, 152 employees at two sites (Lancaster and Columbus, Ohio), 12 Desktop payroll items, 313 Desktop local tax lines, moving to Online payroll in October. It is generated from a fixed seed, so every visit sees the same people. Names, people, wages and labels are synthetic; the towns, ZIP codes, school districts and rates are real. Like a real Desktop file it is messy: free-text labels ("Schl Dist W/H", "school_district_wh_ohio", "Other Tax"), two missing home addresses and one the lookup cannot place, two people whose Desktop withholds the city tax of the town they live in instead of the work site's, a city tax item with no agency account number, people who moved, wrong rates, school tax withheld where none is owed, and taxes owed that nobody withheld.
 
 Two other sets of data exist only for testing, not as businesses in the app:
 
@@ -98,15 +98,23 @@ The employer approves seven rules once, on the Move page's check step:
 | Accept expert decisions | An expert's answer takes effect without a second click |
 | Go live and reconcile when everything is settled | Only when nothing is left for a person and every check passes |
 
-Only the cases the BRD reserves for people are left: a weak or missing label signal, conflicting evidence, a missing or unplaceable address, a label naming another state, a state in shadow mode, or a missing agency account number. After a person decides one, the rules run again and finish the rest.
+Only the cases the BRD reserves for people are left: a weak or missing label signal, conflicting evidence, a missing or unplaceable address, a question only the employer can answer (where someone works), a label naming another state, a state in shadow mode, or a missing agency account number. After a person decides one, the rules run again and finish the rest.
 
-For Buckeye Supply Co., the rules settle **313 of 318 items (98%)**: 313 Desktop lines plus 5 taxes the addresses say are owed but nobody withheld. Five are left for a person: 3 home addresses only the employer has, and 2 "Other Tax" lines (a weak label) for an expert. Once the employer adds the addresses and the expert decides "Other Tax" once, the rules finish the rest, go live and reconcile: 318 of 318.
+For Buckeye Supply Co., the rules settle **311 of 318 items (98%)**: 313 Desktop lines plus 5 taxes the addresses say are owed but nobody withheld. Left for a person: for the employer, 3 home addresses, where 2 people work and 1 agency account number; for an expert, 2 "Other Tax" lines (a weak label). Once the employer gives those and the expert decides "Other Tax" once, the rules finish the rest, go live and reconcile: 319 of 319 (one answer, "works at the site", adds the site's city tax that nobody withheld).
 
 When an unclear label sits on a Desktop item many employees share, the expert decides what it means once, and each employee's address picks the exact tax.
 
 ## Missing information
 
-A missing or unplaceable home address is a fact only the employer has, so it waits for the employer, not an expert. The move summary shows **Add address** next to it, and the owner's To do lists it under **Missing information**. Saving an address writes it to the database, the engine checks that employee's lines again, and the rules settle what they can. An address the lookup has never seen is kept, and the line stays with an expert. Missing agency account numbers are listed there too.
+Some facts only the employer has, so those lines wait for the employer, not an expert. The owner's To do lists them under **Missing information**, and the move summary has a button next to each:
+
+| Kind | Why it is asked | What the owner does |
+| --- | --- | --- |
+| **Home address** | No home address in Desktop, or one the lookup cannot place. A school-district tax follows the home. | Types it (or **Fill a demo address**) and saves. |
+| **Work location** | Desktop withholds the city tax of the town the person lives in, not the work site's. A city tax follows where the work is done. | Answers **At the site** or **From home**. From home: the home town's tax is the one owed. At the site: the site's tax is added (nothing withheld it) and the home town's line becomes optional courtesy withholding. |
+| **Agency account** | An agency QuickBooks will pay has no account number or deposit frequency. | Types them (or **Fill a demo number**) and saves. |
+
+An address or a work location is written to the database, the engine checks that employee's lines again, and the rules settle what they can. An address the lookup has never seen is kept, and the line stays with an expert, who can still map any of these lines.
 
 ## Proving the clustering: the ML Lab
 
@@ -119,18 +127,23 @@ The admin's **ML Lab** answers "does the clustering work beyond 53 labels?" with
 
 It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, the confusion matrix, every wrong answer, and the clusters with their purity. With seed 2026 the model is right on 98.4% of its suggestions and suggests for 78.8% of labels; word matching is right on 98.2% and suggests for 90.8%. The silhouette is 0.462, below the gate, so on a set this messy the state would stay in shadow mode. The screen states these numbers and does not claim a winner: across seeds neither method wins every time. What clustering adds is grouping hundreds of spellings into a few dozen families an expert names once, and a confidence that says when to defer.
 
-## AI assistant
+## Ask AI
 
-Every record in the employer's **To do** and the expert's **Queue** has an **AI assistant**. It gives its **opinion first** (recommendation, confidence, why, what to check), then answers questions such as "Why this district?", "Is the rate right?" or "What if they move?".
+A round **Ask AI** button sits at the bottom right of every screen. It opens **Payroll AI**, a chat window you can **drag anywhere** by its header (double-click the header to put it back), resize from its corner, and that becomes a bottom sheet on a phone. It is the only AI in the app.
 
-- In the **hosted app on claude.ai**, Claude answers, on your own Claude account; it asks permission the first time.
-- On the **website and the zip**, no AI model is connected, so a **built-in assistant** answers from the same facts and says so.
+**It speaks first.** When it opens, it gives a short briefing for who you are and what you are looking at, and posts a new one as you move:
 
-Both read one facts brief built from the engine's results (`web/assistant.mjs`), are told to use only those facts, and decide nothing: the employer still confirms every line.
+| You are on | The briefing |
+| --- | --- |
+| Sign-in | What each role does, and where to start |
+| Move (owner) | How many items the rules settle, and what is left for you and for an expert |
+| To do (owner) | What needs you: addresses, work locations, account numbers, items to confirm |
+| A record you open (owner or expert) | Its opinion: recommendation, confidence, why, and one thing to check |
+| Expert queue | The open lines, grouped by label |
+| Go live | Which checks pass and what is next |
+| Admin screens | What the engine, model, data, scenarios or log show |
 
-## Ask AI: the chat button
-
-A round **Ask AI** button sits at the bottom right of every screen. It opens **Payroll AI**, a chat window you can **drag anywhere** by its header (double-click the header to put it back), resize from its corner, and that becomes a bottom sheet on a phone. It knows what you are looking at (the screen, the business's numbers, the open record or the use cases) and suggests questions for it.
+A gold dot on the button means there is a new briefing for this screen. Then ask anything; the suggested questions change with the screen and the record ("Why does it matter where they work?", "Is the rate right?", "What if they move?").
 
 Who answers:
 
@@ -140,7 +153,9 @@ Who answers:
 | Website or a local copy | The model you connect: open the **sliders** icon in the chat, choose a provider (**Google Gemini**, OpenAI, Anthropic Claude API, Groq, OpenRouter, Ollama on your computer, or any OpenAI-compatible address), paste your API key and click **Connect and test**. It lists the models your key can use and picks a fast one. |
 | No model connected | The built-in assistant, which answers common questions from the same facts |
 
-**The key is never in the code.** It is typed into the chat and kept in your browser only (local storage), and sent only to the provider you chose; **Disconnect** removes it. Nothing about keys is in this repository or the published site. claude.ai does not let hosted pages call other AI services, so keys are for the website and local copies; the hosted app uses Claude. The record cards' AI assistant uses the same connection.
+With a model connected, a **Check this with …** chip asks it for its own opinion on the record or screen. The briefings are always built in, so they appear instantly and cost nothing. Everything comes from one facts brief built from the engine's results (`web/assistant.mjs`); the model is told to use only those facts, and nothing it says decides anything: the employer still confirms every line.
+
+**The key is never in the code.** It is typed into the chat and kept in your browser only (local storage), and sent only to the provider you chose; **Disconnect** removes it. Nothing about keys is in this repository or the published site. claude.ai does not let hosted pages call other AI services, so keys are for the website and local copies; the hosted app uses Claude.
 
 ## Use cases
 
@@ -155,7 +170,7 @@ The admin's **Use cases** screen shows six made-up people run through the same e
 | Grace Okafor | Works from home in Columbus for the Lancaster office | Columbus city tax, not Lancaster's |
 | Meera Iyer | Desktop also withholds "Lancaster Schools" | Not owed: stopped, and the amount is flagged for correction |
 
-Each card has its own AI assistant ("Why no school-district tax?", "What if she moves?"). Federal and state tax residency for someone new to the US is outside this prototype.
+Ask AI answers questions about any of them ("Why no school-district tax for Ananya?", "Compare Rahul and Sara"). Federal and state tax residency for someone new to the US is outside this prototype.
 
 ## Try the clustering yourself
 
@@ -170,14 +185,19 @@ The example buttons show the other outcomes: the same label for someone living i
 
 ## Demo script (about six minutes)
 
-1. **Sign in as the business owner.** **Move**: Get started; the check says 313 of 318 items settle by rule, 3 need an address from the employer and 2 need an expert. Click **Move to Online payroll**.
-2. On the summary, click **Add address** next to Gabriel Bell. On To do, click **Fill a demo address**, then **Save**: the engine checks his line again and the rules settle it. Do the same for Imani Price and Kenji Lewis. (Type an address the lookup does not know, and the line stays with an expert.)
-3. **Sign in as the payroll tax expert.** Two "Other Tax" lines are open. Decide once that the label means a school-district tax: each employee's address picks the exact district, and the rules go live and reconcile.
-4. **Sign in as the owner again.** **Go live**: every check passes; all $255,817.53 withheld in Desktop this year has a destination; the reconcile shows 9 local taxes on Online paychecks and groups the 200 notes by kind (wrong past rates, tax withheld but not owed). The W-2 cards show the local boxes.
+1. **Sign in as the business owner.** Open **Ask AI** (bottom right): it already says what this screen is about. **Move**: Get started; the check says 311 of 318 items settle by rule, 6 things need the employer (3 home addresses, where 2 people work, 1 agency account number) and 2 need an expert. Click **Move to Online payroll**.
+2. Open **To do**. Under **Missing information**:
+   - Gabriel Bell, Imani Price, Kenji Lewis: **Fill a demo address**, then **Save**: the engine checks the line again and the rules settle it. (Type an address the lookup does not know, and the line stays with an expert.)
+   - Tom Sanchez: Desktop withholds Columbus city tax, where he lives, not Lancaster's, where the site is. Answer **At Lancaster main site**: the Lancaster city tax nobody withheld is added, and Columbus becomes optional.
+   - Maya Bell, the same question: answer **From home in Columbus**: Columbus city tax is the one owed.
+   - City of Columbus Income Tax Division: **Fill a demo number**, then **Save**.
+   Click a record and Ask AI gives its opinion on it; ask "What if they work from home?".
+3. **Sign in as the payroll tax expert.** Two "Other Tax" lines are open. Decide once that the label means a school-district tax: each employee's address picks the exact district, and the rules go live and reconcile: 319 of 319.
+4. **Sign in as the owner again.** **Go live**: every check passes; all $256,283.19 withheld in Desktop this year has a destination; the reconcile shows 9 local taxes on Online paychecks and groups the 197 notes by kind (wrong past rates, tax withheld but not owed). The W-2 cards show the local boxes.
 5. **Sign in as the admin**:
-   - **Engine**: what each step found for Buckeye: 289 expected taxes, 274 custom lines clustered, 266 local tax, 34 not a tax, 13 to an expert, 5 owed but not withheld.
-   - **Use cases**: the six people and their timelines; open "Ask the AI assistant about Ananya" and ask "Does her visa change her local tax?".
-   - **Model**: **Try the clustering**: run the example labels. (To add a person to Buckeye, do it before step 3: once the business is live, adding is switched off. Asha Verma from the first example lives in Pickerington and works in Lancaster, so the rules settle her school tax and add the Lancaster city tax nobody withheld: 320 of 320 settled.) Below it, Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
+   - **Engine**: what each step found for Buckeye: 291 expected taxes, 272 custom lines clustered, 269 local tax, 34 not a tax, 10 to an expert, 5 owed but not withheld.
+   - **Use cases**: the six people and their timelines; ask Ask AI "Does a visa change local tax?".
+   - **Model**: **Try the clustering**: run the example labels. (To add a person to Buckeye, do it before step 3: once the business is live, adding is switched off. Asha Verma from the first example lives in Pickerington and works in Lancaster, so the rules settle her school tax and add the Lancaster city tax nobody withheld: 321 of 321 settled.) Below it, Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
    - **Data**: the schema (7 tables), the five rule checks, **Items by Law ID**, **Law ID before and after** and **The address picks the tax**, and **Download the database**.
    - **Scenarios**: 76 of 76 pass.
@@ -236,13 +256,13 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/mllab.mjs` | The ML Lab: hold-out split, fit, scoring, baseline, confusion matrix, 2D map |
 | `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |
 | `web/scenarios.mjs` | The 76 scenarios and their live checks |
-| `web/assistant.mjs` | The AI assistant: the facts brief, the built-in opinion and answers, and the prompts for Claude |
-| `web/chat.mjs` | Ask AI: the floating, draggable chat window and its settings |
+| `web/assistant.mjs` | What Ask AI knows about a record: the facts brief, the built-in opinion and answers, and the format a model is asked for |
+| `web/chat.mjs` | Ask AI: the floating, draggable chat window, its briefings and its settings |
 | `web/llm.mjs` | Connecting a model with your own key (Gemini, OpenAI-compatible, Anthropic): streaming, model lists, errors |
 | `web/usecases.mjs` | The six use-case people |
 | `web/report.mjs` | JSON report and CSV export |
 | `web/app.mjs`, `web/styles.css` | The app |
 | `data/` | Catalog, address lookup, the six scenario test files, expert-labelled label pool |
-| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab), "Try the clustering", the AI assistant, the model connection and the use cases |
+| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab), "Try the clustering", Ask AI's facts and answers, the model connection, the use cases, and the employer's answers (addresses, work locations, account numbers) |
 | `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |

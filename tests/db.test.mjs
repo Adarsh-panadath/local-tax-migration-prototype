@@ -4,9 +4,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { createDatabase, readData, runQuery, tableSummary, csvTemplate, companyFromCsv, parseCsv, writeResults, resultRows, all, SCHEMA, TABLE_GROUPS, RULE_CHECKS, tryRule, describeTable, exportDatabase } from '../web/db.mjs';
+import { createDatabase, readData, runQuery, tableSummary, csvTemplate, companyFromCsv, parseCsv, writeResults, resultRows, all, SCHEMA, TABLE_GROUPS, RULE_CHECKS, tryRule, describeTable, exportDatabase, applyCorrection, lookupIndex } from '../web/db.mjs';
 import { analyseCompany } from '../web/engine/analysis.mjs';
-import { automate, automationStats, emptyDecisions } from '../web/engine/workflow.mjs';
+import { automate, automationStats, emptyDecisions, effectiveAll, agencyAccounts, exceptions } from '../web/engine/workflow.mjs';
 import { generateBusinesses } from '../web/generate.mjs';
 import { schemaDocs } from '../scripts/schema-docs.mjs';
 import { asStored } from './helpers.mjs';
@@ -149,9 +149,9 @@ test('the results table holds where every line went, and obeys the keys', () => 
   const moved = all(db, "SELECT p.law_id AS desktop, r.law_id AS online FROM results r JOIN payroll_items p ON p.item_id = r.item_id WHERE r.route = 'local_tax'");
   assert.ok(moved.some((x) => x.desktop === 177 && x.online !== 177), 'a custom item gets a real Law ID');
   assert.ok(moved.filter((x) => x.desktop !== 177 && x.desktop !== 0).every((x) => x.desktop === x.online), 'a system item keeps its Law ID');
-  // 313 of 318 items settled by rule: Desktop lines plus taxes nobody withheld.
+  // 311 of 318 items settled by rule: Desktop lines plus taxes nobody withheld.
   assert.equal(n("SELECT COUNT(*) AS n FROM results WHERE decided_by = 'rule'") + a.gaps.length, automationStats(a, decided).auto);
-  assert.equal(automationStats(a, decided).auto, 313);
+  assert.equal(automationStats(a, decided).auto, 311);
   // A mover's line names the tax at the new address, the one that goes live in October.
   const mover = buckeye.employees.find((e) => e.addresses.length === 2 && e.addresses[1].from_month <= 10 && e.items.length);
   const live = all(db, "SELECT t.code, a.school_district FROM results r JOIN employees e ON e.employee_id = r.employee_id JOIN addresses a ON a.address_id = e.new_home_address_id JOIN taxes t ON t.law_id = r.law_id WHERE r.employee_id = ? AND t.type = 'school_district'", [mover.employee_id]);
@@ -160,6 +160,39 @@ test('the results table holds where every line went, and obeys the keys', () => 
   // Writing again replaces the results; it does not add to them.
   writeResults(db, resultRows({ analysis: a, decisions: decided }));
   assert.equal(n('SELECT COUNT(*) AS n FROM results'), 313);
+});
+
+test('what only the employer knows: where two people work, and one agency account number', () => {
+  const db = dbFor(buckeye);
+  const a = analyseCompany(readData(db, ref).companies[0], files);
+  const asked = a.cases.filter((c) => c.reason === 'work_location');
+  assert.equal(asked.length, 2, 'two people at the Lancaster site have only Columbus city tax in Desktop');
+  // The work site's tax is not called missing while the question is open.
+  assert.ok(asked.every((c) => !a.gaps.some((g) => g.employee_id === c.employee_id)));
+  const d = automate(a, emptyDecisions()).decisions;
+  const left = exceptions(a, d);
+  assert.deepStrictEqual(left.filter((x) => x.needs === 'work_location').map((x) => x.employee_id).sort(), asked.map((c) => c.employee_id).sort());
+  const columbus = agencyAccounts(a, d).find((x) => /Columbus/.test(x.agency));
+  assert.equal(columbus.complete, false, 'the Columbus city tax item has no agency account number');
+  assert.ok(left.some((x) => x.kind === 'account' && x.item === columbus.agency));
+
+  // The employer answers: one works at the site, one from home. The answer is kept in the employees table.
+  const [office, home] = asked.map((c) => c.employee_id);
+  const idx = lookupIndex(lookup);
+  applyCorrection(db, { kind: 'work', company_id: buckeye.company_id, employee_id: office, remote: false }, idx, lookup);
+  applyCorrection(db, { kind: 'work', company_id: buckeye.company_id, employee_id: home, remote: true }, idx, lookup);
+  assert.deepStrictEqual(all(db, 'SELECT employee_id, remote FROM employees WHERE employee_id IN (?, ?) ORDER BY employee_id', [office, home]).map((r) => [r.employee_id, r.remote]).sort(), [[office, 0], [home, 1]].sort());
+  const b = analyseCompany(readData(db, ref).companies[0], files);
+  const settled = effectiveAll(b, automate(b, emptyDecisions()).decisions);
+  assert.equal(b.cases.filter((c) => c.reason === 'work_location').length, 0);
+  // At the site: Lancaster city tax is added (nothing withheld it); the Columbus line is kept as courtesy.
+  assert.deepStrictEqual(b.gaps.filter((g) => g.employee_id === office).map((g) => g.tax.law_id), [4120]);
+  assert.ok(settled.find((c) => c.employee_id === office).proposal.every((p) => p.optional));
+  // From home: Columbus city tax is the one owed, and the line maps to it.
+  const fromHome = settled.find((c) => c.employee_id === home);
+  assert.equal(fromHome.stage, 'confirmed');
+  assert.deepStrictEqual(fromHome.proposal.map((p) => [p.tax.law_id, Boolean(p.optional)]), [[4140, false]]);
+  assert.equal(b.gaps.filter((g) => g.employee_id === home).length, 0);
 });
 
 test('the CSV template uploads cleanly and runs through the engine', () => {

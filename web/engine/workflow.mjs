@@ -20,6 +20,8 @@ export function emptyDecisions() {
 const RATE_OK = new Set(['match', 'no_history']);
 /** Reasons a line waits for a home address, which only the employer can give. */
 export const NEEDS_ADDRESS = new Set(['no_address', 'address_unresolved']);
+// Facts only the employer has: a home address, or where a person works. These lines wait for the employer.
+export const NEEDS_EMPLOYER = new Set([...NEEDS_ADDRESS, 'work_location']);
 
 // The case as it stands after any expert and employer decisions.
 export function effectiveCase(c, decisions, analysis) {
@@ -119,12 +121,21 @@ export function agencyAccounts(analysis, decisions) {
     if (!agencies.has(t.tax.agency)) agencies.set(t.tax.agency, { agency: t.tax.agency, taxes: new Set(), prefill: null });
     agencies.get(t.tax.agency).taxes.add(t.tax.name);
   }
-  // Prefill from the Desktop items that were confirmed against a tax of the same agency.
+  // Prefill from the Desktop items confirmed against a tax of the same agency. One item can be confirmed to
+  // different agencies for different people; its account belongs to the agency most of its lines went to.
+  const itemAgency = new Map();
   for (const c of effectiveAll(analysis, decisions)) {
-    if (!['confirmed', 'employer_managed'].includes(c.stage)) continue;
+    if (!['confirmed', 'employer_managed'].includes(c.stage) || !c.item.agency_account) continue;
     const agency = c.stage === 'employer_managed' ? c.entry?.agency : c.proposal[0]?.tax.agency;
+    if (!agency) continue;
+    const counts = itemAgency.get(c.item.item_id) ?? { item: c.item, by: new Map() };
+    counts.by.set(agency, (counts.by.get(agency) ?? 0) + 1);
+    itemAgency.set(c.item.item_id, counts);
+  }
+  for (const { item, by } of itemAgency.values()) {
+    const [agency] = [...by].sort((x, y) => y[1] - x[1])[0];
     const a = agencies.get(agency);
-    if (a && !a.prefill && c.item.agency_account) a.prefill = { account: c.item.agency_account, frequency: c.item.deposit_frequency, from: c.item.label };
+    if (a && !a.prefill) a.prefill = { account: item.agency_account, frequency: item.deposit_frequency, from: item.label };
   }
   return [...agencies.values()].map((a) => {
     const saved = decisions.accounts[a.agency];
@@ -312,7 +323,7 @@ export const AUTOMATION_RULES = [
   { id: 'go_live', label: 'Go live and reconcile when everything is settled', help: 'Only when no line is left for a person and every go-live check passes.' },
 ];
 export const DEFAULT_POLICY = Object.freeze(Object.fromEntries(AUTOMATION_RULES.map((r) => [r.id, true])));
-export const PERSON_REASONS = new Set(['weak_signal', 'conflict', 'no_address', 'address_unresolved', 'state_conflict', 'shadow', 'ambiguous', 'employer_sent']);
+export const PERSON_REASONS = new Set(['weak_signal', 'conflict', 'no_address', 'address_unresolved', 'work_location', 'state_conflict', 'shadow', 'ambiguous', 'employer_sent']);
 
 const ROUTE_VERB = { local_tax: 'Confirmed', not_a_tax: 'Moved to deductions', custom_entry: 'Accepted as employer-managed', stop: 'Stopped withholding' };
 
@@ -382,17 +393,19 @@ export function exceptions(analysis, decisions) {
   const out = [];
   const cases = effectiveAll(analysis, decisions);
   for (const c of cases) {
-    // A line that waits for a home address waits for the employer: only they can give it. An expert can still map it.
+    // A line that waits for a home address or a work location waits for the employer: only they have it.
+    // An expert can still map it.
     if (c.stage === 'with_expert') {
-      const needsAddress = NEEDS_ADDRESS.has(c.reason) && !c.decision.sentToExpert;
-      out.push({ kind: 'case', case_id: c.case_id, employee_id: c.employee_id, employee: c.employee_name, item: c.item.label, reason: c.reason, owner: needsAddress ? 'employer' : 'expert', ...(needsAddress ? { needs: 'address' } : {}) });
+      const needsEmployer = NEEDS_EMPLOYER.has(c.reason) && !c.decision.sentToExpert;
+      out.push({ kind: 'case', case_id: c.case_id, employee_id: c.employee_id, employee: c.employee_name, item: c.item.label, reason: c.reason, owner: needsEmployer ? 'employer' : 'expert', ...(needsEmployer ? { needs: c.reason === 'work_location' ? 'work_location' : 'address' } : {}) });
     }
     else if (c.stage === 'awaiting_employer') out.push({ kind: 'case', case_id: c.case_id, employee_id: c.employee_id, employee: c.employee_name, item: c.item.label, reason: decisions.cases[c.case_id]?.hold ? 'held' : 'rule_off', owner: 'employer' });
   }
   for (const g of analysis.gaps) {
     if (gapStage(g, decisions, cases) === 'awaiting_employer') out.push({ kind: 'gap', gap_id: g.gap_id, employee_id: g.employee_id, employee: g.employee_name, item: g.tax.name, reason: decisions.gaps[g.gap_id] ? 'held' : 'rule_off', owner: 'employer' });
   }
-  if (!out.length && !decisions.live) {
+  // An agency with no account number is asked for up front, with the other missing information.
+  if (!decisions.live) {
     for (const a of agencyAccounts(analysis, decisions)) if (!a.complete) out.push({ kind: 'account', agency: a.agency, item: a.agency, reason: 'account_missing', owner: 'employer' });
   }
   return out;

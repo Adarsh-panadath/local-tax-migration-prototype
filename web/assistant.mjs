@@ -1,11 +1,12 @@
-// The AI assistant: it gives an opinion on one Desktop line (or one person) first, then answers questions.
+// What Ask AI knows about a record: its opinion on one Desktop line, a missing tax or a person, and the
+// answers to common questions.
 //
 // Everything it says comes from one facts brief, built here from the engine's own results. Two answerers
 // read the same brief:
-//   - Claude, in the hosted app on claude.ai (the page's `sample` capability, on the viewer's account);
-//   - the built-in assistant everywhere else, which composes its answers from the brief with fixed rules.
-// Neither may invent a rate, an address or a rule: the prompt tells Claude to use only the facts, and the
-// built-in assistant has nothing else to use. The employer still confirms every line.
+//   - a real model (Claude in the hosted app on claude.ai, or one connected with the user's own key);
+//   - the built-in assistant, which composes its answers from the brief with fixed rules.
+// Neither may invent a rate, an address or a rule: the chat's prompt tells the model to use only the facts,
+// and the built-in assistant has nothing else to use. The employer still confirms every line.
 import { monthSpan } from './engine/util.mjs';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
@@ -43,6 +44,7 @@ export function personFacts(e, company, addressById) {
       law_id: x.tax.law_id,
       tax: x.tax.name,
       kind: kindOf(x.tax),
+      ...(x.required === false ? { optional: 'courtesy withholding for the home town; not required' } : {}),
       rate: rate(x.tax.rate),
       months: span(x.months),
       owed_because_of: x.basis === 'home' ? BASIS.home : ex.remote ? BASIS.home_office : BASIS.work,
@@ -93,9 +95,23 @@ export function lineFacts(c, { company, addressById, taxByLaw, view, stage, next
         minimum_for_confident: '0.25',
       } : (isCustom(item.law_id) ? null : 'not needed: the Law ID names the tax'),
       not_owed_amount_to_correct: c.reason === 'not_expected' ? money(c.ytd) : c.unowed?.amount ? money(c.unowed.amount) : null,
+      ...(c.reason === 'work_location' ? { work_question: workQuestion(c) } : {}),
       steps: c.evidence.map((x) => `Step ${x.step ?? '-'}: ${x.text}`),
     },
     status: { stage, next_step: next, decisions_so_far: decided || 'none' },
+  };
+}
+
+// Desktop withholds the home town's city tax, not the work site's: what each answer of the employer means.
+function workQuestion(c) {
+  const home = c.workProposal?.[0]?.tax;
+  const work = c.employee.expected.list.find((x) => x.required && x.basis === 'work' && x.tax.type === 'municipal')?.tax;
+  if (!home || !work) return null;
+  return {
+    desktop_withholds: `${home.name} (Law ID ${home.law_id}, ${rate(home.rate)}), the tax of the town where the person lives`,
+    work_site_tax: `${work.name} (Law ID ${work.law_id}, ${rate(work.rate)})`,
+    if_works_from_home: `${home.name} is owed, and this line maps to it`,
+    if_works_at_the_site: `${work.name} is owed and was not withheld, so it is added; this line becomes optional courtesy withholding for ${home.place}`,
   };
 }
 
@@ -158,6 +174,15 @@ export function lineOpinion(f, c) {
       confidence: 'low', because: 'the home address is missing or could not be placed',
       why: ['A school-district tax is owed where the person lives, so it cannot be chosen without the home address.', `What is known: ${expectedText}.`],
       check: `Ask ${who} for the current home address.`,
+    };
+  }
+  if (c.reason === 'work_location' && f.engine.work_question) {
+    const w = f.engine.work_question;
+    return {
+      recommendation: `Tell us where ${who} works: from home, or at ${p.works_at.split(',')[0]}. The engine settles the line from the answer.`,
+      confidence: 'low', because: 'only the employer knows where the work is done',
+      why: [`Desktop withholds ${w.desktop_withholds}, but not ${w.work_site_tax}, the tax of the work site.`, 'A city tax is owed where the work is done: the work site, or the home for someone who works from home.', `From home: ${w.if_works_from_home}. At the site: ${w.if_works_at_the_site}.`],
+      check: `Ask ${who}'s manager where ${who} works most days.`,
     };
   }
   if (c.route === 'local_tax') {
@@ -242,6 +267,10 @@ export function answer(f, question) {
   const sdText = (h) => (h.school_district === 'none' ? 'no school-district income tax there' : h.school_district === 'unknown' ? 'the address lookup cannot place it, so the school district is unknown' : `school district ${h.school_district}`);
   const homesText = Array.isArray(p.homes) ? p.homes.map((h) => `${h.address} (${h.months}): ${sdText(h)}`).join('; then ') : 'no home address on file';
 
+  const w = f.engine?.work_question;
+  if (w && has(q, /work|home|remote|office|matter|answer|next|happen|why|where/)) {
+    return `Desktop withholds ${w.desktop_withholds}, but not ${w.work_site_tax}. A city tax is owed where the work is done, so it depends on where ${who} works. From home: ${w.if_works_from_home}. At the site: ${w.if_works_at_the_site}. The employer answers under Missing information, and the engine checks the line again.`;
+  }
   if (has(q, /india|visa|immigra|citizen|nationalit|foreign|abroad|country|green card|h-?1b/)) {
     return `Here local taxes follow only where ${who} lives and works in Ohio, and the months ${who} is on this payroll (${p.on_this_payroll}); nationality or visa does not change them. Federal and state tax residency for someone new to the US is outside this prototype.`;
   }
@@ -324,17 +353,15 @@ export function suggestions(f, c) {
   if (c?.stage === 'with_expert' && (c.reason === 'not_expected' || c.reason === 'duplicate')) {
     return ['Why is this not owed?', 'Which taxes does this person owe?', 'What about the money already withheld?', 'What could this label be?'];
   }
-  if (c?.stage === 'with_expert' && !['no_address', 'address_unresolved'].includes(c.reason)) {
+  if (c?.stage === 'with_expert' && !['no_address', 'address_unresolved', 'work_location'].includes(c.reason)) {
     return ['What could this label be?', 'Which taxes does this person owe?', 'Why can\'t the system decide?', 'What about the money already withheld?'];
   }
   if (c?.reason === 'no_address' || c?.reason === 'address_unresolved') return ['Why is the address needed?', 'What does Law ID 177 mean?', 'What happens next?'];
+  if (c?.reason === 'work_location') return ['Why does it matter where they work?', 'What if they work from home?', 'What happens after I answer?'];
   return ['Why this tax?', 'Is the rate right?', `What does Law ID ${f.desktop_line.law_id} mean?`, 'What if they move?', 'What happens when I confirm?'];
 }
 
-/** The fallback when the built-in assistant has no answer. */
-export const NO_ANSWER = 'I can only answer from the facts of this line. Try one of the suggested questions, or ask about the address, the rate, the Law ID or the months.';
-
-// ---------- Claude ----------
+// ---------- a real model ----------
 
 export const RULES = `Rules the prototype uses (Ohio local income taxes):
 - A school-district income tax is owed where the person LIVES (home address), month by month. Some places, such as Columbus, have no school-district income tax.
@@ -343,18 +370,6 @@ export const RULES = `Rules the prototype uses (Ohio local income taxes):
 - Law ID is the unique number of each tax. 177 or 0 means the employer created the item, so it names no tax; the address then picks the exact tax.
 - A clustering model reads free-text labels; a label confidence below 0.25 means it is not sure, and a person decides.
 - Nothing switches on until the employer confirms it.`;
-
-function header(f) {
-  const viewer = f.viewer ? `the ${f.viewer}` : 'a student presenting this case';
-  return `You are the AI assistant inside a prototype that moves one business's local payroll taxes from QuickBooks Desktop Payroll to QuickBooks Online Payroll. You are helping ${viewer}.
-
-${RULES}
-
-Use ONLY the facts below. If the facts do not say something, say you cannot tell from these facts. Never invent a rate, a law, an address or a dollar amount. This is a demo with made-up people, not tax advice.
-
-Facts (JSON):
-${JSON.stringify(f, null, 1)}`;
-}
 
 const LINE_FORMAT = `Give your opinion on this one Desktop line, in plain text (no Markdown headings), under 120 words, in exactly this shape:
 Recommendation: <one sentence: what the viewer should do with this line>
@@ -380,20 +395,8 @@ Why:
 - <reason taken from the facts>
 Check: <one thing a person should verify before deciding>`;
 
-/** The prompt for the first opinion. */
-export const opinionPrompt = (f) => `${header(f)}\n\n${f.desktop_line ? LINE_FORMAT : f.missing_tax ? GAP_FORMAT : PERSON_FORMAT}`;
-
-/** A follow-up question as a short conversation: the facts and the opinion, then the questions so far. */
-export function chatTurns(f, opinionText, history, question) {
-  const turns = [{ role: 'user', content: opinionPrompt(f) }];
-  if (opinionText) turns.push({ role: 'assistant', content: opinionText });
-  for (const t of history.slice(-6)) {
-    turns.push({ role: 'user', content: t.q });
-    if (t.a) turns.push({ role: 'assistant', content: t.a });
-  }
-  turns.push({ role: 'user', content: `${question}\n\n(Answer in under 90 words, in plain text, using only the facts above. If the facts do not say, say so.)` });
-  return turns;
-}
+/** What to ask a real model for its own opinion on the record on screen (its facts are already in the chat). */
+export const opinionFormat = (f) => (f.desktop_line ? LINE_FORMAT : f.missing_tax ? GAP_FORMAT : PERSON_FORMAT);
 
 /** The built-in opinion as text in the same shape Claude is asked for, so both read alike. */
 export function opinionText(op) {

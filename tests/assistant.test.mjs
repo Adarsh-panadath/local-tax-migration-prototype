@@ -1,4 +1,4 @@
-// The AI assistant (facts, built-in opinion and answers, prompts for Claude) and the Use cases screen.
+// Ask AI's facts, its built-in opinions and answers, the format a real model is asked for, and the Use cases screen.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -6,7 +6,7 @@ import { generateBusinesses } from '../web/generate.mjs';
 import { analyseCompany } from '../web/engine/analysis.mjs';
 import { automate, effectiveAll, emptyDecisions, DEFAULT_POLICY } from '../web/engine/workflow.mjs';
 import { USE_CASES, useCaseCompany } from '../web/usecases.mjs';
-import { lineFacts, gapFacts, personFacts, lineOpinion, gapOpinion, personOpinion, answer, suggestions, opinionPrompt, chatTurns, opinionText } from '../web/assistant.mjs';
+import { lineFacts, gapFacts, personFacts, lineOpinion, gapOpinion, personOpinion, answer, suggestions, opinionFormat, opinionText, RULES } from '../web/assistant.mjs';
 
 const read = async (f) => JSON.parse(await readFile(new URL(`../data/${f}`, import.meta.url), 'utf8'));
 const [catalog, geocoder, pool] = await Promise.all(['catalog.json', 'geocoder.json', 'label-pool.json'].map(read));
@@ -98,17 +98,22 @@ test('a missing tax and a use-case person have their own opinions and answers', 
   for (const q of suggestions(pf)) assert.ok(answer(pf, q), q);
 });
 
-test('the prompts for Claude carry the facts and the rules, and a chat starts and ends with the user', () => {
-  const c = find((x) => x.reason === 'weak_signal');
-  const f = facts(c, 'expert');
-  const prompt = opinionPrompt(f);
-  assert.match(prompt, /Use ONLY the facts below/);
-  assert.match(prompt, /Recommendation:/);
-  assert.ok(prompt.includes(c.employee_name));
-  assert.ok(new TextEncoder().encode(prompt).length < 32_000, 'well under the 256 KiB limit');
-  const turns = chatTurns(f, 'Recommendation: x', [{ q: 'first?', a: 'one' }], 'second?');
-  assert.deepEqual(turns.map((t) => t.role), ['user', 'assistant', 'user', 'assistant', 'user']);
-  assert.match(turns.at(-1).content, /^second\?/);
-  // The built-in opinion has the same shape Claude is asked for.
+test('a work-location question explains both answers, and a real model is asked for the same shape', () => {
+  const c = find((x) => x.reason === 'work_location');
+  const f = facts(c);
+  const w = f.engine.work_question;
+  assert.ok(w, 'the facts say what each answer means');
+  assert.match(w.desktop_withholds, /City of Columbus income tax/);
+  assert.match(w.work_site_tax, /City of Lancaster income tax/);
+  const op = lineOpinion(f, c);
+  assert.match(op.recommendation, /^Tell us where .* works/);
+  assert.equal(op.confidence, 'low');
+  assert.match(answer(f, 'What if they work from home?'), /From home: City of Columbus income tax is owed/);
+  for (const q of suggestions(f, c)) assert.ok(answer(f, q), q);
+  // The facts are small enough to send with every chat question.
+  assert.ok(new TextEncoder().encode(JSON.stringify(f)).length < 32_000);
+  assert.match(opinionFormat(f), /Recommendation:/);
+  assert.match(RULES, /where the work is DONE/);
+  // The built-in opinion has the same shape a real model is asked for.
   assert.match(opinionText(lineOpinion(f, c)), /^Recommendation: .*\nConfidence: (high|medium|low): .*\nWhy:\n- /);
 });

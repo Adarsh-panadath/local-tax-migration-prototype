@@ -110,6 +110,10 @@ const SITE_ADDRESS = { Lancaster: ['Commerce Dr', 'Industrial Pkwy', 'Columbus S
 const FLAGSHIP = {
   name: 'Buckeye Supply Co.', employees: 152, plan: 'Premium', month: 10, sites: ['Lancaster', 'Columbus'],
   missingAddress: 2, unplaced: 1, movers: 5, wrongRate: true, columbusSd: 4, gaps: 6, ambiguous: 2, union: 0.18, garnish: 2, conflict: 0, accountMissing: false, noise: 0.5,
+  // Two more things only the employer knows, set without the random stream so the rest of the data stays put:
+  // people whose Desktop withholds their home town's city tax instead of the work site's (do they work from
+  // home?), and a city tax item with no agency account number.
+  workLocation: 2, noAccountFor: 'Columbus',
 };
 
 function plan(r, i) {
@@ -235,6 +239,16 @@ export function generateBusinesses(catalog, { seed = SEED, count = GENERATED_COU
       if (chance(r, 0.04)) emp.hired_month = int(r, 2, Math.max(2, p.month - 1));
       else if (chance(r, 0.03)) emp.left_month = int(r, 3, 9);
     });
+    // Work location: the first few people at the main site who live in another site's town, and have no other
+    // problem, get that town's city tax in Desktop instead of the work site's. No random numbers, so nothing
+    // else shifts.
+    if (p.workLocation) {
+      const planted = [noAddress, unplaced, movers, gaps, ambiguous, garnish, conflict, columbusSd];
+      employees.filter(({ emp, town, homeTown }, k) => emp.site_id === 'S1' && homeTown !== town && cityItems[homeTown] && cityItems[town] && !emp.remote && !emp.hired_month && !emp.left_month && planted.every((set) => !set.has(k)))
+        .slice(0, p.workLocation)
+        .forEach(({ emp, town, homeTown }) => { emp.items = emp.items.map((id) => (id === cityItems[town].item_id ? cityItems[homeTown].item_id : id)); });
+    }
+    if (p.noAccountFor && cityItems[p.noAccountFor]) cityItems[p.noAccountFor].agency_account = null;
     companies.push({
       company_id: id,
       name,

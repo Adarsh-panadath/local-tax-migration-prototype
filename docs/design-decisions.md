@@ -124,14 +124,17 @@ The screens are our own design and carry no Intuit branding. The copy of employe
 
 ## 5d. Missing information goes to the person who has it
 
-*Added by the prototype.* A missing or unplaceable home address is not a judgement call; it is a fact only the employer has. So those lines are the employer's (`needs: "address"` in `exceptions`), not an expert's:
+*Added by the prototype.* Some open questions are not judgement calls; they are facts only the employer has. So those lines are the employer's in `exceptions`, not an expert's, and the owner's To do asks for them under **Missing information**:
 
-1. The move summary lists them with **Add address**; the owner's To do shows them under **Missing information**.
-2. The owner types the address (or, in the demo, fills one the lookup knows).
-3. It is saved to the database, the engine checks that employee's lines again, and the rules settle what they can.
-4. An address the lookup has never seen is kept, and the line stays with an expert, who can still map it.
+| Kind | Engine reason | Trigger | The answer |
+| --- | --- | --- | --- |
+| Home address | `no_address`, `address_unresolved` (`needs: "address"`) | No home address, or one the lookup cannot place, so the school district cannot be chosen | An address, saved as the employee's home for the year |
+| Work location | `work_location` (`needs: "work_location"`) | An employee who is not marked remote has, in Desktop, only the city tax of the town they live in, and nothing for the work site's city tax | "At the site" or "From home", saved as the employee's `remote` flag (0 or 1) |
+| Agency account | `account_missing` | An agency QuickBooks will pay has no account number or deposit frequency | The account number and frequency |
 
-The same card lists missing agency account numbers, which also only the employer can give.
+For an address or a work location, the answer is saved to the database, the engine checks that employee's lines again, and the rules settle what they can. While the work-location question is open, the work site's city tax is not called missing: it may not be owed. From home, the home town's tax is the one owed and the line maps to it; at the site, the site's tax is added (nobody withheld it) and the home town's line becomes optional courtesy withholding. An address the lookup has never seen is kept, and the line stays with an expert. An expert can still map any of these lines.
+
+Asking where someone works is a deliberate limit: the engine could guess "they must work from home", but a wrong guess moves a tax to the wrong city, so it asks.
 
 ## 5e. One decision per label, not per line
 
@@ -171,15 +174,15 @@ After the first cloud payroll and again after the first quarter, withholding is 
 
 The payer depends on the plan: Premium and Elite let QuickBooks pay and file supported taxes. Core means the employer pays and files.
 
-## The AI assistant: an opinion first, then questions
+## Ask AI: it speaks first, then answers questions
 
 *Added after faculty feedback.*
 
-- **Where.** Every record in the employer's To do and the expert's queue, and every person on the Use cases screen, has an **AI assistant**. It gives its opinion first (a recommendation, how confident it is, why, and one thing to check), then answers questions so a person can verify it.
-- **One facts brief, two answerers.** `web/assistant.mjs` builds one brief per record from the engine's own results: the person's addresses and months, the Desktop line, the expected taxes with their Law IDs, the rate checks, the model's reading of the label and the steps. In the hosted app on claude.ai, **Claude** answers from that brief through the page's `sample` capability, on the viewer's own Claude account (it asks permission the first time; no key is stored anywhere). Everywhere else (the website, the zip) the **built-in assistant** answers from the same brief with fixed rules, and says so.
-- **Grounded, not creative.** Claude is told to use only the facts and to say when they do not cover a question; the built-in assistant has nothing else to use and answers "I can only answer from the facts" otherwise. Neither decides anything: suggestions still go through the gates and the employer's confirmation.
-- **Failure is visible.** If the viewer declines, Claude is unavailable, busy or refuses, the card says so; when Claude is not allowed it switches to the built-in assistant for the rest of the visit.
-- **Ask AI.** A floating, draggable chat window on every screen answers questions about whatever is open, from a brief of that screen (the business's numbers, the selected record's facts, the use cases or the model's gates). It uses the same connection as the record cards.
+- **One place.** The only AI in the app is the **Ask AI** button at the bottom right of every screen. An earlier version also put an assistant card inside every record; it was removed so the record screens stay about the decision, and the AI is in one place people learn once.
+- **It speaks first.** When the chat opens, it gives a short briefing for the person and the screen, built in and instant: the owner's next step on Move; what needs the owner on To do; the opinion on a record they opened (a recommendation, how confident it is, why, and one thing to check); the open labels in the expert queue; the go-live checks; what an admin screen shows. As the person moves, it posts a new briefing (and replaces one nobody replied to). A dot on the button says there is a new one. The suggested questions follow the screen and the record.
+- **One facts brief, two answerers.** `web/assistant.mjs` builds one brief per record from the engine's own results: the person's addresses and months, the Desktop line, the expected taxes with their Law IDs, the rate checks, the model's reading of the label, the steps, and for a work-location question what each answer would mean. A real model (Claude in the hosted app on claude.ai, through the page's `sample` capability on the viewer's own account; elsewhere a model the person connects) answers from that brief, and **Check this with …** asks it for its own opinion in the same shape. Otherwise the built-in assistant answers from the same brief with fixed rules, and says so.
+- **Grounded, not creative.** The model is told to use only the facts and to say when they do not cover a question; the built-in assistant has nothing else to use. Neither decides anything: suggestions still go through the gates and the employer's confirmation.
+- **Failure is visible.** If the viewer declines, the model is unavailable, busy or refuses, the chat says so and the built-in assistant answers instead.
 - **Any model, the key stays with the person.** Outside claude.ai the person connects a model with their own key: Google Gemini (Google's own API, which takes both AIza… and AQ.… keys), any OpenAI-compatible service (OpenAI, Groq, OpenRouter, a local Ollama) or the Anthropic API. The key is typed into the chat, kept in that browser's local storage and sent only to that provider; it is never in the code, the repository or the published site. A key in the code would be readable by anyone who opens the page. The connection is tested before it is saved, and the model list is read from the provider, so nobody guesses a model name. claude.ai does not let hosted pages call other services, so the hosted app uses Claude instead.
 - **The clustering stays the model.** The label clustering is still what reads Desktop labels; the assistant explains and checks, it does not replace the gates.
 
