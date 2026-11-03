@@ -128,6 +128,20 @@ Every record in the employer's **To do** and the expert's **Queue** has an **AI 
 
 Both read one facts brief built from the engine's results (`web/assistant.mjs`), are told to use only those facts, and decide nothing: the employer still confirms every line.
 
+## Ask AI: the chat button
+
+A round **Ask AI** button sits at the bottom right of every screen. It opens **Payroll AI**, a chat window you can **drag anywhere** by its header (double-click the header to put it back), resize from its corner, and that becomes a bottom sheet on a phone. It knows what you are looking at (the screen, the business's numbers, the open record or the use cases) and suggests questions for it.
+
+Who answers:
+
+| Where you run it | The AI |
+| --- | --- |
+| Hosted app on claude.ai | **Claude**, on your own Claude account (allow it when claude.ai asks) |
+| Website or a local copy | The model you connect: open the **sliders** icon in the chat, choose a provider (**Google Gemini**, OpenAI, Anthropic Claude API, Groq, OpenRouter, Ollama on your computer, or any OpenAI-compatible address), paste your API key and click **Connect and test**. It lists the models your key can use and picks a fast one. |
+| No model connected | The built-in assistant, which answers common questions from the same facts |
+
+**The key is never in the code.** It is typed into the chat and kept in your browser only (local storage), and sent only to the provider you chose; **Disconnect** removes it. Nothing about keys is in this repository or the published site. claude.ai does not let hosted pages call other AI services, so keys are for the website and local copies; the hosted app uses Claude. The record cards' AI assistant uses the same connection.
+
 ## Use cases
 
 The admin's **Use cases** screen shows six made-up people run through the same engine, each with a month-by-month timeline of the local taxes owed:
@@ -223,10 +237,12 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |
 | `web/scenarios.mjs` | The 76 scenarios and their live checks |
 | `web/assistant.mjs` | The AI assistant: the facts brief, the built-in opinion and answers, and the prompts for Claude |
+| `web/chat.mjs` | Ask AI: the floating, draggable chat window and its settings |
+| `web/llm.mjs` | Connecting a model with your own key (Gemini, OpenAI-compatible, Anthropic): streaming, model lists, errors |
 | `web/usecases.mjs` | The six use-case people |
 | `web/report.mjs` | JSON report and CSV export |
 | `web/app.mjs`, `web/styles.css` | The app |
 | `data/` | Catalog, address lookup, the six scenario test files, expert-labelled label pool |
-| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab), "Try the clustering", the AI assistant and the use cases |
+| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab), "Try the clustering", the AI assistant, the model connection and the use cases |
 | `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |

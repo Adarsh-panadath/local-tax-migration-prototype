@@ -336,7 +336,7 @@ export const NO_ANSWER = 'I can only answer from the facts of this line. Try one
 
 // ---------- Claude ----------
 
-const RULES = `Rules the prototype uses (Ohio local income taxes):
+export const RULES = `Rules the prototype uses (Ohio local income taxes):
 - A school-district income tax is owed where the person LIVES (home address), month by month. Some places, such as Columbus, have no school-district income tax.
 - A city income tax is owed where the work is DONE: the work site, or the home for someone who works from home.
 - Taxes apply only in the months the person is on the payroll; a move splits the year.

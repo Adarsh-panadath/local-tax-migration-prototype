@@ -9,6 +9,9 @@ import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultR
 import { generateBusinesses, SEED } from './generate.mjs';
 import { lineFacts, gapFacts, personFacts, lineOpinion, gapOpinion, personOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionPrompt, chatTurns, opinionText, NO_ANSWER } from './assistant.mjs';
 import { USE_CASES, useCaseCompany } from './usecases.mjs';
+import { RULES } from './assistant.mjs';
+import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs';
+import { createChat } from './chat.mjs';
 import { runLab, KEY_NAMES } from './mllab.mjs';
 
 const STORE = 'local-tax-migration:brd-v3';
@@ -60,7 +63,16 @@ let trial = { label: 'Sch Dist Wthld', law: '177', kind: 'tax', town: 'Pickering
 // The AI assistant. In the hosted app on claude.ai, Claude answers (the page's `sample` capability, on the
 // viewer's own account); anywhere else, or if the viewer says no, the built-in assistant answers from the
 // same facts. Conversations live in memory for this visit.
-const ai = { state: 'checking', sample: null, note: '' };
+// via: 'claude' (hosted app), 'key' (a model the user connected with their own API key) or null (built-in).
+const ai = { state: 'checking', sample: null, note: '', via: null, label: '', cfg: null, hosted: false };
+let chat = null;
+const aiName = () => (ai.via === 'claude' ? 'Claude' : ai.via === 'key' ? PROVIDERS[ai.cfg.provider].short : 'The built-in assistant');
+// One call for both kinds of real model: a prompt string or [{role, content}] turns ending on the user.
+function aiCall(input, { onText, signal, cache } = {}) {
+  if (ai.via === 'claude') return ai.sample(input, { modelTier: 'quick', signal, onText, ...(cache === false ? { cache: false } : {}) });
+  if (ai.via === 'key') return completeWithKey(ai.cfg, input, { onText, signal });
+  return Promise.reject({ code: 'not_granted', message: 'No AI model is connected.' });
+}
 const aiChats = new Map(); // key -> { op: {text, source} | null, turns: [{q, a, source, failed}], busy, draft, notice, ctl }
 const aiCtx = new Map();   // key -> { facts, op, sugg }, refreshed on every render
 const ucOpen = new Set();  // use-case cards whose assistant is open
@@ -166,6 +178,13 @@ const ICONS = {
   arrow: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
   dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   reset: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  sparkles: '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>',
+  close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/>',
+  sliders: '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  grip: '<circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   list: '<path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
   cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
   monitor: '<rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
@@ -242,6 +261,7 @@ function focusSelector(el) {
 
 function render() {
   if (!data) return;
+  queueMicrotask(() => chat?.refresh());
   if (!state.role) { app.innerHTML = signIn(); lastView = null; return; }
   const view = currentView();
   const prevFocus = focusSelector(document.activeElement);
@@ -1884,15 +1904,15 @@ function assistantCard(key, facts, op, sugg, { subject = 'this line' } = {}) {
   let opinion;
   if (ch.op) opinion = aiText(ch.op.text);
   else if (live && ch.busy === 'op') opinion = '<p class="ai-thinking">Thinking…</p>';
-  else if (live) opinion = `<div class="ai-start"><p>Claude reads the facts of ${esc(subject)} and gives its opinion first. Then ask it anything to check.</p>
-      <div class="row"><button class="btn primary" type="button" data-action="ai-opinion" data-key="${esc(key)}">${icon('spark')}Get Claude's opinion</button><span class="small muted">Uses your Claude account; it asks permission the first time.</span></div></div>`;
+  else if (live) opinion = `<div class="ai-start"><p>${esc(aiName())} reads the facts of ${esc(subject)} and gives its opinion first. Then ask it anything to check.</p>
+      <div class="row"><button class="btn primary" type="button" data-action="ai-opinion" data-key="${esc(key)}">${icon('sparkles')}Get ${ai.via === 'claude' ? 'Claude\'s' : 'the AI\'s'} opinion</button><span class="small muted">${ai.via === 'claude' ? 'Uses your Claude account; it asks permission the first time.' : `Uses ${esc(ai.label)} with your API key.`}</span></div></div>`;
   else opinion = aiText(opinionText(op));
   const thread = ch.turns.map((t, i) => `<li class="ai-q"><span class="sr-only">You asked: </span>${esc(t.q)}</li>
       <li class="ai-a${t.failed ? ' failed' : ''}" id="ai-a-${id}-${i}">${t.a == null ? '<span class="ai-thinking">Thinking…</span>' : aiText(t.a)}</li>`).join('');
   const chips = sugg.filter((q) => !ch.turns.some((t) => t.q === q)).slice(0, 4)
     .map((q) => `<button type="button" class="chip-btn" data-action="ai-ask" data-key="${esc(key)}" data-q="${esc(q)}"${busy ? ' disabled' : ''}>${esc(q)}</button>`).join('');
-  const source = live ? `<span class="ai-source on">${icon('spark')}Claude</span>` : '<span class="ai-source">Built-in</span>';
-  const foot = ch.notice || ai.note || (live ? 'Claude sees only the facts of this record. It suggests; people decide.' : 'No AI model is connected here, so the built-in assistant answers from the same facts. In the hosted app on claude.ai, Claude answers.');
+  const source = live ? `<span class="ai-source on">${icon('sparkles')}${esc(ai.via === 'claude' ? 'Claude' : aiName())}</span>` : '<span class="ai-source">Built-in</span>';
+  const foot = ch.notice || ai.note || (live ? `${aiName()} sees only the facts of this record. It suggests; people decide.` : ai.hosted ? 'Claude is not allowed here yet, so the built-in assistant answers from the same facts.' : 'No AI model is connected, so the built-in assistant answers from the same facts. Connect one in Ask AI, bottom right.');
   return `<section class="card ai-card" aria-labelledby="ai-h-${id}">
     <div class="ai-head"><span class="ai-mark">${icon('spark')}</span><div><h3 id="ai-h-${id}">AI assistant</h3><p>Its opinion first, then ask it to check anything.</p></div>${source}</div>
     <div class="ai-body">
@@ -1917,13 +1937,15 @@ const AI_OFF = new Set(['not_granted', 'sampling_disabled', 'not_declared', 'cap
 function aiFailed(e, ch, fallback, turn = null) {
   const code = e?.code ?? 'upstream_error';
   if (code === 'cancelled') { if (turn) { turn.a = e?.text || 'Stopped.'; turn.failed = !e?.text; } return; }
-  if (AI_OFF.has(code)) {
+  if (AI_OFF.has(code) && ai.via === 'claude') {
     ai.state = 'off';
+    ai.via = null;
     ai.note = 'Claude is not available here, so the built-in assistant answers from the same facts.';
     fallback();
     return;
   }
-  const msg = { rate_limited: 'Claude is busy right now. Try again in a minute.', refused: 'Claude did not answer that. Try asking it another way.', empty_completion: 'Claude gave no answer. Try asking it another way.', session_expired: 'Sign in to claude.ai again to use Claude.', prompt_too_large: 'That was too long to send.' }[code] ?? 'Claude could not be reached. Try again.';
+  const who = aiName();
+  const msg = ai.via === 'key' && e?.message ? e.message : { rate_limited: `${who} is busy right now. Try again in a minute.`, refused: `${who} did not answer that. Try asking it another way.`, empty_completion: `${who} gave no answer. Try asking it another way.`, session_expired: 'Sign in to claude.ai again to use Claude.', prompt_too_large: 'That was too long to send.' }[code] ?? `${who} could not be reached. Try again.`;
   if (turn) { turn.a = e?.text ? `${e.text}\n\n(${msg})` : msg; turn.failed = true; } else ch.notice = msg;
 }
 
@@ -1937,8 +1959,8 @@ async function aiOpinion(key) {
   ch.ctl = new AbortController();
   render();
   try {
-    const { text } = await ai.sample(opinionPrompt(ctx.facts), { modelTier: 'quick', signal: ch.ctl.signal, onText: ({ text: t }) => streamTo(`ai-op-${domId(key)}`, t) });
-    ch.op = { text, source: 'claude' };
+    const { text } = await aiCall(opinionPrompt(ctx.facts), { signal: ch.ctl.signal, onText: ({ text: t }) => streamTo(`ai-op-${domId(key)}`, t) });
+    ch.op = { text, source: 'live' };
   } catch (e) {
     aiFailed(e, ch, () => {});
   }
@@ -1953,7 +1975,7 @@ async function aiAsk(key, q) {
   if (!ctx || ch.busy || !q) return;
   ch.draft = '';
   ch.notice = '';
-  const turn = { q, a: null, source: ai.state === 'on' ? 'claude' : 'builtin' };
+  const turn = { q, a: null, source: ai.state === 'on' ? 'live' : 'builtin' };
   ch.turns.push(turn);
   if (ai.state !== 'on') {
     turn.a = builtInAnswer(ctx.facts, q) ?? NO_ANSWER;
@@ -1966,9 +1988,9 @@ async function aiAsk(key, q) {
   ch.ctl = new AbortController();
   render();
   try {
-    const history = ch.turns.slice(0, -1).filter((t) => t.a && !t.failed && t.source === 'claude');
-    const { text } = await ai.sample(chatTurns(ctx.facts, ch.op?.source === 'claude' ? ch.op.text : null, history, q), {
-      modelTier: 'quick', cache: false, signal: ch.ctl.signal, onText: ({ text: t }) => streamTo(`ai-a-${domId(key)}-${at}`, t),
+    const history = ch.turns.slice(0, -1).filter((t) => t.a && !t.failed && t.source === 'live');
+    const { text } = await aiCall(chatTurns(ctx.facts, ch.op?.source === 'live' ? ch.op.text : null, history, q), {
+      cache: false, signal: ch.ctl.signal, onText: ({ text: t }) => streamTo(`ai-a-${domId(key)}-${at}`, t),
     });
     turn.a = text;
   } catch (e) {
@@ -1981,12 +2003,29 @@ async function aiAsk(key, q) {
   render();
 }
 
-// Is Claude here? Only inside a claude.ai viewer; the website and the zip use the built-in assistant.
+// Who answers: Claude inside a claude.ai viewer; elsewhere a model the user connected with their own key;
+// otherwise the built-in assistant.
+function useKey(cfg) {
+  const ok = cfg && cfg.model && (cfg.key || PROVIDERS[cfg.provider]?.noKey);
+  ai.via = ok ? 'key' : null;
+  ai.cfg = ok ? cfg : null;
+  ai.label = ok ? configLabel(cfg) : '';
+  ai.state = ai.via ? 'on' : 'off';
+  ai.note = '';
+}
 async function connectAI() {
-  if (!window.claude?.use) { ai.state = 'off'; return; }
-  try { ai.sample = await window.claude.use('sample'); } catch { ai.sample = null; }
-  ai.state = ai.sample ? 'on' : 'off';
-  if (document.querySelector('.ai-card')) render();
+  ai.hosted = Boolean(window.claude?.use);
+  if (ai.hosted) {
+    try { ai.sample = await window.claude.use('sample'); } catch { ai.sample = null; }
+    if (ai.sample) { ai.via = 'claude'; ai.label = 'Claude'; ai.state = 'on'; } else { ai.via = null; ai.state = 'off'; }
+  } else useKey(loadConfig());
+  render();
+}
+// The chat connected or removed a key.
+function aiConnected(cfg) {
+  if (ai.hosted) return;
+  useKey(cfg);
+  render();
 }
 
 function caseAssistant(c, s, view) {
@@ -2001,6 +2040,108 @@ function caseAssistant(c, s, view) {
 function gapAssistant(g, e, s, stage, next) {
   const facts = gapFacts(g, e, { company: s.a.company, addressById, view: 'review', stage, next });
   return assistantCard(`gap:${g.gap_id}`, facts, gapOpinion(facts), aiSuggestions(facts), { subject: 'this missing tax' });
+}
+
+// ---------- Ask AI: the floating chat's view of the app ----------
+
+const VIEW_NAMES = { move: 'Move', review: 'To do', expert: 'Expert queue', golive: 'Go live', analysis: 'Engine', usecases: 'Use cases', model: 'Model', lab: 'ML Lab', data: 'Data', scenarios: 'Scenarios', audit: 'Log' };
+const APP_GUIDE = `How the app works:
+- Business owner (the customer): Move (start, check, move, summary), To do (lines that need the employer: decisions and missing home addresses), Go live (four checks, dollar tie-out, agency accounts, W-2 preview, reconcile).
+- Payroll tax expert (Intuit staff): a queue of the lines the rules could not settle; one decision per unclear label; the employer confirms.
+- Admin (Intuit staff): Engine (what each step found), Use cases (six example people), Model (clustering gates and "Try the clustering"), ML Lab (the clustering tested on 1,200 labels), Data (the SQLite database, 7 tables), Scenarios (76 checks), Log (audit trail).
+- The engine lists each employee's expected local taxes from the home and work addresses. A Desktop item with a real Law ID maps straight to its tax; an item the employer created (Law ID 177 or 0) is read by a clustering model (TF-IDF words and letter trigrams, average linkage, silhouette score). Every Desktop line goes to a local tax, to deductions (not a tax), or to an expert. Rules the employer approved settle most lines; nothing switches on until the employer confirms.`;
+
+const CHAT_SUGGESTIONS = {
+  signin: ['What does this app do?', 'Which role should I start with?'],
+  move: ['What happens when I move?', 'How many lines settle by rule?', 'What does this app do?'],
+  review: ['What is waiting for me?', 'Why do some lines need an address?'],
+  expert: ['Why are these lines with an expert?', 'How do I decide an unclear label?'],
+  golive: ['Am I ready to go live?', 'What is the dollar tie-out?'],
+  analysis: ['Explain the engine steps', 'What does "to an expert" mean?'],
+  usecases: ['Why does Ananya pay only one tax?', 'Compare Rahul and Sara', 'Does a visa change local tax?'],
+  model: ['How does the clustering work?', 'What is a silhouette score?', 'Why the 0.25 floor?'],
+  lab: ['What does the ML Lab prove?', 'Clustering or word matching: which is better?'],
+  data: ['Explain the seven tables', 'What is a Law ID?'],
+  scenarios: ['What do the scenarios check?'],
+  audit: ['Who decided the most lines?'],
+};
+
+function chatContext() {
+  const role = state.role ? ROLES[state.role].label : 'nobody (the sign-in page)';
+  const view = state.role ? currentView() : null;
+  let s = null;
+  try { s = state.role ? summary() : null; } catch { s = null; }
+  let where = state.role ? VIEW_NAMES[view] : 'Sign in';
+  let facts = null;
+  let record = null;
+  if (s && (view === 'review' || view === 'expert')) {
+    const key = state.sel[view];
+    const c = key?.startsWith('c|') ? s.cases.find((x) => `c|${x.case_id}` === key) : null;
+    const g = key?.startsWith('g|') ? s.a.gaps.find((x) => `g|${x.gap_id}` === key) : null;
+    if (c) { record = aiCtx.get(`line:${c.case_id}`); where = `${VIEW_NAMES[view]}: ${c.employee_name}, "${labelOf(c.item.label)}"`; }
+    if (g) { record = aiCtx.get(`gap:${g.gap_id}`); where = `${VIEW_NAMES[view]}: ${g.employee_name}, ${g.tax.name} not withheld`; }
+    facts = record?.facts ?? null;
+  }
+  const uc = view === 'usecases' ? useCases() : null;
+  if (uc) facts = USE_CASES.map((u, i) => ({ situation: u.title, story: u.story, lesson: u.lesson, ...personFacts(uc.a.employees[i], uc.a.company, addressById) }));
+  if (s && view === 'model') {
+    const m = s.a.models.OH;
+    if (m) facts = { state: 'Ohio', silhouette: m.silhouette.toFixed(3), clusters: m.k, precision: pct(m.precision), labelled_examples: m.poolSize, mode: m.mode === 'assisted' ? 'suggestions shown' : 'shadow mode', gates: m.gates, label_confidence_floor: m.thresholds.itemFloor, cluster_names: m.clusters.map((k) => `${k.name} (${k.size})`) };
+  }
+  let business = '';
+  if (s) {
+    const co = s.a.company;
+    const items = s.cases.length + s.a.gaps.length;
+    const action = s.awaiting + s.expert;
+    business = `Business being moved: ${co.name} (${co.plan} plan), ${num(s.a.employees.length)} employees, ${num(s.cases.length)} Desktop local-tax lines and ${s.a.gaps.length} expected taxes nobody withheld. First Online payroll: ${MONTHS_LONG[co.migration_month - 1]}. Status: ${s.status}. Settled: ${items - action} of ${items}. Waiting for the employer: ${s.awaiting}. Waiting for a home address: ${s.info}. With an expert: ${s.expert - s.info}. The engine's routes: ${s.routes.local_tax} local tax, ${s.routes.not_a_tax} not a tax, ${s.routes.not_in_database} to an expert.`;
+  }
+  const prompt = `You are "Payroll AI", the assistant built into a student prototype (SPJIMR, Business in the Digital Age, Case 19) that moves one business's local payroll taxes (Ohio city and school-district income taxes) from QuickBooks Desktop Payroll to QuickBooks Online Payroll. Every person and business in it is made up; Ohio tax rates are real. It is not affiliated with Intuit.
+
+${RULES}
+
+${APP_GUIDE}
+
+Right now the person is signed in as: ${role}. Screen: ${where}.
+${business}
+${facts ? `Facts of what is on screen (JSON):\n${JSON.stringify(facts, null, 1)}` : ''}
+
+How to answer: plain text, short (under 120 words unless asked for more); bullets starting with "- " are fine. For anything about this business, its people, lines or numbers, use only the facts above and say so when they do not cover the question. For general ideas (Law ID, clustering, silhouette, local taxes, digital transformation, how a migration like this works) explain simply. Never invent rates, addresses, laws or dollar amounts. This is not tax advice.`;
+  const suggestions = record ? ['Explain this line simply', 'What should I do with it?', ...aiSuggestions(record.facts).slice(0, 2)] : CHAT_SUGGESTIONS[state.role ? view : 'signin'] ?? [];
+  return { where: `Looking at: ${where}`, prompt, suggestions, builtIn: (q) => chatBuiltIn(q, { s, view, record, uc }) };
+}
+
+// The built-in chat answers: the open record first, then common questions about the app.
+function chatBuiltIn(q, { s, view, record, uc }) {
+  const t = ` ${String(q).toLowerCase()} `;
+  const counts = () => {
+    const withExpert = s.expert - s.info;
+    return `${s.a.company.name}: ${s.status}. ${s.awaiting ? `${s.awaiting} waiting for the employer. ` : ''}${s.info ? `${s.info} waiting for a home address. ` : ''}${withExpert ? `${withExpert} with an expert. ` : ''}${!s.awaiting && !s.info && !withExpert ? 'Nothing is waiting. ' : ''}Go live needs four checks: every line decided, every expected tax handled, every Desktop dollar given a destination, and every agency account complete.`;
+  };
+  if (s && /how many|status|progress|overall|in total|whole business/.test(t)) return counts();
+  if (record) {
+    if (/explain|what should|what do i do|summar|simply/.test(t)) return opinionText(record.op);
+    const a = builtInAnswer(record.facts, q);
+    if (a) return a;
+  }
+  const named = USE_CASES.map((u, i) => ({ u, i })).filter(({ u }) => t.includes(u.name.split(' ')[0].toLowerCase()));
+  if (named.length) {
+    const ucs = uc ?? useCases();
+    if (ucs) return named.map(({ u, i }) => builtInAnswer({ person: personFacts(ucs.a.employees[i], ucs.a.company, addressById) }, /compare|and/.test(t) ? 'why these taxes' : q) ?? `${u.name}: ${u.lesson}`).join('\n\n');
+  }
+  if (/visa|india|immigra|citizen|nationalit/.test(t)) return 'Local taxes here follow only where a person lives and works in Ohio, and the months they are on the payroll; nationality or visa does not change them. Federal and state tax residency for someone new to the US is outside this prototype. See Ananya on the Use cases screen.';
+  if (/what does this app|what is this|about this app|purpose|what can you do/.test(t)) return 'It moves one business\'s local payroll taxes (Ohio city and school-district taxes) from QuickBooks Desktop to Online payroll. For every employee it works out the taxes owed from the home and work addresses, reads unclear Desktop labels with a clustering model, and sends each line to a local tax, to deductions or to an expert. Rules the employer approves settle most lines; nothing switches on until the employer confirms.';
+  if (/which role|start with|demo|where do i start/.test(t)) return 'Start as the Business owner: Move, Get started, Move to Online payroll. Add the 3 missing addresses in To do. Then the Payroll tax expert decides the 2 "Other Tax" lines once. Back as the owner, Go live shows everything settled and reconciled. The Admin screens explain the engine, the model and the data.';
+  if (/law ?id|\b177\b/.test(t)) return 'A Law ID is the unique number of each tax (the primary key of the taxes table). A Desktop item QuickBooks already knows carries its tax\'s Law ID and maps straight to it. An item the employer created carries 177 (or 0), which names no tax, so the address and the label decide. The migration turns every 177 into a real Law ID.';
+  if (/cluster|silhouette|model|floor|word matching|ml lab/.test(t)) {
+    const m = s?.a.models.OH;
+    return `Labels are cleaned (short forms spelled out, place names removed), turned into numbers (TF-IDF on words plus letter trigrams), and grouped bottom-up by average linkage. The number of groups is the one with the best silhouette score: (b - a) / max(a, b), where a is a label's distance to its own group and b to the nearest other group.${m ? ` Ohio: ${m.k} clusters, silhouette ${m.silhouette.toFixed(2)}.` : ''} A new label below 0.25 is not confident, so a person decides. The ML Lab retests this on 1,200 labels against simple word matching.`;
+  }
+  if (/table|database|schema|sql/.test(t)) return 'Seven tables, one database per migration. From the Desktop file: company, employees, payroll_items, desktop_lines. From the address lookup: addresses, taxes (keyed by Law ID). Our result: results (where each Desktop line went, its Law ID and who decided). The Data screen shows the keys and lets you run read-only queries.';
+  if (/scenario/.test(t)) return `${scenarioCount()} scenarios run live on six small test files: file checks, finding the state, expected taxes, clustering and gates, routing, gaps, decisions, go-live checks, W-2 history, reconcile, joiners and leavers, and automation.`;
+  if (s && /waiting|settled|left|ready|go live|tie.?out|for me/.test(t)) return counts();
+  if (/expert|unclear|decide/.test(t)) return 'The expert sees only what the rules could not settle: unclear labels, taxes the address does not support, conflicts. One decision covers every employee with the same label, and each employee\'s address picks the exact tax. The employer confirms it.';
+  if (/address/.test(t)) return 'A school-district tax is owed where the person lives, so a line with no usable home address waits for the employer to add it (To do, Missing information). The engine then checks the line again by itself.';
+  return `I'm the built-in assistant, so I answer common questions about this screen and the records. ${ai.hosted ? 'Allow Claude when asked to get real AI answers.' : 'Connect an AI model (the sliders button at the top of this chat) to ask anything.'}`;
 }
 
 // ---------- try the clustering (admin, Model page) ----------
@@ -3100,6 +3241,11 @@ async function boot() {
     try { SQLlib = await loadSqlJs(); } catch (err) { dbError = err.message || 'WebAssembly is blocked here'; }
     rebuildData();
     render();
+    chat = createChat({
+      context: chatContext, ai: () => ({ via: ai.via, label: ai.label, hosted: ai.hosted }), call: (turns, o) => aiCall(turns, { ...o, cache: false }),
+      connected: aiConnected, claudeOff: () => { ai.state = 'off'; ai.via = null; ai.note = 'Claude is not available here, so the built-in assistant answers from the same facts.'; render(); },
+      format: aiText, icon, esc,
+    });
     connectAI();
   } catch (err) {
     app.innerHTML = `<p class="boot">The demo data did not load (${esc(err.message)}). Run <code>npm run build</code> and <code>npm start</code>, then open http://localhost:3000.</p>`;
