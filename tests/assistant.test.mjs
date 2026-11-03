@@ -1,12 +1,11 @@
-// Ask AI's facts, its built-in opinions and answers, the format a real model is asked for, and the Use cases screen.
+// Ask AI's facts, its built-in opinions and answers, and the format a real model is asked for.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { generateBusinesses } from '../web/generate.mjs';
 import { analyseCompany } from '../web/engine/analysis.mjs';
-import { automate, effectiveAll, emptyDecisions, DEFAULT_POLICY } from '../web/engine/workflow.mjs';
-import { USE_CASES, useCaseCompany } from '../web/usecases.mjs';
-import { lineFacts, gapFacts, personFacts, lineOpinion, gapOpinion, personOpinion, answer, suggestions, opinionFormat, opinionText, RULES } from '../web/assistant.mjs';
+import { effectiveAll, emptyDecisions } from '../web/engine/workflow.mjs';
+import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer, suggestions, opinionFormat, opinionText, RULES } from '../web/assistant.mjs';
 
 const read = async (f) => JSON.parse(await readFile(new URL(`../data/${f}`, import.meta.url), 'utf8'));
 const [catalog, geocoder, pool] = await Promise.all(['catalog.json', 'geocoder.json', 'label-pool.json'].map(read));
@@ -16,35 +15,6 @@ const data = { catalog, geocoder: { ...geocoder, addresses: lookup }, pools: poo
 const byId = new Map(lookup.map((a) => [a.address_id, a]));
 const addressById = (id) => byId.get(id);
 const taxByLaw = (law) => catalog.states.OH.taxes.find((t) => t.law_id === law);
-
-// ---------- use cases ----------
-
-const ucCompany = useCaseCompany(lookup);
-const uc = analyseCompany(ucCompany, data);
-const ucCases = effectiveAll(uc, automate(uc, emptyDecisions(), DEFAULT_POLICY).decisions);
-const expected = (i) => uc.employees[i].expected.list.map((x) => `${x.tax.law_id}:${x.months[0]}-${x.months.at(-1)}`).sort();
-
-test('the six use cases owe the taxes their stories say', () => {
-  assert.equal(uc.employees.length, USE_CASES.length);
-  assert.deepEqual(expected(0), ['4120:1-12', '5305:1-12']); // lives and works in Lancaster: city + school district
-  assert.deepEqual(expected(1), ['4140:1-12', '5307:1-12']); // lives in Pickerington, works in Columbus
-  assert.deepEqual(expected(2), ['4140:6-12']); // arrived in June, Columbus: city tax only, from June
-  assert.deepEqual(expected(3), ['4120:1-12', '5304:7-12', '5305:1-6']); // moved Lancaster to Bremen in July
-  assert.deepEqual(expected(4), ['4140:1-12']); // works from home in Columbus: Columbus, not Lancaster
-  assert.deepEqual(expected(5), ['4140:1-12']); // Columbus: no school-district tax
-});
-
-test('the migration settles each use case as the screen describes', () => {
-  const stages = (i) => ucCases.filter((c) => c.employee_id === uc.employees[i].employee_id).map((c) => `${c.item.label}:${c.stage}`);
-  assert.ok(stages(5).includes('Lancaster Schools:stopped'), stages(5).join());
-  const moved = ucCases.find((c) => c.employee_id === uc.employees[3].employee_id && c.item.label === 'SD Tax');
-  assert.equal(moved.stage, 'confirmed');
-  assert.deepEqual(moved.proposal.map((p) => [p.tax.law_id, p.rate.status]), [[5305, 'match'], [5304, 'under']]);
-  const remote = ucCases.find((c) => c.employee_id === uc.employees[4].employee_id);
-  assert.deepEqual(remote.proposal.map((p) => p.tax.law_id), [4140]);
-  assert.equal(remote.proposal[0].rate.status, 'under');
-  assert.equal(uc.gaps.length, 0);
-});
 
 // ---------- the assistant on Buckeye's lines ----------
 
@@ -85,17 +55,13 @@ test('built-in answers come from the facts, and an unknown question gets no made
   for (const q of suggestions(f, c)) assert.ok(answer(f, q), q);
 });
 
-test('a missing tax and a use-case person have their own opinions and answers', () => {
+test('a missing tax has its own opinion and answers', () => {
   const g = buckeye.gaps[0];
   const e = buckeye.employees.find((x) => x.employee_id === g.employee_id);
   const gf = gapFacts(g, e, { company: buckeye.company, addressById, view: 'review', stage: 'Waiting for the employer', next: 'Add it.' });
   assert.match(gapOpinion(gf).recommendation, new RegExp(`Law ID ${g.tax.law_id}`));
   for (const q of suggestions(gf)) assert.ok(answer(gf, q), q);
-
-  const pf = { person: personFacts(uc.employees[2], uc.company, addressById) };
-  assert.match(personOpinion(pf.person).recommendation, /City of Columbus income tax \(Jun–Dec\)/);
-  assert.match(answer(pf, 'Why no school-district tax?'), /no school-district tax/);
-  for (const q of suggestions(pf)) assert.ok(answer(pf, q), q);
+  assert.match(opinionFormat(gf), /missing tax/);
 });
 
 test('a work-location question explains both answers, and a real model is asked for the same shape', () => {

@@ -236,27 +236,11 @@ export function lineOpinion(f, c) {
   return { recommendation: `An expert decides: ${f.engine.reason}`, confidence: 'low', because: 'the rules could not settle it', why: [`Expected for ${who}: ${expectedText}.`], check: 'Read the steps below before deciding.' };
 }
 
-/** The built-in summary for a person on the Use cases screen. */
-export function personOpinion(p) {
-  const who = first(p.name);
-  const taxes = p.expected_local_taxes;
-  const total = taxes.reduce((s, t) => s + Number(String(t.estimated_for_the_year).replace(/[$,]/g, '')), 0);
-  return {
-    recommendation: taxes.length ? `${who} owes ${taxes.map((t) => `${t.tax} (${t.months})`).join(' and ')}.` : `${who} owes no local tax on this list.`,
-    confidence: 'high', because: 'it follows from the addresses and the months',
-    why: [
-      ...taxes.map((t) => `${t.tax}, ${t.rate}: because of the ${t.owed_because_of} (${t.address}).`),
-      ...p.engine_notes,
-    ],
-    check: `About ${money(total)} of local tax for the year on ${p.monthly_wages} a month. ${p.works_from_home ? 'Confirm the home office address.' : 'Confirm the home and work addresses.'}`,
-  };
-}
-
 // ---------- built-in answers ----------
 
 const has = (q, re) => re.test(q);
 
-/** Answer a question from the facts alone. `f` is lineFacts or {person}. */
+/** Answer a question from the facts alone. `f` is lineFacts or gapFacts. */
 export function answer(f, question) {
   const q = ` ${String(question).toLowerCase()} `;
   const p = f.person;
@@ -344,12 +328,6 @@ export function answer(f, question) {
 /** Questions worth asking, for the chips under the opinion. */
 export function suggestions(f, c) {
   if (f.missing_tax) return ['Why is this tax owed?', 'What about the back tax?', 'What if they move?'];
-  if (!f.desktop_line) {
-    const out = ['Why these taxes?', 'What if she moves?', 'How much for the year?'];
-    if (f.person.expected_local_taxes.every((t) => t.kind !== 'school-district tax')) out.splice(1, 0, 'Why no school-district tax?');
-    if (f.person.works_from_home) out.splice(1, 0, 'Why not the office city?');
-    return out.map((s) => s.replace('she', first(f.person.name)));
-  }
   if (c?.stage === 'with_expert' && (c.reason === 'not_expected' || c.reason === 'duplicate')) {
     return ['Why is this not owed?', 'Which taxes does this person owe?', 'What about the money already withheld?', 'What could this label be?'];
   }
@@ -379,14 +357,6 @@ Why:
 - <reason taken from the facts>
 Check: <one thing a person should verify before deciding>`;
 
-const PERSON_FORMAT = `Explain which local taxes this person owes and why, in plain text (no Markdown headings), under 120 words, in exactly this shape:
-Recommendation: <one sentence: the local taxes this person owes, and when>
-Confidence: <high, medium or low>: <a few words why>
-Why:
-- <reason taken from the facts>
-- <reason taken from the facts>
-Check: <one thing worth confirming>`;
-
 const GAP_FORMAT = `Give your opinion on this missing tax (owed, but no Desktop item withholds it), in plain text (no Markdown headings), under 120 words, in exactly this shape:
 Recommendation: <one sentence: what the viewer should do>
 Confidence: <high, medium or low>: <a few words why>
@@ -396,7 +366,7 @@ Why:
 Check: <one thing a person should verify before deciding>`;
 
 /** What to ask a real model for its own opinion on the record on screen (its facts are already in the chat). */
-export const opinionFormat = (f) => (f.desktop_line ? LINE_FORMAT : f.missing_tax ? GAP_FORMAT : PERSON_FORMAT);
+export const opinionFormat = (f) => (f.missing_tax ? GAP_FORMAT : LINE_FORMAT);
 
 /** The built-in opinion as text in the same shape Claude is asked for, so both read alike. */
 export function opinionText(op) {

@@ -12,6 +12,8 @@ A working prototype of the BRD v3 design for moving local payroll taxes from Qui
 
 Sign in with a demo account (no passwords). Progress is saved in your own browser only; **Reset** (two clicks) starts again.
 
+**Product tour.** The front page has a **Watch the product tour** tile (1:49): what the product does, then a walkthrough of the real screens from sign-in to go-live. It plays in a window over the page; Esc or the close button stops it. The film is `web/media/tour.mp4` (1080p, with a quiet music bed and on-screen captions, no voice-over).
+
 To run it on your computer (Node.js 20 or later; no install step, no API keys):
 
 ```sh
@@ -28,7 +30,7 @@ Works on Windows, macOS and Linux. Nothing to install apart from Node.js: no pac
 | --- | --- | --- |
 | **Business owner** (customer) | Move their own business, give the information only they have, confirm what is theirs | **Move** (start, check, summary), **To do** (with **Missing information**), **Go live** (with reconcile and W-2) |
 | **Payroll tax expert** (Intuit) | Decide the lines the rules leave, one label at a time | **Queue** |
-| **Admin** (Intuit) | See how the engine read the file, keep the model safe and the data right | **Engine**, **Use cases**, **Model** (gates and thresholds), **ML Lab**, **Data**, **Scenarios**, **Log** |
+| **Admin** (Intuit) | See how the engine read the file, keep the model safe and the data right | **Engine**, **Model** (gates and thresholds), **ML Lab**, **Data**, **Scenarios**, **Log** |
 
 All three work on the same business. The business runs its own move with the rules it approved; nobody runs automation for it.
 
@@ -157,21 +159,6 @@ With a model connected, a **Check this with …** chip asks it for its own opini
 
 **The key is never in the code.** It is typed into the chat and kept in your browser only (local storage), and sent only to the provider you chose; **Disconnect** removes it. Nothing about keys is in this repository or the published site. claude.ai does not let hosted pages call other AI services, so keys are for the website and local copies; the hosted app uses Claude.
 
-## Use cases
-
-The admin's **Use cases** screen shows six made-up people run through the same engine, each with a month-by-month timeline of the local taxes owed:
-
-| Person | Situation | Local taxes |
-| --- | --- | --- |
-| Rahul Mehta | Lives and works in Lancaster | Lancaster city tax + Lancaster schools, all year |
-| Sara Lopez | Lives in Pickerington, works in Columbus | Columbus city tax (work) + Pickerington schools (home) |
-| Ananya Rao | Arrived from India in June; barista at a coffee shop in Columbus | Columbus city tax from June only; Columbus has no school-district tax |
-| Daniel Kim | Moved from Lancaster to Bremen in July | City tax all year; school district switches in July |
-| Grace Okafor | Works from home in Columbus for the Lancaster office | Columbus city tax, not Lancaster's |
-| Meera Iyer | Desktop also withholds "Lancaster Schools" | Not owed: stopped, and the amount is flagged for correction |
-
-Ask AI answers questions about any of them ("Why no school-district tax for Ananya?", "Compare Rahul and Sara"). Federal and state tax residency for someone new to the US is outside this prototype.
-
 ## Try the clustering yourself
 
 The admin's **Model** page starts with **Try the clustering**. Make up an employee (where they live, where they work) and the Desktop item on their paycheck (the label as typed, its Law ID, its rate), then click **Run clustering**. The real engine shows every step:
@@ -196,7 +183,6 @@ The example buttons show the other outcomes: the same label for someone living i
 4. **Sign in as the owner again.** **Go live**: every check passes; all $256,283.19 withheld in Desktop this year has a destination; the reconcile shows 9 local taxes on Online paychecks and groups the 197 notes by kind (wrong past rates, tax withheld but not owed). The W-2 cards show the local boxes.
 5. **Sign in as the admin**:
    - **Engine**: what each step found for Buckeye: 291 expected taxes, 272 custom lines clustered, 269 local tax, 34 not a tax, 10 to an expert, 5 owed but not withheld.
-   - **Use cases**: the six people and their timelines; ask Ask AI "Does a visa change local tax?".
    - **Model**: **Try the clustering**: run the example labels. (To add a person to Buckeye, do it before step 3: once the business is live, adding is switched off. Asha Verma from the first example lives in Pickerington and works in Lancaster, so the rules settle her school tax and add the Lancaster city tax nobody withheld: 321 of 321 settled.) Below it, Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
    - **Data**: the schema (7 tables), the five rule checks, **Items by Law ID**, **Law ID before and after** and **The address picks the tax**, and **Download the database**.
@@ -259,10 +245,10 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/assistant.mjs` | What Ask AI knows about a record: the facts brief, the built-in opinion and answers, and the format a model is asked for |
 | `web/chat.mjs` | Ask AI: the floating, draggable chat window, its briefings and its settings |
 | `web/llm.mjs` | Connecting a model with your own key (Gemini, OpenAI-compatible, Anthropic): streaming, model lists, errors |
-| `web/usecases.mjs` | The six use-case people |
 | `web/report.mjs` | JSON report and CSV export |
+| `web/media/` | The product tour film and its poster |
 | `web/app.mjs`, `web/styles.css` | The app |
 | `data/` | Catalog, address lookup, the six scenario test files, expert-labelled label pool |
-| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab), "Try the clustering", Ask AI's facts and answers, the model connection, the use cases, and the employer's answers (addresses, work locations, account numbers) |
+| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab), "Try the clustering", Ask AI's facts and answers, the model connection, and the employer's answers (addresses, work locations, account numbers) |
 | `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |
