@@ -1,16 +1,16 @@
 // Browser app for the local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=f10f95f20c';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=f10f95f20c';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=f10f95f20c';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=f10f95f20c';
-import { buildReport, casesCSV } from './report.mjs?v=f10f95f20c';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=f10f95f20c';
-import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=f10f95f20c';
-import { generateBusinesses, SEED } from './generate.mjs?v=f10f95f20c';
-import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=f10f95f20c';
-import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=f10f95f20c';
-import { createChat } from './chat.mjs?v=f10f95f20c';
-import { runLab, KEY_NAMES } from './mllab.mjs?v=f10f95f20c';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=eb7e817b5b';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=eb7e817b5b';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=eb7e817b5b';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=eb7e817b5b';
+import { buildReport, casesCSV } from './report.mjs?v=eb7e817b5b';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=eb7e817b5b';
+import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=eb7e817b5b';
+import { generateBusinesses, SEED } from './generate.mjs?v=eb7e817b5b';
+import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=eb7e817b5b';
+import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=eb7e817b5b';
+import { createChat } from './chat.mjs?v=eb7e817b5b';
+import { runLab, KEY_NAMES } from './mllab.mjs?v=eb7e817b5b';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
@@ -414,7 +414,7 @@ function appbar(view, s) {
 
 // The product tour: a short film on the front page, what the product does and then a walkthrough of the
 // real screens. It plays in a dialog that lives outside the app's markup, so a re-render never stops it.
-const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '1:49' };
+const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '2:22' };
 let tourDialog = null;
 function openTour(from) {
   if (!tourDialog) {
@@ -3251,7 +3251,7 @@ async function uploadFile(input) {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=f10f95f20c`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=eb7e817b5b`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };
