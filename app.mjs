@@ -1,16 +1,16 @@
 // Browser app for the local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=eb7e817b5b';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=eb7e817b5b';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=eb7e817b5b';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=eb7e817b5b';
-import { buildReport, casesCSV } from './report.mjs?v=eb7e817b5b';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=eb7e817b5b';
-import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=eb7e817b5b';
-import { generateBusinesses, SEED } from './generate.mjs?v=eb7e817b5b';
-import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=eb7e817b5b';
-import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=eb7e817b5b';
-import { createChat } from './chat.mjs?v=eb7e817b5b';
-import { runLab, KEY_NAMES } from './mllab.mjs?v=eb7e817b5b';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=78d5a71636';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=78d5a71636';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=78d5a71636';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=78d5a71636';
+import { buildReport, casesCSV } from './report.mjs?v=78d5a71636';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=78d5a71636';
+import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=78d5a71636';
+import { generateBusinesses, SEED } from './generate.mjs?v=78d5a71636';
+import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=78d5a71636';
+import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=78d5a71636';
+import { createChat } from './chat.mjs?v=78d5a71636';
+import { runLab, KEY_NAMES } from './mllab.mjs?v=78d5a71636';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
@@ -414,7 +414,7 @@ function appbar(view, s) {
 
 // The product tour: a short film on the front page, what the product does and then a walkthrough of the
 // real screens. It plays in a dialog that lives outside the app's markup, so a re-render never stops it.
-const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '2:22' };
+const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '0:57' };
 let tourDialog = null;
 function openTour(from) {
   if (!tourDialog) {
@@ -451,7 +451,7 @@ function signIn() {
       <button class="tour" type="button" data-action="tour" aria-label="Watch the product tour (${TOUR.length})">
         <img src="${TOUR.thumb}" alt="" width="960" height="540" decoding="async">
         <span class="tour-play" aria-hidden="true">${icon('play')}</span>
-        <span class="tour-label"><b>Watch the product tour</b><span>${TOUR.length} · what it does, then a walkthrough</span></span>
+        <span class="tour-label"><b>Watch the product tour</b><span>${TOUR.length} · what it does for your business</span></span>
       </button>
       <h1>Local Tax Migration</h1>
       <p>Desktop to Online payroll, with every local tax checked line by line.</p>
@@ -3251,7 +3251,7 @@ async function uploadFile(input) {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=eb7e817b5b`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=78d5a71636`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };
