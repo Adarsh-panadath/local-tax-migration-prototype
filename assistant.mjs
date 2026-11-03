@@ -7,7 +7,7 @@
 //   - the built-in assistant, which composes its answers from the brief with fixed rules.
 // Neither may invent a rate, an address or a rule: the chat's prompt tells the model to use only the facts,
 // and the built-in assistant has nothing else to use. The employer still confirms every line.
-import { monthSpan } from './engine/util.mjs?v=78d5a71636';
+import { monthSpan } from './engine/util.mjs?v=30dac104cc';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const money = (n) => usd.format(Number(n) || 0);

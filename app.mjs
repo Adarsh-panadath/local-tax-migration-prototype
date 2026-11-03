@@ -1,16 +1,16 @@
 // Browser app for the local-tax migration prototype. No framework, no build step.
-import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=78d5a71636';
-import { MODEL_VERSION } from './engine/cluster.mjs?v=78d5a71636';
-import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=78d5a71636';
-import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=78d5a71636';
-import { buildReport, casesCSV } from './report.mjs?v=78d5a71636';
-import { GROUPS, runScenarios } from './scenarios.mjs?v=78d5a71636';
-import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=78d5a71636';
-import { generateBusinesses, SEED } from './generate.mjs?v=78d5a71636';
-import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=78d5a71636';
-import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=78d5a71636';
-import { createChat } from './chat.mjs?v=78d5a71636';
-import { runLab, KEY_NAMES } from './mllab.mjs?v=78d5a71636';
+import { analyseCompany, DEFAULT_THRESHOLDS } from './engine/analysis.mjs?v=30dac104cc';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=30dac104cc';
+import { effectiveAll, emptyDecisions, gapStage, gapCoveredBy, readiness, agencyAccounts, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions as openExceptions, AUTOMATION_RULES, DEFAULT_POLICY, NEEDS_EMPLOYER } from './engine/workflow.mjs?v=30dac104cc';
+import { monthSpan, rateText, cloudMonths, desktopMonths } from './engine/util.mjs?v=30dac104cc';
+import { buildReport, casesCSV } from './report.mjs?v=30dac104cc';
+import { GROUPS, runScenarios } from './scenarios.mjs?v=30dac104cc';
+import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs?v=30dac104cc';
+import { generateBusinesses, SEED } from './generate.mjs?v=30dac104cc';
+import { lineFacts, gapFacts, lineOpinion, gapOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionText, opinionFormat, RULES } from './assistant.mjs?v=30dac104cc';
+import { PROVIDERS, loadConfig, configLabel, complete as completeWithKey } from './llm.mjs?v=30dac104cc';
+import { createChat } from './chat.mjs?v=30dac104cc';
+import { runLab, KEY_NAMES } from './mllab.mjs?v=30dac104cc';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
@@ -439,32 +439,49 @@ function openTour(from) {
   video.focus({ preventScroll: true });
 }
 
+// The front page: what the product does for a business, the film, and the demo accounts. The figures are
+// the demo business's, worked out by the same engine and rules, so the page cannot promise more than it does.
 function signIn() {
-  const account = (id, extra = '') => {
+  const co = companyById();
+  let proof = null;
+  try {
+    const s = summary();
+    const prev = automationPreview({ ...s, d: emptyDecisions() });
+    proof = { share: pct(prev.stats.share, 0), gaps: s.a.gaps.length, dollars: readiness(s.a, emptyDecisions()).tie.total };
+  } catch { proof = null; }
+  const account = (id, lead = false) => {
     const r = ROLES[id];
-    return `<div class="acct"><span class="avatar lg role-ic">${icon(r.icon)}</span><div class="acct-text"><strong>${esc(r.label)}</strong><span>${esc(r.blurb)}</span>${extra}</div><button class="btn primary" type="button" data-action="sign-in" data-role="${id}">Sign in</button></div>`;
+    return `<div class="acct${lead ? ' lead' : ''}"><span class="acct-ic">${icon(r.icon)}</span><div class="acct-text"><span class="acct-side">${esc(r.side)}</span><strong>${esc(r.label)}</strong><span>${esc(r.blurb)}</span>${lead ? `<span class="acct-biz">${icon('building')}${esc(co.name)}, ${plural(co.employees.length, 'employee')}</span>` : ''}</div><button class="btn${lead ? ' primary' : ''}" type="button" data-action="sign-in" data-role="${id}">Sign in${lead ? icon('arrow') : ''}</button></div>`;
   };
-  const pick = `<span class="acct-biz">${icon('building')}${esc(companyById().name)}, ${plural(companyById().employees.length, 'employee')}</span>`;
+  const stat = (v, k) => `<div class="hero-stat"><dt>${k}</dt><dd>${v}</dd></div>`;
   return `<main class="signin" id="main" tabindex="-1">
-    <section class="signin-brand">
-      <span class="logo-tile">${icon('landmark')}</span>
-      <button class="tour" type="button" data-action="tour" aria-label="Watch the product tour (${TOUR.length})">
-        <img src="${TOUR.thumb}" alt="" width="960" height="540" decoding="async">
-        <span class="tour-play" aria-hidden="true">${icon('play')}</span>
-        <span class="tour-label"><b>Watch the product tour</b><span>${TOUR.length} · what it does for your business</span></span>
-      </button>
-      <h1>Local Tax Migration</h1>
-      <p>Desktop to Online payroll, with every local tax checked line by line.</p>
-      <ul class="signin-points">
-        <li>${icon('check')}Rules settle most lines</li>
-        <li>${icon('check')}Experts decide the rest</li>
-        <li>${icon('check')}Nothing goes live without the employer</li>
-      </ul>
+    <section class="hero" aria-labelledby="hero-h">
+      <div class="hero-in">
+        <div class="hero-copy">
+          <span class="brandmark"><span class="logo-tile">${icon('landmark')}</span>Local Tax Migration</span>
+          <h1 id="hero-h">Move your local taxes with confidence.</h1>
+          <p class="hero-sub">From Desktop to Online payroll, every city and school-district tax is checked line by line. Rules do the work; you answer only what you know.</p>
+          <div class="hero-cta">
+            <button class="btn primary lg" type="button" data-action="sign-in" data-role="owner">Try it as a business${icon('arrow')}</button>
+            <button class="btn ghost lg" type="button" data-action="tour">${icon('play')}Watch the tour<span class="len">${TOUR.length}</span></button>
+          </div>
+          ${proof ? `<dl class="hero-stats" aria-label="In the demo business, ${esc(co.name)}">
+            ${stat(proof.share, 'settled automatically')}
+            ${stat(String(proof.gaps), 'missed taxes found')}
+            ${stat(esc(money(proof.dollars).replace(/\.\d\d$/, '')), 'traced, every dollar')}
+          </dl><p class="hero-note">In the demo business: ${esc(co.name)}, ${plural(co.employees.length, 'employee')}.</p>` : ''}
+        </div>
+        <button class="tour" type="button" data-action="tour" aria-label="Watch the product tour (${TOUR.length})">
+          <span class="tour-chrome" aria-hidden="true"><i></i><i></i><i></i></span>
+          <img src="${TOUR.thumb}" alt="" width="960" height="540" decoding="async">
+          <span class="tour-play" aria-hidden="true">${icon('play')}</span>
+          <span class="tour-label"><b>Watch the product tour</b><span>${TOUR.length} · what it does for your business</span></span>
+        </button>
+      </div>
     </section>
     <section class="signin-panel" aria-labelledby="signin-h">
-      <div><h2 id="signin-h">Sign in</h2><p class="card-sub">Demo accounts, no passwords.</p></div>
-      <div class="signin-group"><h3>Customer</h3>${account('owner', pick)}</div>
-      <div class="signin-group"><h3>Intuit staff</h3>${account('expert')}${account('admin')}</div>
+      <div class="signin-head"><h2 id="signin-h">Open the demo</h2><p>Pick a role. Demo accounts, no passwords.</p></div>
+      <div class="acct-grid">${account('owner', true)}${account('expert')}${account('admin')}</div>
     </section>
     ${footnote()}
   </main>`;
@@ -3251,7 +3268,7 @@ async function uploadFile(input) {
 async function boot() {
   try {
     const get = async (file) => {
-      const res = await fetch(new URL(`./data/${file}?v=78d5a71636`, import.meta.url));
+      const res = await fetch(new URL(`./data/${file}?v=30dac104cc`, import.meta.url));
       if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
       return res.json();
     };

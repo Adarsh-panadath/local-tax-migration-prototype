@@ -5,7 +5,7 @@
 // new briefing. The window can be dragged by its header (it remembers where; double-click the header to put
 // it back), resized from its corner on a computer, and becomes a bottom sheet on a phone. It lives outside
 // the app's own markup, so re-rendering a screen never closes it or loses the chat.
-import { PROVIDERS, loadConfig, saveConfig, clearConfig, listModels, suggestedModel, configLabel, complete } from './llm.mjs?v=78d5a71636';
+import { PROVIDERS, loadConfig, saveConfig, clearConfig, listModels, suggestedModel, configLabel, complete } from './llm.mjs?v=30dac104cc';
 
 const POS = 'local-tax-migration:chat-pos';
 const CLAUDE_OFF = new Set(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed']);
