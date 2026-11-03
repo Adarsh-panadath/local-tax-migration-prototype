@@ -7,18 +7,20 @@ import { buildReport, casesCSV } from './report.mjs';
 import { GROUPS, runScenarios } from './scenarios.mjs';
 import { loadSqlJs, createDatabase, readData, readCompany, writeResults, resultRows, tableSummary, describeTable, TABLE_NOTES, RULE_CHECKS, tryRule, exportDatabase, SCHEMA, runQuery, csvTemplate, companyFromCsv, CSV_COLUMNS, applyCorrection, lookupIndex, addressKey } from './db.mjs';
 import { generateBusinesses, SEED } from './generate.mjs';
+import { lineFacts, gapFacts, personFacts, lineOpinion, gapOpinion, personOpinion, answer as builtInAnswer, suggestions as aiSuggestions, opinionPrompt, chatTurns, opinionText, NO_ANSWER } from './assistant.mjs';
+import { USE_CASES, useCaseCompany } from './usecases.mjs';
 import { runLab, KEY_NAMES } from './mllab.mjs';
 
 const STORE = 'local-tax-migration:brd-v3';
 const UPLOADS = 'local-tax-migration:uploads';
-const VIEWS = ['move', 'review', 'expert', 'golive', 'analysis', 'model', 'lab', 'data', 'scenarios', 'audit'];
+const VIEWS = ['move', 'review', 'expert', 'golive', 'analysis', 'usecases', 'model', 'lab', 'data', 'scenarios', 'audit'];
 
 // Demo sign-in: each role sees only its own screens. All three work on the same business:
 // the owner moves it, the expert decides what the rules leave, the admin looks under the hood.
 const ROLES = {
   owner: { icon: 'building', label: 'Business owner', side: 'Customer', blurb: 'Moves their own business to Online payroll', tabs: [['move', 'Move'], ['review', 'To do'], ['golive', 'Go live']] },
   expert: { icon: 'user', label: 'Payroll tax expert', side: 'Intuit staff', blurb: 'Decides the lines the rules leave', tabs: [['expert', 'Queue']] },
-  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'The engine, the model and the data', tabs: [['analysis', 'Engine'], ['model', 'Model'], ['lab', 'ML Lab'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
+  admin: { icon: 'gauge', label: 'Admin', side: 'Intuit staff', blurb: 'The engine, the model and the data', tabs: [['analysis', 'Engine'], ['usecases', 'Use cases'], ['model', 'Model'], ['lab', 'ML Lab'], ['data', 'Data'], ['scenarios', 'Scenarios'], ['audit', 'Log']] },
 };
 const roleOf = () => ROLES[state.role];
 const canOpen = (view) => state.role === 'admin' || Boolean(roleOf()?.tabs.some(([id]) => id === view));
@@ -54,6 +56,15 @@ let lab = { seed: SEED, total: 1200, result: null, running: false, error: null }
 const more = {};            // "Show all" toggles for long lists
 // The Model page's "Try the clustering" panel: one made-up employee and Desktop item, run through the real engine.
 let trial = { label: 'Sch Dist Wthld', law: '177', kind: 'tax', town: 'Pickerington', site: '', rate: '1', name: 'Asha Verma', result: null, opened: null };
+
+// The AI assistant. In the hosted app on claude.ai, Claude answers (the page's `sample` capability, on the
+// viewer's own account); anywhere else, or if the viewer says no, the built-in assistant answers from the
+// same facts. Conversations live in memory for this visit.
+const ai = { state: 'checking', sample: null, note: '' };
+const aiChats = new Map(); // key -> { op: {text, source} | null, turns: [{q, a, source, failed}], busy, draft, notice, ctl }
+const aiCtx = new Map();   // key -> { facts, op, sugg }, refreshed on every render
+const ucOpen = new Set();  // use-case cards whose assistant is open
+const aiChat = (key) => { if (!aiChats.has(key)) aiChats.set(key, { op: null, turns: [], busy: false, draft: '', notice: '' }); return aiChats.get(key); };
 
 // ---------- state ----------
 
@@ -251,7 +262,7 @@ function render() {
   const listScroll = lastView === view ? document.querySelector('.records')?.scrollTop : null;
   let body;
   try {
-    body = { move: viewMove, lab: viewLab, analysis: viewAnalysis, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
+    body = { move: viewMove, lab: viewLab, analysis: viewAnalysis, usecases: viewUseCases, review: viewReview, expert: viewExpert, golive: viewGoLive, scenarios: viewScenarios, model: viewModel, audit: viewAudit, data: viewData }[view](s);
   } catch (err) { crashed(err); return; }
   app.innerHTML = `<button class="skip" type="button" data-action="skip">Skip to main content</button>${appbar(view, s)}<main class="main" id="main" tabindex="-1"><div class="page${wide ? ' wide' : ''}">${body}${footnote()}</div></main>`;
   lastView = view;
@@ -1435,6 +1446,7 @@ function caseDetail(c, s, view) {
   const open = !c.verified && OPEN_STAGES.has(c.stage);
   return `${mobileBack(view)}
     ${recordHeader({ name: c.employee_name, id: e.employee_id, meta, badgeHtml: badge(b, tone), flow: caseFlow(c), stage: waitsForAddress(c) ? 'Waiting for the home address' : STAGE_LABEL[c.stage], next: nextStep(c, view, live) })}
+    ${caseAssistant(c, s, view)}
     ${checksBanner(c)}
     ${view === 'expert' && c.stage === 'with_expert' && !live ? expertTools(c, s) : ''}
     ${caseMapping(c, s)}
@@ -1506,6 +1518,7 @@ function gapDetail(g, s) {
   if (by) steps.push({ tone: 'info', text: `Covered by the expert mapping of "${by.item.label}".` });
   return `${mobileBack('review')}
     ${recordHeader({ name: g.employee_name, id: e.employee_id, meta: `${esc(site.name)} · ${money(e.monthly_wages)} a month`, badgeHtml: badge(b, tone), flow: gapFlow, stage: stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? 'Added' : 'Covered', next })}
+    ${gapAssistant(g, e, s, stage === 'awaiting_employer' ? 'Waiting for the employer' : stage === 'added' ? (s.d.gaps[g.gap_id]?.auto ? 'Added by a rule the employer approved' : 'Added by the employer') : 'Covered by an expert mapping', next)}
     ${banner}
     ${mappingTable(rows)}
     ${evidenceCard(s, { employee: e, state: g.tax.state, match: new Set([g.tax_id]), steps, historyTarget: `${g.employee_name}: ${g.tax.name}`, openSteps: stage === 'awaiting_employer' })}
@@ -1743,6 +1756,251 @@ function thresholdPanel(s) {
     <div class="threshold-grid">${fields}</div>
     ${changed ? `<div class="row"><span class="pill warn"><span class="dot"></span>Changed from the defaults</span><button class="btn quiet" type="button" data-action="reset-thresholds"${locked ? ' disabled' : ''}>Back to defaults</button></div>` : ''}
   </section>`;
+}
+
+// ---------- use cases (admin): six people, the same engine ----------
+
+// The six people as a small business of their own, analysed and then settled by the default rules,
+// exactly as a real migration would be. Cached with the analyses.
+function useCases() {
+  const key = `usecases|${settingsKey()}`;
+  if (!cache.has(key)) {
+    const co = useCaseCompany(data.geocoder.addresses);
+    let v = null;
+    if (co) {
+      try {
+        const a = analyseCompany(co, data, state.settings);
+        const d = automate(a, emptyDecisions(), DEFAULT_POLICY).decisions;
+        v = { a, d, cases: effectiveAll(a, d) };
+      } catch (err) { if (err.name !== 'DataError') throw err; }
+    }
+    cache.set(key, v);
+  }
+  return cache.get(key);
+}
+
+const MONTH_LETTERS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const taxShortName = (t) => (t.type === 'school_district' ? `${t.name.replace(/ (Local|City|Exempted Village) School District$/, '').replace(/ School District$/, '')} schools` : `${t.place} city tax`);
+
+// One row per tax, one cell per month: filled where the tax is owed.
+function taxTimeline(e, migrationMonth) {
+  const employed = new Set(e.expected.employed ?? []);
+  const head = `<div class="tl-row tl-head" aria-hidden="true"><span class="tl-name"></span>${MONTH_LETTERS.map((m, i) => `<span class="tl-m${i + 1 >= migrationMonth ? ' online' : ''}${i + 1 === migrationMonth ? ' first' : ''}">${m}</span>`).join('')}</div>`;
+  const rows = e.expected.list.map((x) => {
+    const on = new Set(x.months);
+    const kind = x.basis === 'home' ? 'home' : 'work';
+    const label = `${taxShortName(x.tax)}, ${rateFmt(x.tax.rate)}, ${monthSpan(x.months)}, because of the ${x.basis === 'home' ? 'home' : e.expected.remote ? 'home office' : 'work location'}`;
+    return `<div class="tl-row" role="listitem" aria-label="${esc(label)}"><span class="tl-name" aria-hidden="true"><b>${esc(taxShortName(x.tax))}</b><small>Law ID ${x.tax.law_id} · ${rateFmt(x.tax.rate)} · ${x.basis === 'home' ? 'home' : e.expected.remote ? 'home office' : 'work'}</small></span>${MONTH_LETTERS.map((_, i) => `<span class="tl-c ${on.has(i + 1) ? `on ${kind}` : employed.has(i + 1) ? 'off' : 'out'}${i + 1 === migrationMonth ? ' first' : ''}" aria-hidden="true"></span>`).join('')}</div>`;
+  }).join('');
+  return `<div class="tl" role="list" aria-label="Local taxes by month">${head}${rows || '<p class="small muted">No local tax applies.</p>'}</div>`;
+}
+
+// What the migration does with each Desktop line, in one sentence each.
+function lineOutcome(c) {
+  const from = `"${labelOf(c.item.label)}" (Law ID ${c.item.law_id})`;
+  const to = c.proposal.map((p) => `${taxShortName(p.tax)} (Law ID ${p.tax.law_id})`).join(' then ');
+  const off = c.proposal.filter((p) => p.rate.status === 'over' || p.rate.status === 'under');
+  if (c.stage === 'confirmed') return [from, `${to}: confirmed by rule${off.length ? `, at the official ${off.map((p) => rateFmt(p.tax.rate)).join(' / ')} (Desktop used ${off[0].rate.desktop})` : ''}.`, off.length ? 'warn' : 'good'];
+  if (c.stage === 'stopped') return [from, `not owed: withholding stopped; ${money(c.ytd)} withheld this year to correct with the agency.`, 'bad'];
+  if (c.stage === 'moved_to_deduction') return [from, 'not a tax: moved to deductions.', ''];
+  if (c.stage === 'with_expert') return [from, `waits for an expert (${REASON_SHORT[c.reason] ?? c.reason}).`, 'warn'];
+  return [from, `${to || 'proposal'}: waits for the employer.`, 'warn'];
+}
+
+function viewUseCases() {
+  const uc = useCases();
+  if (!uc) return `<div class="page-head"><h1>Use cases</h1></div><div class="empty"><strong>The use cases need the demo address lookup, which did not load.</strong></div>`;
+  const mm = uc.a.company.migration_month;
+  const cards = USE_CASES.map((u, i) => {
+    const e = uc.a.employees[i];
+    const site = uc.a.company.worksites.find((w) => w.site_id === e.site_id);
+    const homes = (e.expected.periods ?? []).map((p) => { const a = addressById(p.address_id); return `${esc(a?.city ?? 'Unknown')} <span class="muted">(${esc(monthSpan(p.months))})</span>`; }).join(' then ');
+    const lines = uc.cases.filter((c) => c.employee_id === e.employee_id).map(lineOutcome);
+    const gaps = uc.a.gaps.filter((g) => g.employee_id === e.employee_id).map((g) => [`Nothing in Desktop`, `${taxShortName(g.tax)} (Law ID ${g.tax.law_id}) added from the first Online payroll.`, 'warn']);
+    const facts = { person: personFacts(e, uc.a.company, addressById) };
+    const total = e.expected.list.reduce((sum, x) => sum + (e.monthly_wages * x.tax.rate * x.months.length) / 100, 0);
+    return `<article class="card uc-card" aria-labelledby="uc-h-${u.id}">
+      <header class="uc-head"><span class="uc-n">${i + 1}</span><div><h2 id="uc-h-${u.id}">${esc(u.title)}</h2><p><b>${esc(u.name)}</b>. ${esc(u.story)}</p></div></header>
+      <dl class="uc-facts">
+        <div><dt>${icon('home')}Lives in</dt><dd>${homes || 'No home address'}</dd></div>
+        <div><dt>${icon('building')}Works</dt><dd>${e.expected.remote ? `From home <span class="muted">(employer: ${esc(site?.name ?? '')})</span>` : esc(site?.name ?? '')}</dd></div>
+        <div><dt>${icon('calendar')}On the payroll</dt><dd>${esc(monthSpan(e.expected.employed ?? []))}</dd></div>
+      </dl>
+      ${taxTimeline(e, mm)}
+      <p class="uc-total">About <b>${money(total)}</b> of local tax for the year, on ${money(e.monthly_wages)} a month.</p>
+      <p class="uc-lesson">${esc(u.lesson)}</p>
+      ${u.scope ? `<p class="uc-scope">${icon('info')}${esc(u.scope)}</p>` : ''}
+      <div class="uc-lines"><span class="label">What the migration does with the Desktop lines</span><ul>${[...lines, ...gaps].map(([from, out, tone]) => `<li class="${tone}"><span>${esc(from)}</span>${icon('arrow')}<span>${esc(out)}</span></li>`).join('')}</ul></div>
+      <details class="fold uc-ai" data-key="${u.id}"${ucOpen.has(u.id) ? ' open' : ''}><summary>${icon('spark')}Ask the AI assistant about ${esc(u.name.split(' ')[0])}${icon('chevron', 'chev')}</summary><div class="fold-body">${assistantCard(`uc:${u.id}`, facts, personOpinion(facts.person), aiSuggestions(facts), { subject: u.name.split(' ')[0] })}</div></details>
+    </article>`;
+  }).join('');
+  return `<div class="page-head"><h1>Use cases</h1>
+    <p class="lede">Which local taxes a person owes depends on where they live, where they work, and when. Six people, run through the same engine as Buckeye.</p></div>
+    <ul class="uc-rules">
+      <li>${icon('home')}<span><b>School-district tax follows the home.</b> Some places, such as Columbus, have none.</span></li>
+      <li>${icon('building')}<span><b>City tax follows where the work is done:</b> the office, or the home for someone who works from home.</span></li>
+      <li>${icon('calendar')}<span><b>Only the months on the payroll count.</b> Joining, leaving or moving splits the year.</span></li>
+    </ul>
+    <div class="uc-legend" aria-hidden="true"><span><i class="sw work"></i>City tax (work)</span><span><i class="sw home"></i>School-district tax (home)</span><span><i class="sw out"></i>Not on the payroll</span><span><i class="sw online"></i>Online payroll from ${MONTHS_LONG[mm - 1]}</span></div>
+    <div class="uc-grid">${cards}</div>`;
+}
+
+// ---------- the AI assistant card ----------
+
+// The answer as the page shows it: the Recommendation / Confidence / Why / Check shape, bullets and bold.
+function aiText(text) {
+  const inline = (x) => esc(x).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  const out = [];
+  let list = null;
+  const flush = () => { if (list) { out.push(`<ul>${list.join('')}</ul>`); list = null; } };
+  for (const raw of String(text).split('\n')) {
+    const l = raw.trim();
+    if (!l) continue;
+    const bullet = l.match(/^[-•*]\s+(.*)$/);
+    if (bullet) { (list ??= []).push(`<li>${inline(bullet[1])}</li>`); continue; }
+    flush();
+    const m = l.replace(/^\*\*(.+?)\*\*/, '$1').match(/^(recommendation|confidence|why|check)\s*:\s*(.*)$/i);
+    if (!m) { out.push(`<p>${inline(l)}</p>`); continue; }
+    const label = m[1].toLowerCase();
+    if (label === 'confidence') {
+      const level = (m[2].match(/^\s*(high|medium|low)/i)?.[1] ?? '').toLowerCase();
+      const rest = m[2].replace(/^\s*(high|medium|low)\s*[:—–-]?\s*/i, '');
+      out.push(`<p class="ai-conf">${level ? pill(`${level[0].toUpperCase()}${level.slice(1)} confidence`, { high: 'good', medium: 'warn', low: 'bad' }[level]) : ''}<span>${inline(rest)}</span></p>`);
+    } else if (label === 'why') {
+      out.push(m[2] ? `<p><b>Why</b> ${inline(m[2])}</p>` : '<p class="ai-label">Why</p>');
+    } else out.push(`<p class="ai-${label}"><b>${label === 'check' ? 'Check' : 'Recommendation'}</b> ${inline(m[2])}</p>`);
+  }
+  flush();
+  return out.join('');
+}
+
+function assistantCard(key, facts, op, sugg, { subject = 'this line' } = {}) {
+  aiCtx.set(key, { facts, op, sugg });
+  const ch = aiChat(key);
+  const id = domId(key);
+  const live = ai.state === 'on';
+  const busy = Boolean(ch.busy);
+  let opinion;
+  if (ch.op) opinion = aiText(ch.op.text);
+  else if (live && ch.busy === 'op') opinion = '<p class="ai-thinking">Thinking…</p>';
+  else if (live) opinion = `<div class="ai-start"><p>Claude reads the facts of ${esc(subject)} and gives its opinion first. Then ask it anything to check.</p>
+      <div class="row"><button class="btn primary" type="button" data-action="ai-opinion" data-key="${esc(key)}">${icon('spark')}Get Claude's opinion</button><span class="small muted">Uses your Claude account; it asks permission the first time.</span></div></div>`;
+  else opinion = aiText(opinionText(op));
+  const thread = ch.turns.map((t, i) => `<li class="ai-q"><span class="sr-only">You asked: </span>${esc(t.q)}</li>
+      <li class="ai-a${t.failed ? ' failed' : ''}" id="ai-a-${id}-${i}">${t.a == null ? '<span class="ai-thinking">Thinking…</span>' : aiText(t.a)}</li>`).join('');
+  const chips = sugg.filter((q) => !ch.turns.some((t) => t.q === q)).slice(0, 4)
+    .map((q) => `<button type="button" class="chip-btn" data-action="ai-ask" data-key="${esc(key)}" data-q="${esc(q)}"${busy ? ' disabled' : ''}>${esc(q)}</button>`).join('');
+  const source = live ? `<span class="ai-source on">${icon('spark')}Claude</span>` : '<span class="ai-source">Built-in</span>';
+  const foot = ch.notice || ai.note || (live ? 'Claude sees only the facts of this record. It suggests; people decide.' : 'No AI model is connected here, so the built-in assistant answers from the same facts. In the hosted app on claude.ai, Claude answers.');
+  return `<section class="card ai-card" aria-labelledby="ai-h-${id}">
+    <div class="ai-head"><span class="ai-mark">${icon('spark')}</span><div><h3 id="ai-h-${id}">AI assistant</h3><p>Its opinion first, then ask it to check anything.</p></div>${source}</div>
+    <div class="ai-body">
+      <div class="ai-op" id="ai-op-${id}" aria-live="polite">${opinion}</div>
+      ${thread ? `<ol class="ai-thread" aria-live="polite">${thread}</ol>` : ''}
+      ${chips ? `<div class="chips ai-sugg">${chips}</div>` : ''}
+      <form class="ai-form" data-action="ai-ask-form" data-key="${esc(key)}">
+        <label class="sr-only" for="ai-q-${id}">Ask the assistant about ${esc(subject)}</label>
+        <input type="text" class="ai-input" id="ai-q-${id}" name="q" data-key="${esc(key)}" maxlength="200" autocomplete="off" placeholder="Ask about ${esc(subject)}" value="${esc(ch.draft)}"${busy ? ' disabled' : ''}>
+        ${busy && live ? `<button class="btn" type="button" data-action="ai-stop" data-key="${esc(key)}">Stop</button>` : `<button class="btn primary" type="submit">Ask</button>`}
+      </form>
+      <p class="ai-foot">${esc(foot)}</p>
+    </div>
+  </section>`;
+}
+
+const streamTo = (id, text) => { const el = document.getElementById(id); if (el) { el.textContent = text; el.classList.add('streaming'); } };
+const focusAiInput = (key) => document.getElementById(`ai-q-${domId(key)}`)?.focus({ preventScroll: true });
+const AI_OFF = new Set(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed']);
+
+// A failed call: switch to the built-in assistant when Claude is not allowed here; otherwise say what happened.
+function aiFailed(e, ch, fallback, turn = null) {
+  const code = e?.code ?? 'upstream_error';
+  if (code === 'cancelled') { if (turn) { turn.a = e?.text || 'Stopped.'; turn.failed = !e?.text; } return; }
+  if (AI_OFF.has(code)) {
+    ai.state = 'off';
+    ai.note = 'Claude is not available here, so the built-in assistant answers from the same facts.';
+    fallback();
+    return;
+  }
+  const msg = { rate_limited: 'Claude is busy right now. Try again in a minute.', refused: 'Claude did not answer that. Try asking it another way.', empty_completion: 'Claude gave no answer. Try asking it another way.', session_expired: 'Sign in to claude.ai again to use Claude.', prompt_too_large: 'That was too long to send.' }[code] ?? 'Claude could not be reached. Try again.';
+  if (turn) { turn.a = e?.text ? `${e.text}\n\n(${msg})` : msg; turn.failed = true; } else ch.notice = msg;
+}
+
+async function aiOpinion(key) {
+  const ctx = aiCtx.get(key);
+  const ch = aiChat(key);
+  if (!ctx || ch.busy) return;
+  if (ai.state !== 'on') { render(); return; }
+  ch.busy = 'op';
+  ch.notice = '';
+  ch.ctl = new AbortController();
+  render();
+  try {
+    const { text } = await ai.sample(opinionPrompt(ctx.facts), { modelTier: 'quick', signal: ch.ctl.signal, onText: ({ text: t }) => streamTo(`ai-op-${domId(key)}`, t) });
+    ch.op = { text, source: 'claude' };
+  } catch (e) {
+    aiFailed(e, ch, () => {});
+  }
+  ch.busy = false;
+  ch.ctl = null;
+  render();
+}
+
+async function aiAsk(key, q) {
+  const ctx = aiCtx.get(key);
+  const ch = aiChat(key);
+  if (!ctx || ch.busy || !q) return;
+  ch.draft = '';
+  ch.notice = '';
+  const turn = { q, a: null, source: ai.state === 'on' ? 'claude' : 'builtin' };
+  ch.turns.push(turn);
+  if (ai.state !== 'on') {
+    turn.a = builtInAnswer(ctx.facts, q) ?? NO_ANSWER;
+    afterRender = () => focusAiInput(key);
+    render();
+    return;
+  }
+  const at = ch.turns.length - 1;
+  ch.busy = 'ask';
+  ch.ctl = new AbortController();
+  render();
+  try {
+    const history = ch.turns.slice(0, -1).filter((t) => t.a && !t.failed && t.source === 'claude');
+    const { text } = await ai.sample(chatTurns(ctx.facts, ch.op?.source === 'claude' ? ch.op.text : null, history, q), {
+      modelTier: 'quick', cache: false, signal: ch.ctl.signal, onText: ({ text: t }) => streamTo(`ai-a-${domId(key)}-${at}`, t),
+    });
+    turn.a = text;
+  } catch (e) {
+    aiFailed(e, ch, () => { turn.a = builtInAnswer(ctx.facts, q) ?? NO_ANSWER; turn.source = 'builtin'; }, turn);
+    if (turn.a == null) turn.a = builtInAnswer(ctx.facts, q) ?? NO_ANSWER;
+  }
+  ch.busy = false;
+  ch.ctl = null;
+  afterRender = () => focusAiInput(key);
+  render();
+}
+
+// Is Claude here? Only inside a claude.ai viewer; the website and the zip use the built-in assistant.
+async function connectAI() {
+  if (!window.claude?.use) { ai.state = 'off'; return; }
+  try { ai.sample = await window.claude.use('sample'); } catch { ai.sample = null; }
+  ai.state = ai.sample ? 'on' : 'off';
+  if (document.querySelector('.ai-card')) render();
+}
+
+function caseAssistant(c, s, view) {
+  const decided = c.decision.expert ? `expert decided: ${expertText(c)}` : c.decision.employer ? (c.decision.employer.auto ? 'confirmed by a rule the employer approved' : 'confirmed by the employer') : '';
+  const facts = lineFacts(c, {
+    company: s.a.company, addressById, taxByLaw: (law) => s.a.idx.taxByLaw.get(law), view,
+    stage: waitsForAddress(c) ? 'Waiting for the home address' : STAGE_LABEL[c.stage], next: nextStep(c, view, s.d.live), decided,
+  });
+  return assistantCard(`line:${c.case_id}`, facts, lineOpinion(facts, c), aiSuggestions(facts, c), { subject: 'this line' });
+}
+
+function gapAssistant(g, e, s, stage, next) {
+  const facts = gapFacts(g, e, { company: s.a.company, addressById, view: 'review', stage, next });
+  return assistantCard(`gap:${g.gap_id}`, facts, gapOpinion(facts), aiSuggestions(facts), { subject: 'this missing tax' });
 }
 
 // ---------- try the clustering (admin, Model page) ----------
@@ -2358,6 +2616,21 @@ function handle(action, el) {
       state.detailOpen = false;
       afterRender = () => window.scrollTo(0, listY);
       break;
+    case 'ai-opinion':
+      aiOpinion(el.dataset.key);
+      return;
+    case 'ai-ask':
+      aiAsk(el.dataset.key, el.dataset.q);
+      return;
+    case 'ai-ask-form': {
+      const q = String(new FormData(el).get('q') ?? '').trim();
+      if (!q) { el.querySelector('input')?.focus(); return; }
+      aiAsk(el.dataset.key, q);
+      return;
+    }
+    case 'ai-stop':
+      aiChat(el.dataset.key).ctl?.abort();
+      return;
     case 'log-who':
       logWho = el.dataset.value;
       more.audit = false;
@@ -2616,11 +2889,18 @@ app.addEventListener('submit', (ev) => {
   handle(form.dataset.action, form);
 });
 app.addEventListener('input', (ev) => {
+  if (ev.target.classList?.contains('ai-input')) { aiChat(ev.target.dataset.key).draft = ev.target.value; return; }
   if (ev.target.id !== 'queue-search') return;
   state.query[currentView()] = ev.target.value;
   save();
   applySearch(currentView());
 });
+// Remember which use-case assistants are open, so a re-render keeps them open.
+app.addEventListener('toggle', (ev) => {
+  const d = ev.target;
+  if (!d.classList?.contains('uc-ai')) return;
+  if (d.open) ucOpen.add(d.dataset.key); else ucOpen.delete(d.dataset.key);
+}, true);
 // Close an open "More actions" menu when clicking elsewhere or pressing Escape.
 document.addEventListener('click', (ev) => {
   for (const d of document.querySelectorAll('details.more[open]')) if (!d.contains(ev.target)) d.open = false;
@@ -2820,6 +3100,7 @@ async function boot() {
     try { SQLlib = await loadSqlJs(); } catch (err) { dbError = err.message || 'WebAssembly is blocked here'; }
     rebuildData();
     render();
+    connectAI();
   } catch (err) {
     app.innerHTML = `<p class="boot">The demo data did not load (${esc(err.message)}). Run <code>npm run build</code> and <code>npm start</code>, then open http://localhost:3000.</p>`;
   }

@@ -171,6 +171,16 @@ After the first cloud payroll and again after the first quarter, withholding is 
 
 The payer depends on the plan: Premium and Elite let QuickBooks pay and file supported taxes. Core means the employer pays and files.
 
-## Why no live AI call
+## The AI assistant: an opinion first, then questions
 
-The BRD's model is clustering, which runs in the browser with no key and no data leaving the page. A language model could later help name new clusters, but its output would still go through the same gates and the same employer confirmation.
+*Added after faculty feedback.*
+
+- **Where.** Every record in the employer's To do and the expert's queue, and every person on the Use cases screen, has an **AI assistant**. It gives its opinion first (a recommendation, how confident it is, why, and one thing to check), then answers questions so a person can verify it.
+- **One facts brief, two answerers.** `web/assistant.mjs` builds one brief per record from the engine's own results: the person's addresses and months, the Desktop line, the expected taxes with their Law IDs, the rate checks, the model's reading of the label and the steps. In the hosted app on claude.ai, **Claude** answers from that brief through the page's `sample` capability, on the viewer's own Claude account (it asks permission the first time; no key is stored anywhere). Everywhere else (the website, the zip) the **built-in assistant** answers from the same brief with fixed rules, and says so.
+- **Grounded, not creative.** Claude is told to use only the facts and to say when they do not cover a question; the built-in assistant has nothing else to use and answers "I can only answer from the facts" otherwise. Neither decides anything: suggestions still go through the gates and the employer's confirmation.
+- **Failure is visible.** If the viewer declines, Claude is unavailable, busy or refuses, the card says so; when Claude is not allowed it switches to the built-in assistant for the rest of the visit.
+- **The clustering stays the model.** The label clustering is still what reads Desktop labels; the assistant explains and checks, it does not replace the gates.
+
+## Use cases
+
+The Use cases screen runs six made-up people through the same engine as a small business of their own: lives and works in the same town; lives in one town and works in another; arrived from India in June and works as a barista in Columbus; moved house mid-year; works from home; Desktop withheld a tax that is not owed. Each shows a month-by-month timeline of the taxes owed, the reason, and what the migration does with the Desktop lines. `tests/assistant.test.mjs` checks each person's taxes and outcomes, so the screen cannot drift from the engine. Local taxes here follow where a person lives and works and the months on the payroll; federal and state tax residency for someone new to the US is out of scope.

@@ -28,7 +28,7 @@ Works on Windows, macOS and Linux. Nothing to install apart from Node.js: no pac
 | --- | --- | --- |
 | **Business owner** (customer) | Move their own business, give the information only they have, confirm what is theirs | **Move** (start, check, summary), **To do** (with **Missing information**), **Go live** (with reconcile and W-2) |
 | **Payroll tax expert** (Intuit) | Decide the lines the rules leave, one label at a time | **Queue** |
-| **Admin** (Intuit) | See how the engine read the file, keep the model safe and the data right | **Engine**, **Model** (gates and thresholds), **ML Lab**, **Data**, **Scenarios**, **Log** |
+| **Admin** (Intuit) | See how the engine read the file, keep the model safe and the data right | **Engine**, **Use cases**, **Model** (gates and thresholds), **ML Lab**, **Data**, **Scenarios**, **Log** |
 
 All three work on the same business. The business runs its own move with the rules it approved; nobody runs automation for it.
 
@@ -119,6 +119,30 @@ The admin's **ML Lab** answers "does the clustering work beyond 53 labels?" with
 
 It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, the confusion matrix, every wrong answer, and the clusters with their purity. With seed 2026 the model is right on 98.4% of its suggestions and suggests for 78.8% of labels; word matching is right on 98.2% and suggests for 90.8%. The silhouette is 0.462, below the gate, so on a set this messy the state would stay in shadow mode. The screen states these numbers and does not claim a winner: across seeds neither method wins every time. What clustering adds is grouping hundreds of spellings into a few dozen families an expert names once, and a confidence that says when to defer.
 
+## AI assistant
+
+Every record in the employer's **To do** and the expert's **Queue** has an **AI assistant**. It gives its **opinion first** (recommendation, confidence, why, what to check), then answers questions such as "Why this district?", "Is the rate right?" or "What if they move?".
+
+- In the **hosted app on claude.ai**, Claude answers, on your own Claude account; it asks permission the first time.
+- On the **website and the zip**, no AI model is connected, so a **built-in assistant** answers from the same facts and says so.
+
+Both read one facts brief built from the engine's results (`web/assistant.mjs`), are told to use only those facts, and decide nothing: the employer still confirms every line.
+
+## Use cases
+
+The admin's **Use cases** screen shows six made-up people run through the same engine, each with a month-by-month timeline of the local taxes owed:
+
+| Person | Situation | Local taxes |
+| --- | --- | --- |
+| Rahul Mehta | Lives and works in Lancaster | Lancaster city tax + Lancaster schools, all year |
+| Sara Lopez | Lives in Pickerington, works in Columbus | Columbus city tax (work) + Pickerington schools (home) |
+| Ananya Rao | Arrived from India in June; barista at a coffee shop in Columbus | Columbus city tax from June only; Columbus has no school-district tax |
+| Daniel Kim | Moved from Lancaster to Bremen in July | City tax all year; school district switches in July |
+| Grace Okafor | Works from home in Columbus for the Lancaster office | Columbus city tax, not Lancaster's |
+| Meera Iyer | Desktop also withholds "Lancaster Schools" | Not owed: stopped, and the amount is flagged for correction |
+
+Each card has its own AI assistant ("Why no school-district tax?", "What if she moves?"). Federal and state tax residency for someone new to the US is outside this prototype.
+
 ## Try the clustering yourself
 
 The admin's **Model** page starts with **Try the clustering**. Make up an employee (where they live, where they work) and the Desktop item on their paycheck (the label as typed, its Law ID, its rate), then click **Run clustering**. The real engine shows every step:
@@ -138,6 +162,7 @@ The example buttons show the other outcomes: the same label for someone living i
 4. **Sign in as the owner again.** **Go live**: every check passes; all $255,817.53 withheld in Desktop this year has a destination; the reconcile shows 9 local taxes on Online paychecks and groups the 200 notes by kind (wrong past rates, tax withheld but not owed). The W-2 cards show the local boxes.
 5. **Sign in as the admin**:
    - **Engine**: what each step found for Buckeye: 289 expected taxes, 274 custom lines clustered, 266 local tax, 34 not a tax, 13 to an expert, 5 owed but not withheld.
+   - **Use cases**: the six people and their timelines; open "Ask the AI assistant about Ananya" and ask "Does her visa change her local tax?".
    - **Model**: **Try the clustering**: run the example labels. (To add a person to Buckeye, do it before step 3: once the business is live, adding is switched off. Asha Verma from the first example lives in Pickerington and works in Lancaster, so the rules settle her school tax and add the Lancaster city tax nobody withheld: 320 of 320 settled.) Below it, Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
    - **Data**: the schema (7 tables), the five rule checks, **Items by Law ID**, **Law ID before and after** and **The address picks the tax**, and **Download the database**.
@@ -197,9 +222,11 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/mllab.mjs` | The ML Lab: hold-out split, fit, scoring, baseline, confusion matrix, 2D map |
 | `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |
 | `web/scenarios.mjs` | The 76 scenarios and their live checks |
+| `web/assistant.mjs` | The AI assistant: the facts brief, the built-in opinion and answers, and the prompts for Claude |
+| `web/usecases.mjs` | The six use-case people |
 | `web/report.mjs` | JSON report and CSV export |
 | `web/app.mjs`, `web/styles.css` | The app |
 | `data/` | Catalog, address lookup, the six scenario test files, expert-labelled label pool |
-| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab) and "Try the clustering" |
+| `tests/` | Engine and workflow, every scenario plus exact boundaries, the database, scale (generated data, added addresses, ML Lab), "Try the clustering", the AI assistant and the use cases |
 | `.github/workflows/pages.yml` | Tests, builds and republishes the website whenever `main` changes |
 | `docs/` | Design decisions and the data contract |
