@@ -1,4 +1,4 @@
-import { effectiveAll } from './engine/workflow.mjs?v=48c45cd31a';
+import { effectiveAll } from './engine/workflow.mjs?v=ee2bce43e2';
 
 // The demo's database: SQLite (sql.js, compiled to WebAssembly) running inside the page.
 // No server, no account and no keys. It is rebuilt every time the page opens.
@@ -259,7 +259,7 @@ export function readCompany(db) {
   };
 }
 
-// ---------- the employer adds a missing or unplaceable home address ----------
+// ---------- the employer adds a home address, or says where someone works ----------
 
 export const addressKey = (line1, zip) => `${norm(line1)}|${norm(zip)}`;
 export function lookupIndex(addresses) {
@@ -269,6 +269,11 @@ export function lookupIndex(addresses) {
 // The new address replaces the employee's home address for the whole year. If the lookup knows it, it
 // goes in as the lookup placed it; if not, it is kept as an address the lookup cannot place.
 export function applyCorrection(db, c, index, lookup) {
+  // Where someone works, as the employer answered: at the site on file (0) or from home (1).
+  if (c.kind === 'work') {
+    db.run('UPDATE employees SET remote = ? WHERE employee_id = ?', [c.remote ? 1 : 0, c.employee_id]);
+    return { addressId: null, found: true };
+  }
   const found = index.get(addressKey(c.line1, c.zip));
   const addressId = found ?? `${c.company_id}-C-${c.employee_id}`;
   db.run('SAVEPOINT correction');
