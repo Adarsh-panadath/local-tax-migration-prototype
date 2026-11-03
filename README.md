@@ -131,7 +131,7 @@ It shows the silhouette for every k with the 0.5 gate, every label on a 2D map, 
 
 ## Ask AI
 
-An **Ask AI** button sits in the header of every screen (a round button at the bottom right on the front page). It opens **Payroll AI**, a chat window you can **drag anywhere** by its header (double-click the header to put it back), resize from its corner, and that becomes a bottom sheet on a phone. It is the only AI in the app.
+A round **Ask AI** button sits at the bottom right of every screen; each page ends with room for it, so it never hides a button. It opens **Payroll AI**, a chat window you can **drag anywhere** by its header (double-click the header to put it back), resize from its corner, and that becomes a bottom sheet on a phone. It is the only AI in the app.
 
 **It speaks first.** When it opens, it gives a short briefing for who you are and what you are looking at, and posts a new one as you move:
 
@@ -172,7 +172,7 @@ The example buttons show the other outcomes: the same label for someone living i
 
 ## Demo script (about six minutes)
 
-1. **Sign in as the business owner.** Open **Ask AI** (in the header): it already says what this screen is about. **Move**: Get started; the check says 311 of 318 items settle by rule, 6 things need the employer (3 home addresses, where 2 people work, 1 agency account number) and 2 need an expert. Click **Move to Online payroll**.
+1. **Sign in as the business owner.** Open **Ask AI** (bottom right): it already says what this screen is about. **Move**: Get started; the check says 311 of 318 items settle by rule, 6 things need the employer (3 home addresses, where 2 people work, 1 agency account number) and 2 need an expert. Click **Move to Online payroll**.
 2. Open **To do**. **Needs you** lists six things; each opens with its form, and the next one opens after you answer:
    - Gabriel Bell, Imani Price, Kenji Lewis: **Fill a demo address**, then **Save**: the engine checks the line again and the rules settle it. (Type an address the lookup does not know, and the line stays with an expert.)
    - Tom Sanchez: Desktop withholds Columbus city tax, where he lives, not Lancaster's, where the site is. Answer **At Lancaster main site**: the Lancaster city tax nobody withheld is added, and Columbus becomes optional.
@@ -244,7 +244,7 @@ This prototype is not affiliated with Intuit and is not tax advice. Synthetic la
 | `web/vendor/` | sql.js 1.14.2 (SQLite in WebAssembly, MIT licence) |
 | `web/scenarios.mjs` | The 76 scenarios and their live checks |
 | `web/assistant.mjs` | What Ask AI knows about a record: the facts brief, the built-in opinion and answers, and the format a model is asked for |
-| `web/chat.mjs` | Ask AI: the header button, the draggable chat window, its briefings and its settings |
+| `web/chat.mjs` | Ask AI: the round button, the draggable chat window, its briefings and its settings |
 | `web/llm.mjs` | Connecting a model with your own key (Gemini, OpenAI-compatible, Anthropic): streaming, model lists, errors |
 | `web/report.mjs` | JSON report and CSV export |
 | `web/media/` | The product tour film and its poster |

@@ -391,7 +391,6 @@ function appbar(view, s) {
         <button class="um-item" type="button" data-action="sign-out">${icon('out')}<span>Sign out</span></button>
       </div>
     </details>`;
-  const ask = `<button class="ask-ai" type="button" data-ask-ai aria-controls="chat-panel" aria-expanded="false">${icon('sparkles')}<span>Ask AI</span><span class="ask-dot" aria-hidden="true"></span></button>`;
   const total = s.cases.length;
   const lines = s.cases.filter((c) => c.stage === 'awaiting_employer').length;
   const gaps = s.awaiting - lines;
@@ -413,7 +412,6 @@ function appbar(view, s) {
       <nav class="tabs${role.tabs.length > 4 ? ' many' : ''}" aria-label="${esc(role.label)} screens">${role.tabs.map(tab).join('')}</nav>
       <div class="top-tools">
         ${company}
-        ${ask}
         ${user}
       </div>
     </div>

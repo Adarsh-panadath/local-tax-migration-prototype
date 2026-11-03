@@ -1,5 +1,4 @@
-// Ask AI: the Ask AI button in the app's header (a round button at the bottom right where there is no header),
-// and the chat window it opens. When it opens
+// Ask AI: the round button at the bottom right of every screen, and the chat window it opens. When it opens
 // it first says what matters for this person on this screen (a briefing from context().brief(), instant and
 // built in), and posts a new one as they move to another screen or record. Then they ask questions: the
 // connected model answers (call()), or the built-in assistant does. A dot on the button means there is a
