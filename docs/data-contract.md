@@ -73,7 +73,7 @@ A work site is stored on each employee's row and comes back named by its name; t
 
 Every table has a primary key; foreign keys and CHECK rules are on. A Desktop file that breaks a key (an item that does not exist, the same item twice for one person, an address nobody knows) is refused when it is loaded, with the database's own message. The full schema is in [schema.md](schema.md).
 
-The Data page runs one read-only `SELECT` at a time.
+The Data page runs one read-only `SELECT` at a time (SQLite's `query_only` mode is on while it runs).
 
 ## The business being moved
 

@@ -37,7 +37,7 @@ export function itemAmount(item, wages) {
 
 export function rateText(item) {
   if (item.calc.kind === 'percent') return `${item.calc.rate}%`;
-  if (item.calc.kind === 'flat_annual') return `$${item.calc.amount} a year`;
+  if (item.calc.kind === 'flat_annual') return `$${Number(item.calc.amount).toLocaleString('en-US')} a year`;
   return '—';
 }
 

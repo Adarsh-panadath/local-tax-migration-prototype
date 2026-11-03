@@ -127,6 +127,11 @@ test('the query box runs one SELECT and nothing that changes data', () => {
   assert.equal(runQuery(db, 'WITH x AS (SELECT 1 AS n) SELECT n FROM x;').rows[0][0], 1);
   assert.throws(() => runQuery(db, 'DELETE FROM employees'), /Only SELECT/);
   assert.throws(() => runQuery(db, 'SELECT 1; DROP TABLE employees'), /one query/);
+  // A statement that starts with WITH can still write; the database refuses it in read-only mode.
+  assert.throws(() => runQuery(db, 'WITH x AS (SELECT 1) DELETE FROM desktop_lines'), /Only SELECT/);
+  assert.equal(runQuery(db, 'SELECT COUNT(*) FROM desktop_lines').rows[0][0] > 0, true);
+  // and the database is writable again afterwards
+  db.run("UPDATE company SET plan = plan");
   assert.throws(() => runQuery(db, '   '), /Type a query/);
   assert.equal(runQuery(db, 'SELECT COUNT(*) FROM employees').rows[0][0], 152);
 });

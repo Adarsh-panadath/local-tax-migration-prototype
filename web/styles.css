@@ -231,7 +231,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .stack { display: inline-flex; align-items: center; }
 .stack .avatar { width: 30px; height: 30px; font-size: 11px; box-shadow: 0 0 0 2px var(--surface); background: var(--brand-soft); }
 .stack .avatar + .avatar { margin-left: -5px; }
-.stack .avatar.more { background: var(--brand); color: var(--brand-ink); }
+.stack .avatar.more { background: var(--brand); color: var(--brand-ink); width: auto; min-width: 30px; padding: 0 7px; border-radius: 999px; }
+.nowrap { white-space: nowrap; }
+.move-h { text-wrap: balance; }
 .muted { color: var(--muted); }
 .bad-text { color: var(--bad); }
 .warn-text { color: var(--warn); }
@@ -414,7 +416,9 @@ td.num, th.num { text-align: right; }
 .rec-map .to.bad { color: var(--bad); }
 .rec-map .to.blue { color: var(--blue); }
 .rec-map .to.muted { color: var(--muted); font-weight: 500; }
-.queue-empty { padding: 20px 16px; font-size: 13px; color: var(--muted); }
+.queue-empty { padding: 16px 16px 20px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.queue-empty p { margin: 0; }
+.queue-empty .btn { margin-left: -10px; }
 .queue-foot { padding: 12px 16px 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .queue-foot .btn { width: 100%; }
 .queue-foot p { font-size: 12px; color: var(--muted); }
@@ -885,6 +889,7 @@ tr.spotlight { outline-offset: -2px; }
 .wl-tile .stack { margin-left: auto; }
 .with-stack { padding-left: 4px !important; }
 .with-stack .stack .avatar { width: 24px; height: 24px; font-size: 9.5px; box-shadow: 0 0 0 2px var(--subtle); }
+.with-stack .stack .avatar.more { width: auto; min-width: 24px; padding: 0 6px; }
 
 /* dashboard cards: a single big figure */
 .dash-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 16px; align-items: stretch; }
@@ -1223,3 +1228,31 @@ tr.spotlight { outline-offset: -2px; }
   .closeness li { grid-template-columns: minmax(0, 1fr) 2.6rem; row-gap: 4px; }
   .closeness .cl-name { grid-column: 1 / -1; white-space: normal; }
 }
+
+/* ---------- phone: a stacked table shows each row as a small card ---------- */
+@media (max-width: 640px) {
+  table.stacked, table.stacked tbody, table.stacked tr, table.stacked td { display: block; width: 100%; }
+  table.stacked thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  table.stacked tr { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  table.stacked tr:last-child { border-bottom: 0; }
+  table.stacked td { border: 0; padding: 3px 0; display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 12px; text-align: left; white-space: normal; }
+  table.stacked td.num { text-align: left; }
+  table.stacked td::before { content: attr(data-label); font-size: 12px; color: var(--muted); font-weight: 500; padding-top: 1px; }
+  table.stacked td:first-child { grid-template-columns: minmax(0, 1fr); font-weight: 600; padding-bottom: 6px; }
+  table.stacked td:first-child::before { display: none; }
+  table.stacked td:empty { display: none; }
+  table.stacked td input, table.stacked td select { width: 100%; }
+  tbody tr:hover td { background: transparent; }
+  .gate-table td:last-child { white-space: normal; }
+}
+
+/* Log: who did it */
+.log-who { margin: 4px 0 12px; width: fit-content; max-width: 100%; }
+.log-table td.nowrap { white-space: nowrap; }
+
+/* phone: the admin's six screens sit in a 3 x 2 grid instead of a strip that scrolls sideways */
+@media (max-width: 640px) {
+  .tabs.many { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-radius: 16px; overflow: visible; }
+  .tabs.many a { justify-content: center; padding: 7px 8px; }
+}
+.with-stack .stack .avatar + .avatar { margin-left: -2px; }
