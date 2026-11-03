@@ -1,4 +1,4 @@
-import { effectiveAll } from './engine/workflow.mjs?v=05fd6e104a';
+import { effectiveAll } from './engine/workflow.mjs?v=d39ae3749f';
 
 // The demo's database: SQLite (sql.js, compiled to WebAssembly) running inside the page.
 // No server, no account and no keys. It is rebuilt every time the page opens.
@@ -394,7 +394,17 @@ export function runQuery(db, sql, limit = 200) {
   if (!text) throw new Error('Type a query first.');
   if (/;/.test(text)) throw new Error('Run one query at a time.');
   if (!/^(select|with)\b/i.test(text)) throw new Error('Only SELECT queries can run here, so the demo data stays intact.');
-  const res = db.exec(text);
+  // The first check is for a friendly message; this one is the guard. "WITH ... DELETE" starts with WITH,
+  // so the database itself is switched to read-only for the query.
+  let res;
+  db.run('PRAGMA query_only = 1');
+  try {
+    res = db.exec(text);
+  } catch (err) {
+    throw new Error(/readonly|read-only/i.test(err.message) ? 'Only SELECT queries can run here, so the demo data stays intact.' : err.message);
+  } finally {
+    db.run('PRAGMA query_only = 0');
+  }
   if (!res.length) return { columns: [], rows: [], total: 0 };
   const { columns, values } = res[0];
   return { columns, rows: values.slice(0, limit), total: values.length };

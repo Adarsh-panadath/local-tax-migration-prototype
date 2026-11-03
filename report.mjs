@@ -1,7 +1,7 @@
 // A complete migration report: every Desktop line, its route, its outcome, and the evidence behind it.
-import { MODEL_VERSION } from './engine/cluster.mjs?v=05fd6e104a';
-import { effectiveAll, gapStage, readiness, w2Preview, reconcile, STAGE_LABEL } from './engine/workflow.mjs?v=05fd6e104a';
-import { monthSpan } from './engine/util.mjs?v=05fd6e104a';
+import { MODEL_VERSION } from './engine/cluster.mjs?v=d39ae3749f';
+import { effectiveAll, gapStage, readiness, w2Preview, reconcile, STAGE_LABEL } from './engine/workflow.mjs?v=d39ae3749f';
+import { monthSpan } from './engine/util.mjs?v=d39ae3749f';
 
 export function buildReport(analysis, decisions, audit) {
   const cases = effectiveAll(analysis, decisions);
