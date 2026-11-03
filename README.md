@@ -128,7 +128,7 @@ The admin's **Model** page starts with **Try the clustering**. Make up an employ
 3. **How sure is it?**: the silhouette, (b − a) ÷ the larger of the two, against the 0.25 floor (0.39: confident).
 4. **The address picks the exact tax**: the home address is in school district 2307, so Law ID 177 becomes **Law ID 5307**, Pickerington Local School District.
 
-The example buttons show the other outcomes: the same label for someone living in Bremen becomes 5304 (the label says *what kind* of tax, the address says *which one*); union dues are not a tax; a misspelt `Pickrngtn Schl W/H` is nearest the right cluster but scores 0.24, below the floor, so it goes to an expert; a system item (Law ID 4140) needs no clustering. **Add to Buckeye** makes the person a real employee: the line appears in the owner's To do or the expert's queue, and **Remove** takes them out again.
+The example buttons show the other outcomes: the same label for someone living in Bremen becomes 5304 (the label says *what kind* of tax, the address says *which one*); union dues are not a tax; a misspelt `Pickrngtn Schl W/H` is nearest the right cluster but scores 0.24, below the floor, so it goes to an expert; a system item (Law ID 4140) needs no clustering. **Add to Buckeye** makes the person a real employee (before go-live): the line appears in the owner's To do or the expert's queue, and **Remove** takes them out again.
 
 ## Demo script (about six minutes)
 
@@ -138,7 +138,7 @@ The example buttons show the other outcomes: the same label for someone living i
 4. **Sign in as the owner again.** **Go live**: every check passes; all $255,817.53 withheld in Desktop this year has a destination; the reconcile shows 9 local taxes on Online paychecks and groups the 200 notes by kind (wrong past rates, tax withheld but not owed). The W-2 cards show the local boxes.
 5. **Sign in as the admin**:
    - **Engine**: what each step found for Buckeye: 289 expected taxes, 274 custom lines clustered, 266 local tax, 34 not a tax, 13 to an expert, 5 owed but not withheld.
-   - **Model**: **Try the clustering**: run the example labels, then add one person to Buckeye and open their record. Below it, Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
+   - **Model**: **Try the clustering**: run the example labels. (To add a person to Buckeye, do it before step 3: once the business is live, adding is switched off. Asha Verma from the first example lives in Pickerington and works in Lancaster, so the rules settle her school tax and add the Lancaster city tax nobody withheld: 320 of 320 settled.) Below it, Ohio passes every gate on the demo pool (silhouette 0.528 with 11 clusters, precision 100%, 53 labels). Set the silhouette threshold to 0.53 and Ohio drops to shadow mode.
    - **ML Lab**: 1,200 labels, 240 held back, precision and coverage against word matching, and the gate that keeps this messier set in shadow mode.
    - **Data**: the schema (7 tables), the five rule checks, **Items by Law ID**, **Law ID before and after** and **The address picks the tax**, and **Download the database**.
    - **Scenarios**: 76 of 76 pass.
