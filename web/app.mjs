@@ -414,7 +414,7 @@ function appbar(view, s) {
 
 // The product tour: a short film on the front page, what the product does and then a walkthrough of the
 // real screens. It plays in a dialog that lives outside the app's markup, so a re-render never stops it.
-const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '2:22' };
+const TOUR = { video: './media/tour.mp4', poster: './media/tour-poster.jpg', thumb: './media/tour-thumb.jpg', length: '0:57' };
 let tourDialog = null;
 function openTour(from) {
   if (!tourDialog) {
@@ -451,7 +451,7 @@ function signIn() {
       <button class="tour" type="button" data-action="tour" aria-label="Watch the product tour (${TOUR.length})">
         <img src="${TOUR.thumb}" alt="" width="960" height="540" decoding="async">
         <span class="tour-play" aria-hidden="true">${icon('play')}</span>
-        <span class="tour-label"><b>Watch the product tour</b><span>${TOUR.length} · what it does, then a walkthrough</span></span>
+        <span class="tour-label"><b>Watch the product tour</b><span>${TOUR.length} · what it does for your business</span></span>
       </button>
       <h1>Local Tax Migration</h1>
       <p>Desktop to Online payroll, with every local tax checked line by line.</p>

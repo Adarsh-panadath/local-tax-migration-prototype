@@ -12,7 +12,7 @@ A working prototype of the BRD v3 design for moving local payroll taxes from Qui
 
 Sign in with a demo account (no passwords). Progress is saved in your own browser only; **Reset** (two clicks) starts again.
 
-**Product tour.** The front page has a **Watch the product tour** tile (2:22): what the product does, then a walkthrough of the real screens from sign-in to go-live. It plays in a window over the page; Esc or the close button stops it. The film is `web/media/tour.mp4` (1080p): narrated, with on-screen captions and a quiet music bed. The voice is Kokoro, an open-source text-to-speech model (Apache 2.0), run offline from a written script; the narration script is in `docs/tour-script.md`.
+**Product tour.** The front page has a **Watch the product tour** tile (0:57): a short film for businesses deciding whether to move. It shows the problem, what the product does for them, four real screens (see the result first, a few quick answers, Ask AI, go live) and the results. It plays in a window over the page; Esc or the close button stops it. The film is `web/media/tour.mp4` (1080p), narrated by a male voice, with on-screen captions and a quiet music bed. The voice is Kokoro (`am_michael`), an open-source text-to-speech model (Apache 2.0) run offline, reading the script in `docs/tour-script.md`.
 
 To run it on your computer (Node.js 20 or later; no install step, no API keys):
 
