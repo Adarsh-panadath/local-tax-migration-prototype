@@ -1,8 +1,8 @@
 // The BRD v3 pipeline for one company:
 //   1 find the state · 2 list expected taxes · 3 cluster custom items · 4 route every item · (5 employer confirms, see workflow.mjs)
-import { clusterLabels, assignLabel, MODEL_VERSION } from './cluster.mjs?v=b3c6c68678';
-import { normalize } from './text.mjs?v=b3c6c68678';
-import { desktopMonths, cloudMonths, employedMonths, itemAmount, monthSpan, range, round2, sum, rateCheck } from './util.mjs?v=b3c6c68678';
+import { clusterLabels, assignLabel, MODEL_VERSION } from './cluster.mjs?v=e979bfd711';
+import { normalize } from './text.mjs?v=e979bfd711';
+import { desktopMonths, cloudMonths, employedMonths, itemAmount, monthSpan, range, round2, sum, rateCheck } from './util.mjs?v=e979bfd711';
 
 export const DEFAULT_THRESHOLDS = {
   silhouetteFloor: 0.5,   // state-level cluster quality needed before suggestions are shown
@@ -22,10 +22,15 @@ const usd = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD
 export function indexData({ catalog, geocoder }) {
   const addresses = new Map(geocoder.addresses.map((a) => [a.address_id, a]));
   const taxes = new Map();
+  const taxByLaw = new Map(); // Law ID: each tax's unique identifier, the one a Desktop system item carries
   for (const [code, state] of Object.entries(catalog.states)) {
-    for (const t of state.taxes) taxes.set(t.tax_id, { ...t, state: code });
+    for (const t of state.taxes) {
+      const tax = { ...t, state: code };
+      taxes.set(t.tax_id, tax);
+      if (t.law_id != null) taxByLaw.set(t.law_id, tax);
+    }
   }
-  return { catalog, addresses, taxes };
+  return { catalog, addresses, taxes, taxByLaw };
 }
 
 // ---------- Data checks: run before anything else ----------
@@ -66,7 +71,7 @@ export function checkCompanyData(company, idx) {
     const validRate = c.kind === 'percent' ? typeof c.rate === 'number' && c.rate >= 0 && c.rate <= 100
       : c.kind === 'flat_annual' ? typeof c.amount === 'number' && c.amount >= 0 : false;
     if (!validRate) fail(`Payroll item "${i.label}" (${i.item_id}) needs a rate from 0% to 100% or a flat yearly amount of $0 or more.`);
-    if (i.origin === 'system' && !idx.taxes.has(i.system_tax_id)) fail(`System item "${i.label}" points at tax ${i.system_tax_id}, which is not in the catalog.`);
+    if (i.origin === 'system' && !idx.taxByLaw.has(i.law_id)) fail(`System item "${i.label}" has Law ID ${i.law_id}, which no tax in the catalog has.`);
     if (typeof i.label !== 'string') warn(`Payroll item ${i.item_id} has no name, so it is treated as blank and goes to an expert.`);
   }
 
@@ -232,8 +237,8 @@ function employeeStates(employee, company, idx) {
 }
 
 function detectState(item, employee, company, idx) {
-  if (item.origin === 'system' && item.system_tax_id) {
-    return { state: idx.taxes.get(item.system_tax_id)?.state ?? null, source: 'Desktop tax item' };
+  if (item.origin === 'system') {
+    return { state: idx.taxByLaw.get(item.law_id)?.state ?? null, source: `Desktop item's Law ID ${item.law_id}` };
   }
   const hint = STATE_HINTS.find((h) => h.pattern.test(item.label));
   if (hint) return { state: hint.state, source: `label "${item.label}"`, fromLabel: true };
@@ -397,7 +402,7 @@ export function analyseCompany(rawCompany, data, settings = {}) {
       c.state = st.state;
       const stateInfo = idx.catalog.states[st.state];
       c.evidence.push({ step: 1, tone: 'pass', text: `State: ${stateInfo?.name ?? st.state}, from the ${st.source}.` });
-      c.evidence.push({ step: 2, tone: 'info', text: `Desktop setting: ${item.item_type}, tracking type "${item.tracking_type}", Law ID ${item.law_id}${item.law_id === 177 || item.law_id === 0 ? ' (employer-created custom item)' : ''}.` });
+      c.evidence.push({ step: 2, tone: 'info', text: `Desktop setting: ${item.item_type}, tracking type "${item.tracking_type}", Law ID ${item.law_id}${item.law_id === 177 || item.law_id === 0 ? ' (an item the employer created: it names no tax)' : ''}.` });
       if (!pastMonths.length) c.evidence.push({ step: 2, tone: 'info', text: dMonths.length ? 'No Desktop paychecks for this employee this year.' : 'The move happens in January, so there is no Desktop payroll this year to relabel.' });
 
       const finish = (route, reason, reasonText) => {
@@ -421,9 +426,9 @@ export function analyseCompany(rawCompany, data, settings = {}) {
       let taxType = null;
       let nonTaxEntry = null;
       if (item.origin === 'system') {
-        const tax = idx.taxes.get(item.system_tax_id);
+        const tax = idx.taxByLaw.get(item.law_id);
         taxType = tax?.type ?? null;
-        c.evidence.push({ step: 3, tone: 'pass', text: `System-defined Desktop item: ${tax?.name ?? item.system_tax_id}. No clustering needed.` });
+        c.evidence.push({ step: 3, tone: 'pass', text: `Law ID ${item.law_id} identifies the tax: ${tax?.name ?? 'unknown'}. No clustering needed.` });
       } else {
         const model = models[st.state];
         const s = model?.suggest(item.label);
@@ -475,7 +480,7 @@ export function analyseCompany(rawCompany, data, settings = {}) {
 
       // Local tax: the type must be on the employee's expected list. A system item may only match its own tax.
       let candidates = expected.list.filter((e) => e.tax.type === taxType);
-      if (item.origin === 'system') candidates = candidates.filter((e) => e.tax_id === item.system_tax_id);
+      if (item.origin === 'system') candidates = candidates.filter((e) => e.tax.law_id === item.law_id);
       const needsHome = taxType === 'school_district' || expected.remote;
       if (!candidates.length) {
         if (needsHome && !expected.periods.length) {
@@ -485,7 +490,7 @@ export function analyseCompany(rawCompany, data, settings = {}) {
           c.evidence.push({ step: 4, tone: 'fail', text: 'The address could not be placed in a school district, so the tax cannot be confirmed yet.' });
           finish('not_in_database', 'address_unresolved', 'The address lookup could not place the home address.');
         } else {
-          const named = item.origin === 'system' ? idx.taxes.get(item.system_tax_id)?.name : null;
+          const named = item.origin === 'system' ? idx.taxByLaw.get(item.law_id)?.name : null;
           c.evidence.push({ step: 4, tone: 'fail', text: `${named ? `${named} is not` : `No ${typeWord(taxType)} tax is`} on this employee's expected list. Desktop withheld ${usd(c.ytd)} that may not be owed.` });
           finish('not_in_database', 'not_expected', 'Withheld, but not on the expected list.');
         }

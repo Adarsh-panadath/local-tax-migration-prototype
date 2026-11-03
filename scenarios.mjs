@@ -1,9 +1,9 @@
 // Every scenario the BRD v3 design has to handle, with a live check against the demo data.
 // The website's Scenario coverage page and the automated tests both run this list.
-import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=b3c6c68678';
-import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=b3c6c68678';
-import { monthSpan, rateCheck } from './engine/util.mjs?v=b3c6c68678';
-import { buildReport, casesCSV } from './report.mjs?v=b3c6c68678';
+import { analyseCompany, evaluateGates } from './engine/analysis.mjs?v=e979bfd711';
+import { effectiveAll, emptyDecisions, gapStage, readiness, dollarTieOut, w2Preview, reconcile, liveTaxes, STAGE_LABEL, automate, automationStats, exceptions, PERSON_REASONS, DEFAULT_POLICY } from './engine/workflow.mjs?v=e979bfd711';
+import { monthSpan, rateCheck } from './engine/util.mjs?v=e979bfd711';
+import { buildReport, casesCSV } from './report.mjs?v=e979bfd711';
 
 export const GROUPS = [
   { id: 'data', title: 'Before step 1: check the Desktop file' },
@@ -198,8 +198,8 @@ export const SCENARIOS = [
   {
     id: 'state-system', group: 'state', title: 'A system-defined item already carries its state',
     where: { company: 'C-FHS', employee: 'E01', view: 'review' },
-    expect: 'Lancaster City Tax (Law ID 4120) is Intuit-defined, so no guessing is needed.',
-    check: (x) => { const c = x.find('C-FHS', 'John Carter', 'Lancaster City Tax'); return ok(/Desktop tax item/.test(c.evidence[0].text) && c.route === 'local_tax', c.evidence[0].text); },
+    expect: 'Lancaster City Tax carries Law ID 4120, which names the tax, so no guessing is needed.',
+    check: (x) => { const c = x.find('C-FHS', 'John Carter', 'Lancaster City Tax'); return ok(/Law ID 4120/.test(c.evidence[0].text) && c.route === 'local_tax' && c.proposal[0]?.tax.law_id === 4120, c.evidence[0].text); },
   },
   {
     id: 'state-conflict', group: 'state', title: 'The label names a state the employee has no address in',

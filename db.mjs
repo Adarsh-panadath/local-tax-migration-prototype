@@ -1,4 +1,4 @@
-import { effectiveAll } from './engine/workflow.mjs?v=b3c6c68678';
+import { effectiveAll } from './engine/workflow.mjs?v=e979bfd711';
 
 // The demo's database: SQLite (sql.js, compiled to WebAssembly) running inside the page.
 // No server, no account and no keys. It is rebuilt every time the page opens.
@@ -54,9 +54,10 @@ CREATE TABLE employees (
   left_month           INTEGER CHECK (left_month BETWEEN 1 AND 12)
 );
 
--- The local taxes Online payroll knows. code: the school-district number, or the city for a city tax.
+-- The local taxes Online payroll knows. law_id: the tax's unique Law ID.
+-- code: the school-district number (it matches addresses.school_district), or the city for a city tax.
 CREATE TABLE taxes (
-  tax_id  TEXT PRIMARY KEY,                          -- OH-SD-2305
+  law_id  INTEGER PRIMARY KEY,
   name    TEXT NOT NULL,
   type    TEXT NOT NULL CHECK (type IN ('school_district', 'municipal', 'earned_income', 'local_services')),
   code    TEXT,
@@ -65,19 +66,20 @@ CREATE TABLE taxes (
 );
 
 -- Payroll items as set up in Desktop, with the label exactly as someone typed it.
--- Law ID 177 or 0: an item the employer created.
+-- law_id: an item QuickBooks already knows carries its tax's Law ID, so it matches taxes.law_id.
+-- An item the employer created carries 177 (or 0), which names no tax: those are the lines the engine
+-- works out from the address and the label. That is why law_id here is not a foreign key.
 CREATE TABLE payroll_items (
   item_id            TEXT PRIMARY KEY,
   label              TEXT,
-  law_id             INTEGER,
+  law_id             INTEGER NOT NULL,
   item_type          TEXT,
   tracking_type      TEXT,                           -- None: Desktop treats it as an after-tax deduction
   rate_percent       REAL CHECK (rate_percent BETWEEN 0 AND 100),
   annual_amount      REAL CHECK (annual_amount >= 0),
   agency             TEXT,
   agency_account     TEXT,
-  deposit_frequency  TEXT,
-  system_tax_id      TEXT REFERENCES taxes (tax_id)  -- for an item Desktop already knows as a tax
+  deposit_frequency  TEXT
 );
 
 -- One row per employee per payroll item: a Desktop local tax line.
@@ -87,12 +89,12 @@ CREATE TABLE desktop_lines (
   PRIMARY KEY (employee_id, item_id)
 );
 
--- Where each Desktop line went: the route, the tax it becomes in Online payroll, and who decided.
+-- Where each Desktop line went: the route, the Law ID of the tax it becomes in Online payroll, and who decided.
 CREATE TABLE results (
   employee_id  TEXT NOT NULL,
   item_id      TEXT NOT NULL,
   route        TEXT NOT NULL CONSTRAINT route_value CHECK (route IN ('local_tax', 'not_a_tax', 'not_in_database', 'custom_entry', 'stop')),
-  tax_id       TEXT REFERENCES taxes (tax_id),       -- the Online payroll tax from the first Online payroll
+  law_id       INTEGER REFERENCES taxes (law_id),    -- the Online payroll tax from the first Online payroll
   status       TEXT NOT NULL CHECK (status IN ('awaiting_employer', 'with_expert', 'confirmed', 'moved_to_deduction', 'employer_managed', 'stopped')),
   reason       TEXT,                                 -- why it needs a person: weak_signal, no_address ...
   decided_by   TEXT CHECK (decided_by IN ('rule', 'employer', 'expert')),
@@ -113,11 +115,11 @@ export const TABLE_GROUPS = [
 export const TABLE_NOTES = {
   company: 'The business being moved: one row.',
   employees: 'The people: where they work, where they live, and where they moved to.',
-  payroll_items: 'Payroll items as set up in Desktop, with the label exactly as typed.',
+  payroll_items: 'Payroll items as set up in Desktop: the label as typed, and the Law ID (177 or 0 when the employer created it).',
   desktop_lines: 'Which employee has which payroll item: one row per Desktop local tax line.',
   addresses: 'Each address, with the school district and city the lookup places it in.',
-  taxes: 'The local taxes Online payroll knows, with their rates.',
-  results: 'Where each Desktop line went, the Online tax, and who decided.',
+  taxes: 'The local taxes Online payroll knows, each with its unique Law ID and rate.',
+  results: 'Where each Desktop line went, the Law ID of its Online tax, and who decided.',
 };
 
 // ---------- loading sql.js ----------
@@ -175,7 +177,7 @@ export function createDatabase(SQL, { company, lookup, catalog, addresses = [] }
   db.run(SCHEMA);
   db.run('BEGIN');
   try {
-    insert(db, 'taxes', Object.values(catalog.states).flatMap((st) => st.taxes.map((t) => ({ tax_id: t.tax_id, name: t.name, type: t.type, code: t.code ?? t.place ?? null, rate: t.rate, agency: t.agency }))));
+    insert(db, 'taxes', Object.values(catalog.states).flatMap((st) => st.taxes.map((t) => ({ law_id: t.law_id, name: t.name, type: t.type, code: t.code ?? t.place ?? null, rate: t.rate, agency: t.agency }))));
     const byId = new Map(lookup.map((a) => [a.address_id, a]));
     const fromFile = new Map(addresses.map((a) => [a.address_id, a]));
     const used = [...new Set([...company.worksites.map((w) => w.address_id), ...company.employees.flatMap((e) => e.addresses.map((a) => a.address_id))])];
@@ -195,7 +197,7 @@ function insertCompany(db, c) {
   insert(db, 'payroll_items', c.items.map((it) => ({
     item_id: it.item_id, label: it.label, law_id: it.law_id, item_type: it.item_type, tracking_type: it.tracking_type,
     rate_percent: it.calc?.kind === 'flat_annual' ? null : it.calc?.rate, annual_amount: it.calc?.kind === 'flat_annual' ? it.calc.amount : null,
-    agency: it.agency, agency_account: it.agency_account, deposit_frequency: it.deposit_frequency, system_tax_id: it.system_tax_id,
+    agency: it.agency, agency_account: it.agency_account, deposit_frequency: it.deposit_frequency,
   })));
   const sites = new Map(c.worksites.map((w) => [w.site_id, w]));
   insert(db, 'employees', c.employees.map((e) => {
@@ -242,7 +244,6 @@ export function readCompany(db) {
       it.agency = r.agency;
       opt(it, 'agency_account', r.agency_account);
       opt(it, 'deposit_frequency', r.deposit_frequency);
-      opt(it, 'system_tax_id', r.system_tax_id);
       return it;
     }),
     employees: rows.map((r) => {
@@ -299,7 +300,7 @@ export function resultRows({ analysis: a, decisions: d }) {
     // A line can cover two districts when someone moved; the tax that goes live is the one for the first Online payroll.
     const live = k.route === 'local_tax' ? k.proposal.find((p) => p.months?.includes(first)) ?? k.proposal.at(-1) : null;
     return {
-      employee_id: k.employee_id, item_id: k.item.item_id, route: k.route, tax_id: live?.tax_id ?? null, status: k.stage, reason: k.reason ?? null,
+      employee_id: k.employee_id, item_id: k.item.item_id, route: k.route, law_id: live?.tax.law_id ?? null, status: k.stage, reason: k.reason ?? null,
       decided_by: e ? (e.auto ? 'rule' : 'employer') : x ? (x.auto ? 'rule' : 'expert') : null,
       rule: e?.rule ?? x?.rule ?? null,
     };
@@ -364,7 +365,7 @@ export const RULE_CHECKS = [
   { id: 'month', label: 'Set the move month to 13', rule: 'Check',
     sql: 'UPDATE company SET migration_month = 13' },
   { id: 'rate', label: 'Give a tax a rate of 150%', rule: 'Check',
-    sql: 'UPDATE taxes SET rate = 150 WHERE tax_id = (SELECT tax_id FROM taxes LIMIT 1)' },
+    sql: 'UPDATE taxes SET rate = 150 WHERE law_id = (SELECT law_id FROM taxes LIMIT 1)' },
   { id: 'line', label: 'Record a Desktop line for an item the business never set up', rule: 'Foreign key',
     sql: "INSERT INTO desktop_lines (employee_id, item_id) SELECT employee_id, 'NO-SUCH-ITEM' FROM employees LIMIT 1" },
 ];
@@ -419,7 +420,7 @@ export const CSV_COLUMNS = [
   ['work_zip', true, ''],
   ['remote', false, 'yes if the employee works from home'],
   ['item_label', false, 'The Desktop payroll item name, exactly as typed; blank row = no local items'],
-  ['law_id', false, '177 or 0 for an employer-created item'],
+  ['law_id', false, "The tax's Law ID; 177 or 0 for an item the employer created"],
   ['item_type', false, 'For example Other Tax or Deduction'],
   ['tracking_type', false, 'For example Local Income Tax, or None for after-tax'],
   ['rate_percent', false, 'Withholding rate, for example 1.5'],

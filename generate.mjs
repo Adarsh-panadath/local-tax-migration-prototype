@@ -171,7 +171,7 @@ export function generateBusinesses(catalog, { seed = SEED, count = GENERATED_COU
       if (!tax) continue;
       const rate = p.wrongRate && chance(r, 0.3) ? Number((tax.rate + pick(r, [-0.25, 0.25])).toFixed(2)) : tax.rate;
       cityItems[town] = chance(r, 0.5)
-        ? item({ label: `${town} City Tax`, law_id: town === 'Lancaster' ? 4120 : 4140, origin: 'system', system_tax_id: tax.tax_id, calc: { kind: 'percent', rate }, agency: `City of ${town}`, agency_account: account(town.slice(0, 3).toUpperCase()), deposit_frequency: 'Monthly' })
+        ? item({ label: `${town} City Tax`, law_id: tax.law_id, origin: 'system', calc: { kind: 'percent', rate }, agency: `City of ${town}`, agency_account: account(town.slice(0, 3).toUpperCase()), deposit_frequency: 'Monthly' })
         : item({ label: chance(r, 0.6) ? `${town} ${pick(r, LABELS.municipal)}` : variant(r, 'municipal', p.noise), calc: { kind: 'percent', rate }, agency: `City of ${town}`, agency_account: account(town.slice(0, 3).toUpperCase()), deposit_frequency: 'Monthly' });
     }
     // School-district items are made as employees need them: one per district rate, as employers usually do.
