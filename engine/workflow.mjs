@@ -1,6 +1,6 @@
 // Decisions by employers and experts, the go-live checks, W-2 history and reconciliation.
 // Nothing here goes live without an employer decision (BRD: never activate without confirmation).
-import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs?v=882500390b';
+import { cloudMonths, desktopMonths, desktopCountsAsTax, monthSpan, round2, sum, rateCheck } from './util.mjs?v=e67a6a40fe';
 
 const usd = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
@@ -148,11 +148,11 @@ export function agencyAccounts(analysis, decisions) {
 // ---------- Dollar tie-out and readiness ----------
 
 const DESTINATION = {
-  confirmed: 'Relabelled to the confirmed tax',
-  moved_to_deduction: 'Moved to non-tax deductions',
+  confirmed: 'Owed, moved to Online payroll',
+  moved_to_deduction: 'Not a tax: moved to deductions',
   employer_managed: 'Kept as an employer-managed tax',
-  stopped: 'Withheld but not owed: correction needed',
-  with_expert: 'Held until decided',
+  stopped: 'Taken by mistake: to refund',
+  with_expert: 'Not decided yet',
   awaiting_employer: 'Waiting for the employer',
 };
 

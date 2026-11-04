@@ -707,7 +707,11 @@ td.num, th.num { text-align: right; }
 .seg-stopped { background: var(--bad); }
 .seg-with_expert { background: var(--warn); }
 .seg-awaiting_employer { background: repeating-linear-gradient(45deg, var(--line-2) 0 6px, var(--sunken) 6px 12px); }
-.swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 8px; vertical-align: -1px; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 8px; vertical-align: -1px; flex: none; }
+.tie-k { display: flex; align-items: center; font-weight: 600; color: var(--ink); }
+.tie-help { display: block; margin: 3px 0 0 18px; font-size: 12.5px; line-height: 1.45; color: var(--muted); max-width: 52ch; }
+.link-btn { border: 0; background: none; padding: 0; font: inherit; font-weight: 650; color: var(--brand-text); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.link-btn:hover { color: var(--brand); }
 
 .live-banner { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; background: var(--brand); color: var(--brand-ink); border: 1px solid #08593f; border-radius: var(--r-l); padding: 14px 20px; font-weight: 650; box-shadow: var(--shadow); }
 .live-banner .btn.quiet { color: var(--brand-ink); }
@@ -1444,7 +1448,8 @@ tr.spotlight { outline-offset: -2px; }
 .chat-fab-dot { position: absolute; top: 6px; left: 36px; width: 11px; height: 11px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 2px var(--deep); opacity: 0; transform: scale(0.4); transition: opacity 160ms ease, transform 160ms ease; }
 .chat-fab.tip .chat-fab-dot { opacity: 1; transform: none; }
 .chat-fab.open .chat-fab-dot { display: none; }
-body:has(.action-bar) .chat-fab, body:has(.move-actions) .chat-fab { bottom: max(96px, calc(env(safe-area-inset-bottom, 0px) + 92px)); }
+/* A sticky action bar keeps its right end free, so Ask AI sits there instead of on a button. */
+.action-bar, .move-actions { padding-right: 168px; }
 
 .chat-panel {
   position: fixed; z-index: 61; right: max(20px, calc(env(safe-area-inset-right, 0px) + 16px)); bottom: 86px;
@@ -1454,7 +1459,7 @@ body:has(.action-bar) .chat-fab, body:has(.move-actions) .chat-fab { bottom: max
   box-shadow: 0 28px 60px -18px rgb(16 41 29 / 0.38), 0 6px 18px -6px rgb(16 41 29 / 0.16), 0 0 0 1px rgb(16 41 29 / 0.08);
   animation: chat-in 180ms ease-out;
 }
-body:has(.action-bar) .chat-panel, body:has(.move-actions) .chat-panel { bottom: 162px; height: min(620px, calc(100vh - 196px)); }
+body:has(.action-bar) .chat-panel, body:has(.move-actions) .chat-panel { bottom: 96px; height: min(620px, calc(100vh - 130px)); }
 .chat-panel[style*="left"] { right: auto; bottom: auto; }
 .chat-panel[hidden] { display: none; }
 @keyframes chat-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
@@ -1569,4 +1574,15 @@ body:has(.action-bar) .chat-panel, body:has(.move-actions) .chat-panel { bottom:
 /* Desktop: the chat can be resized from its bottom-right corner. */
 @media (min-width: 641px) {
   .chat-panel { resize: both; min-width: 330px; min-height: 420px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+}
+
+/* Room for Ask AI at the right end of a sticky action bar, at every width. */
+@media (max-width: 900px) {
+  .action-bar { padding-right: calc(var(--gutter-r) + 150px); }
+}
+@media (max-width: 760px) {
+  .move-actions { padding-right: calc(var(--gutter-r) + 150px); }
+}
+@media (max-width: 640px) {
+  .action-bar, .move-actions { padding-right: calc(var(--gutter-r) + 68px); }
 }

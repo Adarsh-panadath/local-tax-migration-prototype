@@ -1,4 +1,4 @@
-import { effectiveAll } from './engine/workflow.mjs?v=882500390b';
+import { effectiveAll } from './engine/workflow.mjs?v=e67a6a40fe';
 
 // The demo's database: SQLite (sql.js, compiled to WebAssembly) running inside the page.
 // No server, no account and no keys. It is rebuilt every time the page opens.
