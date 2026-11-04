@@ -1427,7 +1427,7 @@ function caseFlow(c) {
     to = flowSide('to', label, title, esc(meta), c.verified || c.stage === 'confirmed' ? 'good' : 'warn');
   } else if (c.route === 'not_a_tax') to = flowSide('to', label, 'Non-tax deduction', 'Moves to deductions; never filed as a tax', 'neutral');
   else if (c.route === 'custom_entry') to = flowSide('to', label, esc(c.entry.name), esc(`Custom entry · employer-managed · ${c.entry.flat ? `${money(c.entry.flat)} a year` : `${c.entry.rate}%`}`), 'blue');
-  else if (c.route === 'stop') to = flowSide('to', label, 'Stop withholding', esc(c.ytd ? `${money(c.ytd)} to correct with the agency` : 'Nothing was withheld'), 'bad');
+  else if (c.route === 'stop') to = flowSide('to', label, 'Stop withholding', esc(c.ytd ? `${money(c.ytd)} taken by mistake, to be refunded` : 'Nothing was withheld'), 'bad');
   else if (waitsForEmployer(c)) to = flowSide('to', label, waitText(c), esc(c.reason === 'work_location' ? 'Only the employer knows; asked on To do' : `${REASON_SHORT[c.reason]}: the employer adds it on To do`), 'warn');
   else to = flowSide('to', label, 'Waiting for an expert', esc(REASON_SHORT[c.reason] ?? 'Needs an expert'), REASON_TONE[c.reason] === 'bad' ? 'bad' : 'warn');
   return flow(from, to);
@@ -1462,6 +1462,7 @@ function nextStep(c, view, live) {
 
 function checksBanner(c) {
   const meta = `<span class="meta">${esc(stateName(c.state))} · ${c.model ? (c.model.shown ? 'model suggestion shown' : 'model suggestion hidden') : 'Intuit-defined item'}</span>`;
+  if (c.decision.expert?.auto) return `<div class="banner info">${icon('spark', 'lg')}<div><strong>Stopped by your rule</strong> "${esc(ruleLabel(c.decision.expert.rule))}": ${esc((c.decision.expert.note ?? 'Not owed at this address.').replace(/^./, (x) => x.toLowerCase()))} ${c.ytd ? `The ${esc(money(c.ytd))} Desktop already took is to be refunded by the agency and paid back to ${esc(c.employee_name.split(' ')[0])}.` : ''}</div>${meta}</div>`;
   if (c.decision.expert) return `<div class="banner info">${icon('user', 'lg')}<div><strong>Expert decision:</strong> ${esc(expertText(c))}. The system's own findings are under How it was decided.</div>${meta}</div>`;
   const issues = c.evidence.filter((x) => x.tone === 'fail' || x.tone === 'warn').map((x) => x.text);
   if (c.decision.sentToExpert) issues.push('The employer sent this line to an expert.');
@@ -1541,9 +1542,9 @@ function caseMapping(c, s) {
     return mappingTable(rows);
   }
   if (c.route === 'stop') {
-    rows.push(['Tax item', srcItem, tgt('Stop withholding', 'bad'), note('blue', 'user', 'Decided by an expert')]);
+    rows.push(['Tax item', srcItem, tgt('Stop withholding', 'bad'), c.decision.expert?.auto ? note('', 'spark', 'Stopped by your rule') : note('blue', 'user', 'Decided by an expert')]);
     rows.push(['Rate', src(rateText(item)), tgt('0.00%', 'bad'), note('', 'info', 'Nothing withheld from Online paychecks')]);
-    rows.push(ytdRow([tgt(money(c.ytd), 'bad'), note('bad', 'alert', c.ytd ? 'Not owed: correction needed with the agency' : 'Nothing withheld')]));
+    rows.push(ytdRow([tgt(money(c.ytd), 'bad'), note('bad', 'alert', c.ytd ? 'Not owed: refund from the agency, back to the employee' : 'Nothing withheld')]));
     return mappingTable(rows);
   }
   const other = c.duplicateOf ? s.cases.find((x) => x.case_id === c.duplicateOf) : null;
@@ -1604,7 +1605,7 @@ function caseDetail(c, s, view) {
   // Findings in step order (a later check can add to an earlier step); stable for equal steps.
   const steps = c.evidence.map((x, i) => ({ x, i })).sort((a, b) => (a.x.step ?? 9) - (b.x.step ?? 9) || a.i - b.i).map((y) => y.x);
   if (c.decision.sentToExpert) steps.push({ tone: 'info', text: `The employer sent this to an expert${c.decision.sentToExpert.note ? `: ${c.decision.sentToExpert.note}` : ''}.` });
-  if (c.decision.expert) steps.push({ tone: 'info', text: `Expert decision: ${expertText(c)}.` });
+  if (c.decision.expert) steps.push({ tone: 'info', text: c.decision.expert.auto ? `Stopped by the rule "${ruleLabel(c.decision.expert.rule)}".` : `Expert decision: ${expertText(c)}.` });
   // The owner answers what only they know right here; the card replaces the warning that says it is missing.
   const ask = view === 'review' && waitsForEmployer(c) && !live && canOpen('review');
   return `${mobileBack(view)}
@@ -1781,7 +1782,17 @@ function viewGoLive(s) {
   const liveCount = new Set(liveTaxes(s.a, s.d).map((t) => `${t.employee.employee_id}:${t.key}`)).size;
   const tie = r.tie;
   const bar = tie.rows.map((row) => `<span class="seg-${row.stage}" style="width:${tie.total ? (row.amount / tie.total) * 100 : 0}%" title="${esc(row.label)}: ${money(row.amount)}"></span>`).join('');
-  const tieRows = tie.rows.map((row) => `<tr><td><span class="swatch seg-${row.stage}"></span>${esc(row.label)}</td><td class="num">${row.count}</td><td class="num">${money(row.amount)}</td></tr>`).join('');
+  // Each destination says in a line what it means, and the mistakes can be opened as a list.
+  const help = {
+    confirmed: 'The address says the person owes it. The same dollars now count under the matching Online tax.',
+    moved_to_deduction: 'Not a tax, like union dues. It stays an after-tax deduction.',
+    employer_managed: 'A tax Online payroll does not file. The employer keeps paying it.',
+    stopped: 'Desktop took a local tax the person does not owe where they live and work. It stops from the first Online payroll; the employer asks the agency for a refund and pays it back to the employee.',
+    with_expert: 'Waiting for an expert or for an answer from the employer. It moves once decided.',
+    awaiting_employer: 'Proposed, waiting for the employer to confirm.',
+  };
+  const see = (row) => (row.stage === 'stopped' && canOpen('review') ? ` <button class="link-btn" type="button" data-action="see-lines" data-q="stopped">See the ${plural(row.count, 'line')}</button>` : '');
+  const tieRows = tie.rows.map((row) => `<tr><td><span class="tie-k"><span class="swatch seg-${row.stage}"></span>${esc(row.label)}</span><span class="tie-help">${esc(help[row.stage] ?? '')}${see(row)}</span></td><td class="num">${row.count}</td><td class="num">${money(row.amount)}</td></tr>`).join('');
   const accounts = r.accounts.map((a, i) => `<tr>
       <td><strong>${esc(a.agency)}</strong><div class="small muted">${a.taxes.map(esc).join(', ')}</div></td>
       <td><label class="sr-only" for="acct-${i}">Account number for ${esc(a.agency)}</label><input type="text" id="acct-${i}" value="${esc(a.account)}" placeholder="Required" data-action="account" data-agency="${esc(a.agency)}" data-field="account"${live ? ' disabled' : ''}></td>
@@ -2014,7 +2025,7 @@ function chatRecord(s, view) {
   const company = s.a.company;
   const c = key?.startsWith('c|') ? s.cases.find((x) => `c|${x.case_id}` === key) : null;
   if (c) {
-    const decided = c.decision.expert ? `expert decided: ${expertText(c)}` : c.decision.employer ? (c.decision.employer.auto ? 'confirmed by a rule the employer approved' : 'confirmed by the employer') : '';
+    const decided = c.decision.expert ? (c.decision.expert.auto ? `stopped by a rule the employer approved: ${expertText(c)}` : `expert decided: ${expertText(c)}`) : c.decision.employer ? (c.decision.employer.auto ? 'confirmed by a rule the employer approved' : 'confirmed by the employer') : '';
     const facts = lineFacts(c, { company, addressById, taxByLaw: (law) => s.a.idx.taxByLaw.get(law), view, stage: waitsForEmployer(c) ? waitText(c) : STAGE_LABEL[c.stage], next: nextStep(c, view, s.d.live), decided });
     return { key, c, facts, op: lineOpinion(facts, c), title: `${c.employee_name}, "${labelOf(c.item.label)}"` };
   }
@@ -2768,6 +2779,16 @@ function handle(action, el) {
       if (location.hash === '#review') { afterRender = go; break; }
       keepDetail = true;
       navFocus = go;
+      location.hash = '#review';
+      return;
+    }
+    case 'see-lines': {
+      // From Go live: the lines behind a destination, in the employer's list.
+      state.filters.review = 'all';
+      state.query.review = el.dataset.q;
+      const first = summary().cases.find((c) => c.stage === 'stopped');
+      state.sel.review = first ? `c|${first.case_id}` : null;
+      save();
       location.hash = '#review';
       return;
     }

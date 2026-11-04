@@ -148,11 +148,11 @@ export function agencyAccounts(analysis, decisions) {
 // ---------- Dollar tie-out and readiness ----------
 
 const DESTINATION = {
-  confirmed: 'Relabelled to the confirmed tax',
-  moved_to_deduction: 'Moved to non-tax deductions',
+  confirmed: 'Owed, moved to Online payroll',
+  moved_to_deduction: 'Not a tax: moved to deductions',
   employer_managed: 'Kept as an employer-managed tax',
-  stopped: 'Withheld but not owed: correction needed',
-  with_expert: 'Held until decided',
+  stopped: 'Taken by mistake: to refund',
+  with_expert: 'Not decided yet',
   awaiting_employer: 'Waiting for the employer',
 };
 
