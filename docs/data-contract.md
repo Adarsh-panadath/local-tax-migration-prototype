@@ -1,56 +1,131 @@
-# Fictional data contract
+# Data contract
 
-This is our prototype's own JSON schema, not an actual QuickBooks export or internal database schema. Field availability in real source data is unverified. A future adapter must validate what real data actually contains.
+All files are in `data/`. Companies, people, street addresses, wages and account numbers are fictional. Ohio school-district codes and rates and the Lancaster and Columbus city rates are real (see `catalog.json` → `metadata.sources`).
 
-## Source fields
+## catalog.json: what Online payroll knows
 
-| Field | Meaning |
+- `states.<ST>`: `name`, `rollout` (`enabled` or `not_yet_enabled`), `taxes[]`, `no_tax_districts[]`, `place_names[]`.
+- Tax: `tax_id`, `law_id` (the tax's unique Law ID; demo numbers), `type` (`school_district` or `municipal`), `code` (the Ohio district number for school districts), `name`, `place`, `rate` (percent), `base`, `basis` (`home` or `work`), `agency`, `qb_pays_and_files`.
+- `no_tax_districts[]`: districts with no school income tax, such as Columbus City Schools (`name`, `place`, `note`).
+- `place_names[]`: removed from labels before clustering, so "Lancaster SD" and "Bremen SD" look alike.
+- `defined_entries[]`: the names a cluster can take: `entry_id`, `kind` (`tax` or `non_tax`), `tax_type` for taxes, `states`, `label`, and `text` (the words the cluster is compared with).
+
+## geocoder.json: stands in for an address lookup
+
+- `addresses[]`: `address_id`, `line1`, `city`, `state`, `zip`, `school_district` (an Ohio district code, `NO-TAX-...`, `UNRESOLVED` for an address the lookup cannot place, or null), `municipality`.
+
+A home city that differs from the work city gives an optional tax (courtesy withholding), not a required one.
+
+## companies.json: what came across from Desktop
+
+- Company: `company_id`, `name`, `plan` (`Core`, `Premium` or `Elite`), `migration_month` (1 to 12; 10 = October), `description` (optional, shown on the analysis page), `worksites[]` (`site_id`, `name`, `address_id`), `items[]`, `employees[]`.
+- Item:
+  - `item_id`, `label` (free text);
+  - `law_id`: the Law ID of the tax the item withholds, which maps it straight to a catalog tax; 177 or 0 for an item the employer created, which names no tax;
+  - `origin` (`custom` for Law ID 177 or 0, otherwise `system`);
+  - `item_type`, `tracking_type` (`None` means Desktop treats it as an after-tax deduction);
+  - `calc` (`{kind: "percent", rate}` or `{kind: "flat_annual", amount}`);
+  - `agency`, `agency_account`, `deposit_frequency`.
+- Employee: `employee_id`, `name`, `site_id`, `monthly_wages`, `addresses[]` (`{address_id, from_month}`; empty means no address on file), `items[]` (item ids withheld in Desktop). Optional: `hired_month` and `left_month` (first and last month on the payroll), `remote` (works from home).
+
+## File checks
+
+`analyseCompany` checks the company first (`checkCompanyData` in `web/engine/analysis.mjs`).
+
+- **Errors** stop the analysis with a `DataError` listing every problem: migration month not 1 to 12; no work site, a duplicate one, or one whose address is unknown; duplicate employee or item IDs; an employee on a work site that does not exist; wages below $0; a rate outside 0% to 100% or a flat amount below $0; a system item whose tax is not in the catalog; a join month after the leave month; an address start month outside 1 to 12, or two addresses starting in the same month.
+- **Warnings** are cleaned up and returned as `analysis.dataIssues`: an unknown home address (kept as "not in the lookup", so dependent lines go to an expert), an item reference that does not exist (left out), an item listed twice for one person (counted once), an item with no name (treated as blank), a state the catalog does not cover, and a company with no employees.
+
+## label-pool.json: expert answers for shadow mode
+
+- `pools.<ST>[]`: `label`, `expert_label` (`school_district`, `municipal`, `non_tax:<entry_id>`, or `ambiguous`).
+
+A suggestion is **high confidence** when its cluster has a name and the label's own silhouette is at least 0.25.
+
+- Precision = high-confidence suggestions that match the expert ÷ all high-confidence suggestions. An ambiguous label counts against precision only if the model gives it a confident name.
+- Coverage = high-confidence suggestions ÷ all labels in the pool.
+
+## The exported report
+
+**Download report (JSON)** contains:
+
+- `generated_at`, `prototype`, `model_version`, `company`, `data_issues` (the file warnings);
+- `models[]`: per state, the mode, silhouette, precision, coverage, sample size and gates;
+- `cases[]`: one per Desktop line, with the Desktop item, the first route and the current route, stage, proposal with rate check, model suggestion (and whether the employer saw it), evidence and decision;
+- `gaps[]`, `readiness`, `dollar_tie_out`, `live`;
+- `w2_preview[]`: boxes 18, 19 and 20, split into the Desktop and Online parts;
+- `reconciliation` (after it has been run) and `audit` (the decision log).
+
+**Download lines (CSV)** has one row per Desktop line. A cell that starts with `=`, `+`, `-` or `@` gets a leading apostrophe, so a spreadsheet will not run it as a formula.
+
+The report is a review record. It is not a QuickBooks import file and not permission to run payroll.
+
+## The database
+
+One database per migration. When the page opens, the business being moved is loaded into a SQLite database in the browser (sql.js, `web/vendor/`), with the addresses it uses and the taxes, and the engine reads the business back with SQL (`web/db.mjs`). The tax catalogue, the address lookup and the label pool stay reference files (Intuit's services in production). A test (`tests/db.test.mjs`) checks that what comes back equals the file and that the engine gives the same answers either way. If a viewer blocks WebAssembly, the app reads the files directly and the Data page says so.
+
+| Group | Tables |
 | --- | --- |
-| `record_id` | Unique row identifier in this file. |
-| `company_id` | Fictional company identifier. |
-| `source_item_id` | Identity of an item within that company. |
-| `item_name` | The user-defined source label; never authoritative by itself. |
-| `item_kind` | Declared `tax`, `benefit_deduction`, or `unknown`. |
-| `source_tax_code` | Optional fictional code that a demo catalog may recognize. |
-| `jurisdiction_reference` | Optional, fictional jurisdiction evidence; not an address or a real jurisdiction ID. |
-| `tax_category` | Declared category, or null when unknown. |
-| `payer` | `employee` or `employer`, or null. |
-| `rate_percent` | Percentage value, such as 1.5; null means missing, and zero is a real value. |
-| `effective_on` | Date for the mapping exercise. |
+| From the Desktop file | `company` (one row), `employees` (with work site, home address and a move), `payroll_items`, `desktop_lines` |
+| From Intuit's lookup | `addresses` (only the ones this business uses; `school_district` = `UNRESOLVED` for one the lookup cannot place), `taxes` |
+| Our result | `results` (one row per Desktop line) |
 
-Only these input facts and the catalog can be used to form suggestions. The fixture does not model real employee residences, work locations, legal applicability, employer registration, historical balances, or filing setup.
+A work site is stored on each employee's row and comes back named by its name; the description is not stored; an employee keeps at most one move a year.
 
-## Catalog fields
+Every table has a primary key; foreign keys and CHECK rules are on. A Desktop file that breaks a key (an item that does not exist, the same item twice for one person, an address nobody knows) is refused when it is loaded, with the database's own message. The full schema is in [schema.md](schema.md).
 
-`target_id`, `source_code_aliases`, `display_name`, `jurisdiction_reference`, `tax_category`, `payer`, `rate_percent`, `effective_from`, `effective_to`, and `supported` define the fictional target. `supported` describes only this demo, not actual QuickBooks functionality.
+The Data page runs one read-only `SELECT` at a time (SQLite's `query_only` mode is on while it runs).
 
-All catalog and input values are synthetic. A future real catalog would need provenance, supported product/version scope, effective dates, and independent verification.
+## The business being moved
 
-## CSV imports
+The app moves one business, **Buckeye Supply Co.** (`G-001`, 152 employees), made by `web/generate.mjs` from a fixed seed (2026) on every visit, so every visitor sees the same data. It is synthetic: names, people, street addresses, wages and Desktop labels are made up. `companies.json` holds six small test files behind the Scenarios page; they are not loaded as businesses. The scale test asks the same generator for 60 businesses (Buckeye first, then 59 more of 100 to 280 employees each).
 
-The template contains the 11 source field names above as its header. All columns are required; optional values may be blank. The parser supports quoted commas, quotes, and line breaks. It rejects duplicate row IDs, invalid dates, invalid categories/payers, non-numeric rates, and files over 2 MB or 2,000 records. Zero is retained as a supplied rate.
+- Towns are real Ohio places (Lancaster, Pickerington, Columbus, Carroll, Bremen, Baltimore, Millersport, Ashville) with their real ZIP codes, school districts and city taxes. People live where commuters to each work site plausibly live.
+- Desktop labels are written the way people type them: abbreviations, typos, place names, upper and lower case.
+- Each generated business has its own mix of problems: missing home addresses, addresses the lookup cannot place, people who moved, wrong rates, Columbus residents with a school tax withheld, items nobody set up, ambiguous labels, union dues, garnishments, joiners and leavers.
+- Their addresses join the demo lookup (`addresses`, `G-A00001` onward).
 
-Reports escape spreadsheet formula prefixes in CSV. JSON retains the original text exactly. A report CSV includes additional review columns and is not the input template.
+A test (`tests/scale.test.mjs`) checks that the generator gives the same businesses every time, that the app's one business equals the first of them, that each has at least 100 employees, that every one goes through the engine, and that they round-trip through the database exactly.
 
-## Implemented status rules
+## What the employer adds: addresses, work locations, account numbers
 
-1. Preserve every input row with a unique `record_id`. Flag repeated `(company_id, source_item_id, effective_on)` identities for review, even when their payloads agree; do not silently delete either row.
-2. Retain recognized non-tax deductions as `excluded_non_tax`; do not classify them as taxes because their names or rates look similar.
-3. An unrecognized source code remains `needs_information`; do not overwrite it silently using a name guess.
-4. For a recognized code, check every available jurisdiction, payer, category, rate, and effective-date field for conflicts. A contradiction prevents a ready status even if other evidence matches.
-5. Missing required jurisdiction, payer, rate, or date evidence results in `needs_information`, including when a code identifies a catalog item. Identity and contextual evidence are separate. An unknown category may receive an AI suggestion, but it is not a verified fact.
-6. With a recognized code, complete matching evidence, and an eligible catalog entry, return `ready_for_demo_mapping`. A known unsupported destination returns `unsupported` when there are no other blockers.
-7. Without a source code, available compatible facts can narrow the catalog to candidates. If jurisdiction, payer, rate, and date are supplied, AI may interpret the label to rank tax categories and candidates. The initial release labels these `suggestion_only` until reviewed; an inferred category must be displayed as inferred. Do not manufacture the missing identifier.
-8. An unresolved case with multiple plausible targets remains `needs_information`. Preserve all candidate IDs and ask for the distinguishing fact.
+The owner's **To do** asks, under **Needs you** and inside the record that waits for it, for what only the employer knows.
 
-Multiple checks can fail. Store all check results even when the interface chooses a primary status. The status is a summary, not a substitute for the evidence.
+**A home address**, for a line that needs one (`no_address`, or `address_unresolved` when the lookup cannot place it). Saving it:
 
-After a review action, preserve the original values, record the correction and its stated evidence, and rerun validation. Approval cannot bypass a contradiction or unavailable destination. A human's click is not proof that an unsupported fact is true.
+1. Looks it up by street and ZIP in the address lookup.
+2. Writes it to the database: the employee's `home_address_id` (for the whole year), and the address in `addresses` (as the lookup placed it, or as `UNRESOLVED` if the lookup has never seen it). The app's log records it as "Added a home address".
+3. Reads the business back from the database, and the engine checks its lines again. If the business has moved, the employer's rules run and settle what they can.
 
-An accepted compatible proposal becomes `reviewed_mapping`; no missing source code is invented. A confirmed duplicate becomes `excluded_duplicate`, while both original rows remain in the report. If the related record changes so that the exclusion no longer applies, the exclusion becomes a conflict and requires review again.
+An address the lookup knows settles the line by rule; one it has never seen is kept, and the line stays with an expert as `address_unresolved`.
 
-The current simulation uses a small label rule set to rank plausible school/municipal candidates. It makes no model API call. Reports explicitly include `ai_mode: "simulated"`; bundled data is marked as synthetic, while an uploaded file's provenance is unknown.
+**Where someone works**, for a line routed `work_location`: Desktop withholds the city tax of the town the employee lives in, and no line withholds the work site's. The answer is written to `employees.remote` (1 from home, 0 at the site), the log records "Said where someone works", and the engine checks the lines again. In Buckeye Supply Co., two people at the Lancaster site who live in Columbus have the Columbus City Tax item instead of the Lancaster one.
 
-## Expected outcomes
+**An agency account number and deposit frequency**, for an agency QuickBooks will pay with neither on any Desktop item it was confirmed from. In Buckeye Supply Co. the Columbus City Tax item has no account number. The answer is kept with the employer's decisions, as on the Go live screen.
 
-`evaluation/expected-results.json` is a design oracle. It is kept separately to prevent the application or AI from reading the intended answer. Candidate IDs in that file define acceptable candidates for the example; they are not observed model output. For AI cases, the actual response must be measured after integration.
+Added addresses and work locations are kept in the browser and applied again whenever the database is rebuilt.
+
+## ML Lab
+
+`web/mllab.mjs` grades the label clustering on a larger labelled set (`labelSet` in `web/generate.mjs`: 1,200 labels by default, 600 or 2,400 on request).
+
+- 80% of the labels fit the clusters with the engine's own `clusterLabels` (k from 2 to 30, picked by silhouette). No answers are used to fit.
+- The other 20% are scored with the engine's own `assignLabel`, exactly as a new business's labels are: nearest cluster, its name, and the label's silhouette. Below 0.25 the label goes to an expert.
+- **Precision** = right suggestions ÷ suggestions. **Coverage** = suggestions ÷ held-back labels. An ambiguous label sent to an expert counts as right.
+- The baseline uses the same clean-up and then picks the catalogue entry that shares the most words; a tie or no shared word goes to an expert.
+- The map is kernel PCA on the same cosine similarity.
+
+## Uploading a Desktop file (CSV)
+
+One file is one company, with one row per employee per payroll item (an employee with no local items has one row with the item columns blank). The Data page has a template: a small fictional company whose addresses are all in the demo lookup.
+
+| Column | Required | Notes |
+| --- | --- | --- |
+| `company_name`, `plan`, `migration_month` | Yes | Same on every row |
+| `employee_id`, `employee_name`, `monthly_wages` | Yes | |
+| `home_address`, `home_city`, `home_state`, `home_zip` | No | Blank means no address on file |
+| `work_site`, `work_address`, `work_state`, `work_zip` | Yes | `work_city` optional |
+| `remote` | No | `yes` if the employee works from home |
+| `item_label`, `law_id`, `item_type`, `tracking_type`, `rate_percent`, `agency` | No | `law_id` defaults to 177 (custom); any other Law ID must be one the catalog has |
+| `agency_account`, `deposit_frequency` | No | |
+
+Addresses are matched to `geocoder.json` on street line and ZIP. A home address it has never seen is kept as customer data and its lines go to an expert ("address not placed"); a work address it has never seen stops the file. Rows with the same label, type, tracking, rate and agency become one Desktop item. After the format checks, the engine's own file checks and the database's keys run. The file then replaces the demo business until the admin goes back to it. Moves within the year cannot be expressed in the CSV yet.

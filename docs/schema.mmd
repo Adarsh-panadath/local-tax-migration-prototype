@@ -1,0 +1,48 @@
+erDiagram
+  company {
+    text company_id PK
+    text name
+    integer migration_month
+  }
+  employees {
+    text employee_id PK
+    text name
+    text work_address_id FK
+    text home_address_id FK
+    text new_home_address_id FK
+  }
+  payroll_items {
+    text item_id PK
+    text label
+    integer law_id "matches taxes for system items"
+  }
+  desktop_lines {
+    text employee_id PK, FK
+    text item_id PK, FK
+  }
+  addresses {
+    text address_id PK
+    text city
+    text school_district
+  }
+  taxes {
+    integer law_id PK
+    text name
+    text code
+    real rate
+  }
+  results {
+    text employee_id PK, FK
+    text item_id PK, FK
+    text route
+    integer law_id FK
+    text decided_by
+  }
+  addresses ||--o{ employees : "new_home_address_id"
+  addresses ||--o{ employees : "home_address_id"
+  addresses ||--o{ employees : "work_address_id"
+  payroll_items ||--o{ desktop_lines : "item_id"
+  employees ||--o{ desktop_lines : "employee_id"
+  desktop_lines ||--o| results : "employee_id, item_id"
+  taxes ||--o{ results : "law_id"
+  taxes |o..o{ payroll_items : "law_id (system items only)"

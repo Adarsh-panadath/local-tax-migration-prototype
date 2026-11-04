@@ -1,41 +1,200 @@
-# Design decisions and their justification
+# Design decisions
 
-The browser workflow and rules are implemented. The live-AI and AWS choices below describe future work, not connected services.
+Each decision below follows the BRD v3 handoff summary. Where the prototype had to pick a detail the BRD left open, it says so. Every rule here has a live check on the website's **Scenario coverage** page.
 
-| Choice | Reason | Evidence that could change the choice |
+## 0. Check the Desktop file before anything else
+
+*Added by the prototype; the BRD assumes clean data.*
+
+- **Stop** when nothing sensible can be computed: a migration month outside 1 to 12, no work site or an unknown one, duplicate employee or item IDs, negative wages, a rate outside 0% to 100%, joining after leaving, or a system item pointing at a tax that is not in the catalog. The page lists every problem in plain words.
+- **Clean up and report** smaller problems: an address the lookup has never seen (lines that need it go to an expert), an item reference that does not exist (left out), an item listed twice for one person (counted once), a missing item name (treated as blank).
+- Labels are always plain text. A label with code or a spreadsheet formula goes to an expert, and the CSV export puts an apostrophe in front of any cell starting with `=`, `+`, `-` or `@`.
+
+## 0a. The Law ID names the tax
+
+Every tax has a **Law ID**, its unique identifier. A Desktop payroll item that QuickBooks already knows carries its tax's Law ID (Columbus City Tax: 4140), so it maps straight to the tax: no label reading, no clustering. An item the employer created carries **177 or 0**, which names no tax. Those are the hard lines, and everything below (addresses, clustering, experts) exists to turn a 177 into a real Law ID. In the database, `taxes` is keyed by `law_id`, `results.law_id` names the Online tax of every line, and `payroll_items.law_id` matches `taxes` for system items only (so it is not a foreign key). A system item whose Law ID no tax has stops the file. The Law ID numbers in the demo are illustrative, not Intuit's.
+
+## 1. Addresses first, labels second
+
+A Desktop label like "School Tax" names a type of tax, not a jurisdiction. Online payroll needs the exact jurisdiction. So the prototype starts from each employee's addresses:
+
+- **School-district tax** follows the **home** address (Ohio).
+- **City tax** follows the **work** location. A home city that offers courtesy withholding (Columbus 2.5%) is listed as optional, not required.
+- A mid-year move splits the year into periods, and each period gets its own district. A move in the migration month keeps the Desktop history with the old district and starts the new one in Online payroll.
+- A **remote worker** works where they live, so the city tax follows the home address.
+- Living in a state that is not switched on (Pennsylvania) lists no home-based taxes for those months. If Desktop kept withholding after a move out of the district, those months are **not owed** and need a correction.
+- No address, or an address the lookup cannot place, leaves those months open, and lines that depend on them go to an expert.
+- Joiners and leavers only count the months they were on the payroll. Someone who left before the move has no Online taxes, but their history is still relabelled for the W-2.
+
+The state comes from the item label if it names one, else the home address, else the work address. A label naming a state the employee neither lives nor works in goes to an expert.
+
+Each employee ends up with one to four expected taxes. The label only has to say *which kind* of tax a line is. The address says *which one*.
+
+## 2. Clustering is for labels, not for employees
+
+Custom items (Law ID 177 or 0) carry free text: "SD WH", "Schl Dist W/H", "Local Tax". The prototype clusters those labels **within each state**:
+
+- Labels are cleaned first: abbreviations expanded (`sd` → school district, `wh` → withholding), place names removed (so "Lancaster SD" and "Bremen SD" look the same).
+- Vectors are TF-IDF on words plus character trigrams (weight 0.35), so typos and run-together words still land close.
+- Average-linkage clustering, with k from 2 to 12 picked by the best silhouette score.
+- The model is **fitted once per state, on the expert-labelled pool**. A company's own labels are then scored against those fitted clusters, so one company's messy labels cannot change a state's gates.
+- A label with no words left after clean-up (blank, or just a place name like "Lancaster") joins no cluster and goes to an expert.
+- Each cluster is **named after the closest defined entry** (school district, municipal, union dues, garnishment, and so on). A cluster too far from every entry stays unnamed, and its lines go to an expert. "Local Tax" lands there on purpose.
+- An individual label with a silhouette below 0.25 counts as a weak signal and goes to an expert, even inside a named cluster.
+
+*Detail chosen by the prototype:* the 0.25 per-item floor and the 0.35 trigram weight.
+
+## 3. Gates decide whether suggestions are shown
+
+Per state, the model's suggestions are shown only if **all** of these pass:
+
+| Gate | Rule | Ohio in the demo |
 | --- | --- | --- |
-| Define expected outcomes before coding | Makes the intended behavior concrete and exposes ambiguous requirements. | Faculty requirements or representative real records contradict the assumptions. |
-| A static browser application for version 0.1 | Plain JavaScript modules and Node's built-in tools are enough for the demo workflow, with no package installation or API account. Separate modules keep matching and file handling testable. | A live AI provider requires a server endpoint to protect credentials; shared projects require authenticated storage. A framework can be added when that integration benefits from one. |
-| Deterministic checks for exact evidence | Known identifiers, allowed catalog entries, field completeness, and contradictions can be checked explicitly. | Reference data is incomplete or identifiers are unreliable. |
-| Simulated suggestions now, a live AI comparison next | The current label rules make the interaction testable. A real model can later interpret inconsistent descriptions and propose candidates for the same validated workflow. | The live model provides no useful improvement over rules or causes unacceptable errors. |
-| No initial clustering dependency | Grouping similar items does not, by itself, establish an exact destination or applicability. | A measured experiment shows clustering reduces useful review or labeling work. |
-| Fictional, labeled examples first | Lets us build and demonstrate behavior without claiming access to private payroll data. | An authorized representative dataset becomes available. |
-| GitHub for code and decisions | Version history makes the work reviewable and supports collaboration. | A faculty-mandated alternative is required. |
-| Optional AWS S3 for files | Gives AWS a concrete role: storing supplied inputs and reports. It is not a source of private QuickBooks data. | The rubric requires another cloud capability or no persistent files are needed. |
-| Browser storage for the first draft | Lets one person try corrections and revisit a local draft without a backend. Exports preserve a copy outside the browser. | Collaboration, durable records, access control, or real payroll data requires a different storage and security design. |
-| Targeted requests for missing facts | A missing distinguishing fact cannot be recovered reliably from an identical label and rate. | An authorized authoritative lookup can supply that fact automatically. |
+| Rollout | State switched on | On |
+| Silhouette | At least 0.5 | 0.53 (0.528) |
+| Precision | At least 98% on expert-labelled labels | 100% (44 of 44 named) |
+| Sample | At least 40 labelled labels | 53 |
 
-## AI request and response contract
+If any gate fails, the state runs in **shadow mode**: suggestions are still logged, but hidden, and every custom line goes to an expert. Pennsylvania is in shadow mode (not switched on, only 7 labels). The sample gate of 40 is set for demo scale. A real rollout would need thousands.
 
-Send only the needed source fields, catalog candidates, and explicit instructions. Keep `evaluation/` out of application and model inputs: it contains expected answers.
+A value exactly equal to a threshold passes. **Model governance → Try the gates** lets you change the thresholds: at 0.53 Ohio drops to shadow mode, and at 0.52 it comes back. Governance can also force a state into shadow mode at any time.
 
-The future API response should include candidate IDs drawn from the provided catalog or an explicit no-match result, the input fields supporting the suggestion, and unresolved questions. The server must validate allowed IDs and the underlying evidence. Generated prose is not an authoritative source. The application should construct factual validation explanations from recorded checks.
+## 4. Three routes, one outcome per line
 
-Structured output controls format; it does not prove correctness. Do not turn a model's self-reported confidence into a promise of accuracy. Do not generate or invent tax rates, agency codes, account credentials, or missing jurisdiction evidence.
+Every Desktop line ends in exactly one route:
 
-Use one existing model through an API initially. This is inference with a pretrained model, not a claim that the team trained a proprietary model. Keep the model choice configurable and select it using actual examples, latency, and cost.
+- **Local tax**: matched to an expected tax. The rate is checked against the official rate, and any over- or under-withholding is shown in dollars.
+- **Not a tax**: Desktop already tracked it as an after-tax deduction (union dues), or the cluster says so.
+- **Not in database**: shadow mode, weak signal, no address, a tax nobody expects at this address, or a **conflict** (Desktop says tax, the cluster says garnishment). An expert then maps it, marks it not a tax, adds a structured custom entry (employer-managed, never paid by QuickBooks), or stops it.
 
-## Evaluation
+Conflicts always go to a person. The model never overrides what Desktop recorded.
 
-Compare rules-only and rules-plus-AI on the same independently checked cases. Track correct automatic mappings, incorrect automatic mappings, unresolved items, suggestion usefulness, and time spent reviewing. Keep those measurements separate.
+Other cases the routing handles:
 
-The fixtures in this starter are visible development examples. Do not report performance on them as generalization accuracy. With real evaluation data, hold out whole companies and assess unfamiliar descriptions and jurisdictions. Correct answers require independent verification rather than treating legacy configuration as automatically correct.
+| Case | Outcome |
+| --- | --- |
+| The label names a place, the address says another ("Pickerington SD" for a Lancaster resident) | The address wins; flagged and not bulk-confirmable |
+| Two Desktop items for the same tax | One stays; the other goes to an expert so nothing is withheld twice |
+| An Intuit-defined item for the wrong city | Not expected, so an expert decides |
+| Only the optional home-city tax fits | Matched as optional; the employer decides |
+| The rate differs by any amount (1.4999% against 1.5%) | Over- or under-withheld, in dollars; not bulk-confirmable |
 
-## Technical references
+## 5. The employer confirms everything
 
-- GitHub repository concepts: https://docs.github.com/en/repositories/creating-and-managing-repositories/about-repositories
-- OpenAI API authentication: https://developers.openai.com/api/reference/overview
-- OpenAI structured outputs and limitations: https://developers.openai.com/api/docs/guides/structured-outputs
-- Amazon S3 storage: https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html
+Expert decisions go back to the employer. A tax goes live only when the employer has confirmed it. The employer can also send any line, even one that is ready to confirm, to an expert. A gap counts as covered once an expert maps one of the employee's lines to that tax, so it is never added twice. Bulk confirm is offered only for lines that are **ready to confirm** (called verified matches in the code): matched to an expected tax without an expert step, where the Desktop rate equals the official rate. The screen never calls them verified, because the employer has not confirmed them yet.
 
-These references explain service capabilities. They do not substantiate the fictional tax catalog or production suitability.
+## 5a. Automation: the employer decides the rules, not every line
+
+*Added by the prototype to keep manual work to a minimum.* The BRD's principle is "model suggests, person decides". Here the person decides once, by approving seven rules, and the system applies them to every line they cover (`automate` in `web/engine/workflow.mjs`):
+
+1. Confirm matches the address supports.
+2. Use the official rate when Desktop's rate is wrong (the difference is flagged for a correction).
+3. Move after-tax deductions.
+4. Add expected taxes nobody withheld (from the first cloud payroll; back tax flagged).
+5. Stop taxes the address says are not owed (duplicates, and taxes not on the expected list for an address found in the lookup).
+6. Accept expert decisions.
+7. Go live and reconcile, only when nothing is left for a person and every go-live check passes.
+
+Never automated: a weak or missing label signal, conflicting evidence, a missing or unplaceable address, a label naming another state, a state in shadow mode, more than one possible tax, or a line someone sent to an expert. These are the exceptions a person handles; after each decision, automation re-runs and finishes what it now can.
+
+Every automatic step is logged with its rule. Any of them can be undone; an undone line is held for a person and automation skips it from then on. Each rule can be switched off.
+
+## 5b. How a customer starts: the move
+
+*Added by the prototype.* Intuit's own Desktop-to-Online move is a short wizard in Desktop (start, choose what moves, export), followed by a welcome page that lists what matched and an exception report for what did not. Its help pages describe employees, pay items and year-to-date totals being copied, but none of them say how local taxes are mapped; the local tax article has the employer pick each employee's local taxes by hand. The move copies the data but does not interpret it.
+
+The prototype keeps that shape and puts the local tax step inside it:
+
+1. **Start**: what moves, and the client's loose Desktop labels next to the exact taxes its addresses call for.
+2. **Check**: before the move, what the employer's rules will settle, what stays for a person and why, and the rules to approve.
+3. **Move**: the rules run (the same `automate` as everywhere else).
+4. **Summary**: settled by rule, waiting for a person, an exception report that links to each record, and the steps up to the first Online payroll.
+
+The screens are our own design and carry no Intuit branding. The copy of employees, pay items and totals is simulated and says so on screen; the local tax checks are real.
+
+## 5c. One screen set per person, and a real database
+
+*Added by the prototype.*
+
+- **One business, one database.** A migration moves one business, so the demo has one: Buckeye Supply Co., 152 employees. All three roles work on it. The database holds only that business, so no table needs a company id; another business would get its own database with the same tables. An uploaded Desktop file replaces Buckeye until the admin goes back.
+- **Roles.** The business owner moves the business: Move, To do and Go live. The payroll tax expert sees only the queue. The admin sees the engine's findings, the model, the ML Lab, the data, the scenarios and the log. Buttons that open another person's screen appear only for a role that can open it. The sign-in uses demo accounts without passwords, because a static site cannot keep a secret; in production the role would come from the Intuit account or the staff sign-in.
+- **No bulk run across customers.** An earlier version had an accountant who could run automation for every client at once, and later an all-businesses Portfolio. Both were removed: each business approves its own rules when it moves, so nobody runs another company's move, and the demo stays on the one business being moved.
+- **Database.** The business is loaded into SQLite in the browser, and the engine reads it back with SQL. A test proves the round trip is exact. The query box is read-only: the database itself is switched to read-only while a query runs, so even `WITH ... DELETE` is refused. Customer data stays fictional; the tax reference is real where it matters.
+- **Schema: seven tables.** From the Desktop file: `company`, `employees`, `payroll_items`, `desktop_lines`. From Intuit's lookup: `addresses`, `taxes` (only what this business needs). Our result: `results`. Every table has a primary key, and foreign keys and CHECK rules are on, so the database itself refuses a row that points at nothing or holds an impossible value; the Data page proves it with five rule checks. Two simplifications, said plainly: an employee's work site and a move (new address and month) sit on the employee's row, and the step-by-step log stays in the app, not the database. An earlier version had 22 tables in four layers; it was cut to what one migration needs so it can be explained in a minute. See [schema.md](schema.md).
+
+## 5d. What only the employer knows goes to the employer
+
+*Added by the prototype.* Some open questions are not judgement calls; they are facts only the employer has. So those lines are the employer's in `exceptions`, not an expert's, and the owner's **To do** asks for them under **Needs you**, inside the record that waits for each answer (an agency account is a record of its own):
+
+| Kind | Engine reason | Trigger | The answer |
+| --- | --- | --- | --- |
+| Home address | `no_address`, `address_unresolved` (`needs: "address"`) | No home address, or one the lookup cannot place, so the school district cannot be chosen | An address, saved as the employee's home for the year |
+| Work location | `work_location` (`needs: "work_location"`) | An employee who is not marked remote has, in Desktop, only the city tax of the town they live in, and nothing for the work site's city tax | "At the site" or "From home", saved as the employee's `remote` flag (0 or 1) |
+| Agency account | `account_missing` | An agency QuickBooks will pay has no account number or deposit frequency | The account number and frequency |
+
+For an address or a work location, the answer is saved to the database, the engine checks that employee's lines again, and the rules settle what they can. While the work-location question is open, the work site's city tax is not called missing: it may not be owed. From home, the home town's tax is the one owed and the line maps to it; at the site, the site's tax is added (nobody withheld it) and the home town's line becomes optional courtesy withholding. An address the lookup has never seen is kept, and the line stays with an expert. An expert can still map any of these lines.
+
+Asking where someone works is a deliberate limit: the engine could guess "they must work from home", but a wrong guess moves a tax to the wrong city, so it asks.
+
+## 5e. One decision per label, not per line
+
+*Added by the prototype.* A Desktop item is usually on many employees: one unclear label at a 150-person business is 150 lines. The expert can decide what the label means once (school-district tax, city tax, or not a tax), and each employee's own address picks the exact tax. This is the BRD's split, label for the kind and address for the jurisdiction, applied to the expert's work. Lines with no tax of that kind at the employee's address stay open. Lines waiting for an address, or sent back by the employer, are left out.
+
+## 5f. Scale, and proof that the clustering works
+
+*Added by the prototype.*
+
+- **A realistic size.** The business has 152 employees and 313 Desktop local tax lines, from a fixed seed: synthetic people on real towns, ZIP codes, districts and rates, with the messy data a real Desktop file has.
+- **Scale test.** `tests/scale.test.mjs` generates 59 more businesses of 100 to 280 employees (9,000+ people) and runs them through the same engine and database. They are a test, not part of the app.
+- **ML Lab.** The 53-label demo pool shows how the gates work but proves little. The lab builds a 1,200-label set, fits clusters on 80% with the engine's own code, and grades the other 20%, against simple word matching too. It reports what it finds, including when the gate would keep the state in shadow mode. With seed 2026: precision 98.4% on held-back labels at 78.8% coverage; word matching 98.2% at 90.8%; silhouette 0.462, below the 0.5 gate. Across other seeds neither method wins every time, which is why the screen states numbers, not a winner. Clustering's value is in grouping hundreds of label spellings into a few dozen families an expert names once, and in a confidence that decides when to defer.
+- The demo pool's k range stays 2 to 12; the lab uses 2 to 30, because a set seven times larger needs room for more clusters.
+- **Try the clustering.** The Model page runs one made-up employee and Desktop item through the same engine and shows each step: the cleaned words, the closeness to every cluster, the silhouette against the 0.25 floor, and the tax the address picks. Its numbers come from the fitted Ohio model, not from a separate demo path (`explainLabel` returns the same cluster and silhouette as `assignLabel`; a test checks this). **Add to Buckeye** stores the person in the browser and adds them to the database on every rebuild, so their line goes through the same queues as everyone else's.
+
+## 6. Go-live checks
+
+Four checks must pass:
+
+1. Every line decided by the employer.
+2. Every gap handled (added or explained).
+3. **Dollar tie-out**: every Desktop local-tax dollar has a destination (live tax, deduction, employer-managed, stopped with a note, or not-owed months sent for correction).
+4. Agency account number and deposit frequency for every agency that QuickBooks will pay.
+
+## 7. History is relabelled, not recalculated
+
+For the W-2, the Desktop months (January to September for an October move) are relabelled to the confirmed jurisdiction. They keep what was actually withheld, even if the rate was wrong. October to December comes from Online payroll at the official rate. A stopped line stays off the W-2. A company that moves in January has no Desktop history to relabel, so a gap has no back tax.
+
+## 8. Reconcile twice
+
+After the first cloud payroll and again after the first quarter, withholding is compared with the expected taxes. The flags:
+
+- Expected but not withheld (red).
+- Withheld in Desktop but not owed, so a correction with the agency is needed (amber).
+- Past withholding over or under the official rate (amber).
+- A line still with an expert, so nothing is withheld for it yet (amber).
+
+The payer depends on the plan: Premium and Elite let QuickBooks pay and file supported taxes. Core means the employer pays and files.
+
+## Ask AI: it speaks first, then answers questions
+
+*Added after faculty feedback.*
+
+- **One place.** The only AI in the app is the round **Ask AI** button at the bottom right of every screen. An earlier version also put an assistant card inside every record; it was removed so the record screens stay about the decision, and the AI is in one place people learn once.
+- **It speaks first.** When the chat opens, it gives a short briefing for the person and the screen, built in and instant: the owner's next step on Move; what needs the owner on To do; the opinion on a record they opened (a recommendation, how confident it is, why, and one thing to check); the open labels in the expert queue; the go-live checks; what an admin screen shows. As the person moves, it posts a new briefing (and replaces one nobody replied to). A dot on the button says there is a new one. The suggested questions follow the screen and the record.
+- **One facts brief, two answerers.** `web/assistant.mjs` builds one brief per record from the engine's own results: the person's addresses and months, the Desktop line, the expected taxes with their Law IDs, the rate checks, the model's reading of the label, the steps, and for a work-location question what each answer would mean. A real model (Claude in the hosted app on claude.ai, through the page's `sample` capability on the viewer's own account; elsewhere a model the person connects) answers from that brief, and **Check this with …** asks it for its own opinion in the same shape. Otherwise the built-in assistant answers from the same brief with fixed rules, and says so.
+- **Grounded, not creative.** The model is told to use only the facts and to say when they do not cover a question; the built-in assistant has nothing else to use. Neither decides anything: suggestions still go through the gates and the employer's confirmation.
+- **Failure is visible.** If the viewer declines, the model is unavailable, busy or refuses, the chat says so and the built-in assistant answers instead.
+- **Any model, the key stays with the person.** Outside claude.ai the person connects a model with their own key: Google Gemini (Google's own API, which takes both AIza… and AQ.… keys), any OpenAI-compatible service (OpenAI, Groq, OpenRouter, a local Ollama) or the Anthropic API. The key is typed into the chat, kept in that browser's local storage and sent only to that provider; it is never in the code, the repository or the published site. A key in the code would be readable by anyone who opens the page. The connection is tested before it is saved, and the model list is read from the provider, so nobody guesses a model name. claude.ai does not let hosted pages call other services, so the hosted app uses Claude instead.
+- **The clustering stays the model.** The label clustering is still what reads Desktop labels; the assistant explains and checks, it does not replace the gates.
+
+
+## The product tour
+
+*Added after the Use cases screen was dropped.* The front page opens a short film (0:57) instead, made to sell the move to a business: the problem, what the product does for them, four real screens (see the result first, a few quick answers, Ask AI, go live) and the results. It speaks to the business only: the expert and admin roles stay out of it, because a customer deciding whether to move does not need them. An earlier cut ran 2:22 and walked through all three roles; it was cut to under a minute. Every screen in it is a screenshot of this prototype taken on the same data, and every number is one the app shows, so the film cannot promise more than the product does. It is narrated from a written script (`docs/tour-script.md`) by a male voice, Kokoro's `am_michael`, an open-source text-to-speech model (Apache 2.0) run offline, so no voice recording or paid service is needed; each scene is timed to its sentences. The music bed, made for it, dips under the voice. The captions stay on screen, so it still works with the sound off. It loads only when someone presses play.
+
+## The look
+
+*Added with the redesign.* The front page is a landing page for a business: one line on what the product does, three short points on how it works, the film, and then the three demo accounts. It shows no figures: the demo business's numbers belong inside the demo, not in a pitch. Inside the app, a deep green bar holds the screens and the account menu (resetting the demo and signing out), and shows where the move stands; the counts there match the To do tab and the summary. Everything below it stays light. **Ask AI** is the round button at the bottom right (an earlier pass moved it into the header; it went back to the corner by request), and every page ends with room for it, so it never hides the last button.
+
+Each role's work is one list and one record. On **To do**, what only the employer can answer (a home address, where someone works, an agency account) is in the same list as everything else, under **Needs you**; each record opens with its question and form, and answering opens the next one. A record reads top to bottom: who and what, Desktop to Online in one strip, the next step in one line, the one thing to do (the employer's answer or the expert's decision), and the reference detail in tabs (Desktop vs Online, addresses and taxes, how it was decided, history). Colour is kept for meaning: numbers, statuses and the one main button on each screen.
+
+**Where every Desktop dollar goes.** The go-live tie-out names each destination in plain words and explains it in one line: owed and moved to Online payroll; taken by mistake and to be refunded (a local tax Desktop took that the person does not owe where they live and work: it stops from the first Online payroll, and the employer asks the agency for a refund and pays it back to the employee); not decided yet. The mistakes open as a list in To do.
